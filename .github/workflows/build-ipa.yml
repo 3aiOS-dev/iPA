@@ -20,23 +20,10 @@ jobs:
         sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
         xcode-select -p
 
-    - name: Install Dependencies
-      run: |
-        brew install ldid dpkg xz wget curl git
-
-    - name: Setup Theos
-      run: |
-        git clone --recursive https://github.com/theos/theos.git ~/theos
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-
-    - name: Download iOS SDK
-      run: |
-        export THEOS=$HOME/theos
-        mkdir -p ~/theos/sdks
-        cd ~/theos/sdks
-        curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o iPhoneOS16.5.sdk.tar.xz
-        tar -xJf iPhoneOS16.5.sdk.tar.xz
-        rm iPhoneOS16.5.sdk.tar.xz
+    - name: Install Theos
+      uses: Randomblock1/theos-action@v1
+      with:
+        theos-dir: theos
 
     - name: Create Build Directories
       run: |
@@ -44,64 +31,51 @@ jobs:
 
     - name: Build Application
       run: |
-        export THEOS=$HOME/theos
+        export THEOS=${{ github.workspace }}/theos
         export PATH=$THEOS/bin:$PATH
         cd ${{ github.workspace }}
         make clean
         make
 
-    - name: Copy Build Artifacts
+    - name: Verify Build Output
       run: |
         cd ${{ github.workspace }}
-        find .theos/obj/debug -name "*.deb" -exec cp {} artifacts/ \;
-        find .theos/obj/debug -name "*.ipa" -exec cp {} artifacts/ \;
-        find .theos/obj/debug -type d -name "*.app" -exec cp -r {} artifacts/ \;
+        echo "Looking for built .app bundle..."
+        find .theos -type d -name "*.app"
+        echo "----"
+        find .theos -type d -name "*.app" -exec ls -la {} \;
 
     - name: Create IPA Package
       run: |
         cd ${{ github.workspace }}
-        mkdir -p build-output/Payload/TestApp.app
+        APP_PATH=$(find .theos -type d -name "*.app" | head -n 1)
 
-        if [ -d ".theos/obj/debug/TestApp.app" ]; then
-          cp -r .theos/obj/debug/TestApp.app/* build-output/Payload/TestApp.app/
+        if [ -z "$APP_PATH" ]; then
+          echo "ERROR: No .app bundle found. Build failed silently."
+          exit 1
         fi
+
+        echo "Found app bundle at: $APP_PATH"
+
+        rm -rf build-output
+        mkdir -p build-output/Payload
+        cp -r "$APP_PATH" build-output/Payload/TestApp.app
+
+        # Ensure Info.plist is present and correct
+        cp Resources/Info.plist build-output/Payload/TestApp.app/Info.plist
+
+        # Fakesign the binary (required for the .app to be recognized as valid)
+        ldid -S build-output/Payload/TestApp.app/TestApp
+
+        echo "Final bundle contents:"
+        ls -la build-output/Payload/TestApp.app/
 
         cd build-output
         zip -r -q ../artifacts/TestApp.ipa Payload/
         cd ..
 
-    - name: Create DEB Package
-      run: |
-        cd ${{ github.workspace }}
-        mkdir -p deb-temp/DEBIAN
-
-        cat > deb-temp/DEBIAN/control << 'EOF'
-        Package: com.example.testapp
-        Name: Test App
-        Version: 1.0.0
-        Architecture: iphoneos-arm64
-        Description: Simple iOS Test Application
-        Maintainer: 3aiOS-dev
-        Author: 3aiOS-dev
-        Section: Utilities
-        Depends: mobilesubstrate
-        EOF
-
-        cat > deb-temp/DEBIAN/postinst << 'EOF'
-        #!/bin/bash
-        echo "Test App installed successfully"
-        exit 0
-        EOF
-        chmod 0755 deb-temp/DEBIAN/postinst
-
-        cat > deb-temp/DEBIAN/postrm << 'EOF'
-        #!/bin/bash
-        echo "Test App removed"
-        exit 0
-        EOF
-        chmod 0755 deb-temp/DEBIAN/postrm
-
-        dpkg-deb -b deb-temp artifacts/TestApp.deb
+        echo "IPA created:"
+        unzip -l artifacts/TestApp.ipa
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
