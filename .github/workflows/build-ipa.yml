@@ -1,4 +1,4 @@
-name: Build_21s
+name: Build_21s_Temp
 
 on:
   push:
@@ -22,9 +22,6 @@ jobs:
         run: |
           brew install ldid
           brew install zip
-          # ملاحظة: ميزات PDF (توقيع/دمج/تعديل) تعتمد على PDFKit وهو إطار عمل
-          # مدمج في نظام iOS من Apple، لا يحتاج أي تثبيت عبر brew أو CocoaPods —
-          # فقط يتم ربطه في خطوة الـ build عبر "-framework PDFKit"
           unzip -v | head -1
           zip -v | head -1
 
@@ -40,8 +37,8 @@ jobs:
               img = Image.new("RGB", (size, size), (18, 18, 30))
               draw = ImageDraw.Draw(img)
 
-              top = (124, 58, 237)      # purple
-              bottom = (6, 182, 212)    # teal
+              top = (124, 58, 237)
+              bottom = (6, 182, 212)
               for y in range(size):
                   t = y / size
                   r = int(top[0] * (1 - t) + bottom[0] * t)
@@ -55,7 +52,7 @@ jobs:
                   width=max(2, size // 40),
               )
 
-              text = "21s"
+              text = "⏱️"
               try:
                   font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.30))
               except Exception:
@@ -71,32 +68,27 @@ jobs:
               )
               img.save(filename)
 
-          # 60pt @2x = 120x120 (iPhone)
           make_icon(120, "Resources/AppIcon60x60@2x.png")
-          # 76pt @2x = 152x152 (iPad)
           make_icon(152, "Resources/AppIcon76x76@2x~ipad.png")
           PYEOF
           ls -la Resources
 
-
-      - name: Generate Source - UI Components (تصميم جديد)
+      - name: Generate Source - UI Components
         run: |
           cd ${{ github.workspace }}
           cat > UIComponents.swift << 'WEOF'
           import UIKit
 
-          // MARK: - خلية ملف مُعاد تصميمها بالكامل (بطاقة مستديرة + شارة ملونة)
-
-          final class FileCell: UITableViewCell {
-              static let reuseID = "FileCell"
+          final class TempFileCell: UITableViewCell {
+              static let reuseID = "TempFileCell"
 
               private let card = UIView()
               private let badge = UIView()
               private let badgeLabel = UILabel()
               private let nameLabel = UILabel()
               private let subtitleLabel = UILabel()
+              private let timeLabel = UILabel()
               private let chevron = UIImageView()
-              private var checkView: UIImageView?
 
               override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
                   super.init(style: .default, reuseIdentifier: reuseIdentifier)
@@ -139,6 +131,11 @@ jobs:
                   subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
                   card.addSubview(subtitleLabel)
 
+                  timeLabel.font = .systemFont(ofSize: 11, weight: .light)
+                  timeLabel.textColor = UIColor.white.withAlphaComponent(0.3)
+                  timeLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(timeLabel)
+
                   chevron.image = UIImage(systemName: "chevron.left.circle.fill")
                   chevron.tintColor = UIColor.white.withAlphaComponent(0.15)
                   chevron.contentMode = .scaleAspectFit
@@ -161,12 +158,16 @@ jobs:
 
                       nameLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 12),
                       nameLabel.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
-                      nameLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+                      nameLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
 
                       subtitleLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
                       subtitleLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
-                      subtitleLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3),
-                      subtitleLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+                      subtitleLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
+
+                      timeLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+                      timeLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
+                      timeLabel.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 2),
+                      timeLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
 
                       chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
                       chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
@@ -176,210 +177,196 @@ jobs:
               }
 
               func configure(emoji: String, badgeColor: UIColor, name: String, subtitle: String,
-                             subtitleColor: UIColor, showChevron: Bool, isSelected: Bool, isSelecting: Bool) {
+                             timeRemaining: String, showChevron: Bool) {
                   badgeLabel.text = emoji
                   badge.backgroundColor = badgeColor.withAlphaComponent(0.20)
                   nameLabel.text = name
                   subtitleLabel.text = subtitle
-                  subtitleLabel.textColor = subtitleColor
-                  chevron.isHidden = !showChevron || isSelecting
+                  subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.6)
+                  timeLabel.text = "⏱️ " + timeRemaining
+                  chevron.isHidden = !showChevron
                   chevron.tintColor = badgeColor.withAlphaComponent(0.55)
-
-                  checkView?.removeFromSuperview()
-                  checkView = nil
-                  if isSelecting {
-                      let check = UIImageView(image: UIImage(systemName: isSelected ? "checkmark.circle.fill" : "circle"))
-                      check.tintColor = isSelected
-                          ? UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
-                          : UIColor.white.withAlphaComponent(0.25)
-                      check.contentMode = .scaleAspectFit
-                      check.translatesAutoresizingMaskIntoConstraints = false
-                      card.addSubview(check)
-                      NSLayoutConstraint.activate([
-                          check.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-                          check.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-                          check.widthAnchor.constraint(equalToConstant: 22),
-                          check.heightAnchor.constraint(equalToConstant: 22),
-                      ])
-                      checkView = check
-                  }
-
-                  card.transform = isSelecting && isSelected
-                      ? CGAffineTransform(scaleX: 0.99, y: 0.99)
-                      : .identity
-                  card.layer.borderColor = (isSelecting && isSelected)
-                      ? UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1).cgColor
-                      : UIColor.white.withAlphaComponent(0.05).cgColor
               }
           }
           WEOF
 
-      - name: Generate Source - Unzip Engine
+      - name: Generate Source - Temp Manager
         run: |
           cd ${{ github.workspace }}
-          cat > SimpleUnzip.swift << 'UEOF'
+          cat > TempManager.swift << 'TEOF'
           import UIKit
-          import Compression
-          import UniformTypeIdentifiers
+          import UserNotifications
 
-          // MARK: - Simple ZIP / IPA Extractor
+          class TempManager {
+              static let shared = TempManager()
+              private let userDefaults = UserDefaults.standard
+              private let tempKey = "temp_items"
+              private let expiryKey = "temp_expiry"
+              private var timer: Timer?
+              private var expiryDate: Date?
+              private var onUpdate: (() -> Void)?
 
-          enum UnzipError: Error {
-              case readFailed
-              case invalidArchive
-          }
+              private init() {
+                  loadExpiry()
+                  setupNotifications()
+              }
 
-          final class SimpleUnzip {
-
-              static func extract(zipPath: String, to destDir: String) throws {
-                  guard let data = FileManager.default.contents(atPath: zipPath) else {
-                      throw UnzipError.readFailed
+              struct TempItem: Codable {
+                  let id: String
+                  let name: String
+                  let createdAt: Date
+                  let expiryDuration: TimeInterval
+                  var isExpired: Bool {
+                      Date().timeIntervalSince(createdAt) >= expiryDuration
                   }
-                  let bytes = [UInt8](data)
-                  let length = bytes.count
-
-                  var eocdOffset = -1
-                  var i = length - 22
-                  while i >= 0 {
-                      if bytes[i] == 0x50 && bytes[i+1] == 0x4b && bytes[i+2] == 0x05 && bytes[i+3] == 0x06 {
-                          eocdOffset = i
-                          break
-                      }
-                      i -= 1
-                  }
-                  guard eocdOffset >= 0 else { throw UnzipError.invalidArchive }
-
-                  func readUInt16(_ offset: Int) -> UInt16 {
-                      UInt16(bytes[offset]) | (UInt16(bytes[offset+1]) << 8)
-                  }
-                  func readUInt32(_ offset: Int) -> UInt32 {
-                      UInt32(bytes[offset]) | (UInt32(bytes[offset+1]) << 8) |
-                      (UInt32(bytes[offset+2]) << 16) | (UInt32(bytes[offset+3]) << 24)
-                  }
-
-                  let entryCount = readUInt16(eocdOffset + 10)
-                  let centralDirOffset = Int(readUInt32(eocdOffset + 16))
-
-                  let fm = FileManager.default
-                  try? fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
-
-                  var pos = centralDirOffset
-                  for _ in 0..<entryCount {
-                      guard pos + 46 <= length else { break }
-                      guard readUInt32(pos) == 0x02014b50 else { break }
-
-                      let method = readUInt16(pos + 10)
-                      let compSize = Int(readUInt32(pos + 20))
-                      let nameLen = Int(readUInt16(pos + 28))
-                      let extraLen = Int(readUInt16(pos + 30))
-                      let commentLen = Int(readUInt16(pos + 32))
-                      let localHeaderOffset = Int(readUInt32(pos + 42))
-
-                      let nameBytes = Array(bytes[(pos + 46)..<(pos + 46 + nameLen)])
-                      let fileName = String(bytes: nameBytes, encoding: .utf8) ?? "file_\(pos)"
-
-                      pos += 46 + nameLen + extraLen + commentLen
-
-                      if fileName.hasSuffix("/") {
-                          let dirPath = (destDir as NSString).appendingPathComponent(fileName)
-                          try? fm.createDirectory(atPath: dirPath, withIntermediateDirectories: true)
-                          continue
-                      }
-
-                      guard localHeaderOffset + 30 <= length else { continue }
-                      let localNameLen = Int(readUInt16(localHeaderOffset + 26))
-                      let localExtraLen = Int(readUInt16(localHeaderOffset + 28))
-                      let dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen
-                      guard dataStart + compSize <= length else { continue }
-
-                      let compData = Data(bytes[dataStart..<(dataStart + compSize)])
-                      var outData = Data()
-
-                      if method == 0 {
-                          outData = compData
-                      } else if method == 8 {
-                          outData = decompressRawDeflate(compData) ?? Data()
-                      } else {
-                          continue
-                      }
-
-                      let outPath = (destDir as NSString).appendingPathComponent(fileName)
-                      let outParent = (outPath as NSString).deletingLastPathComponent
-                      try? fm.createDirectory(atPath: outParent, withIntermediateDirectories: true)
-                      fm.createFile(atPath: outPath, contents: outData)
+                  var timeRemaining: String {
+                      let remaining = max(0, expiryDuration - Date().timeIntervalSince(createdAt))
+                      let hours = Int(remaining) / 3600
+                      let minutes = Int(remaining) / 60 % 60
+                      let seconds = Int(remaining) % 60
+                      return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
                   }
               }
 
-              private static func decompressRawDeflate(_ input: Data) -> Data? {
-                  let bufferSize = max(input.count * 8, 1 << 16)
-                  var output = Data(count: bufferSize)
-                  let result = output.withUnsafeMutableBytes { outPtr -> Int in
-                      input.withUnsafeBytes { inPtr -> Int in
-                          compression_decode_buffer(
-                              outPtr.bindMemory(to: UInt8.self).baseAddress!, bufferSize,
-                              inPtr.bindMemory(to: UInt8.self).baseAddress!, input.count,
-                              nil, COMPRESSION_ZLIB
-                          )
+              func startTimer(onUpdate: @escaping () -> Void) {
+                  self.onUpdate = onUpdate
+                  timer?.invalidate()
+                  timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                      self?.checkExpiry()
+                      DispatchQueue.main.async {
+                          self?.onUpdate?()
                       }
                   }
-                  guard result > 0 else { return nil }
-                  return output.prefix(result)
+              }
+
+              func stopTimer() {
+                  timer?.invalidate()
+                  timer = nil
+              }
+
+              private func checkExpiry() {
+                  var items = getItems()
+                  let expired = items.filter { $0.isExpired }
+                  if !expired.isEmpty {
+                      for item in expired {
+                          if let index = items.firstIndex(where: { $0.id == item.id }) {
+                              items.remove(at: index)
+                              sendNotification(for: item)
+                          }
+                      }
+                      saveItems(items)
+                  }
+              }
+
+              func addItem(name: String, duration: TimeInterval) {
+                  var items = getItems()
+                  let item = TempItem(
+                      id: UUID().uuidString,
+                      name: name,
+                      createdAt: Date(),
+                      expiryDuration: duration
+                  )
+                  items.append(item)
+                  saveItems(items)
+                  scheduleNotification(for: item)
+                  onUpdate?()
+              }
+
+              func removeItem(id: String) {
+                  var items = getItems()
+                  items.removeAll { $0.id == id }
+                  saveItems(items)
+                  onUpdate?()
+              }
+
+              func getItems() -> [TempItem] {
+                  guard let data = userDefaults.data(forKey: tempKey),
+                        let items = try? JSONDecoder().decode([TempItem].self, from: data) else {
+                      return []
+                  }
+                  return items
+              }
+
+              private func saveItems(_ items: [TempItem]) {
+                  if let data = try? JSONEncoder().encode(items) {
+                      userDefaults.set(data, forKey: tempKey)
+                  }
+              }
+
+              private func loadExpiry() {
+                  // Default expiry: 24 hours
+                  let defaultExpiry = Date().addingTimeInterval(86400)
+                  expiryDate = userDefaults.object(forKey: expiryKey) as? Date ?? defaultExpiry
+              }
+
+              private func setupNotifications() {
+                  UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                      if granted {
+                          print("✅ Notification permission granted")
+                      } else if let error = error {
+                          print("❌ Notification error: \(error)")
+                      }
+                  }
+              }
+
+              private func scheduleNotification(for item: TempItem) {
+                  let content = UNMutableNotificationContent()
+                  content.title = "⏰ انتهاء المدة المؤقتة"
+                  content.body = "انتهت المدة المحددة للملف '\(item.name)'"
+                  content.sound = .default
+
+                  let trigger = UNTimeIntervalNotificationTrigger(
+                      timeInterval: item.expiryDuration,
+                      repeats: false
+                  )
+
+                  let request = UNNotificationRequest(
+                      identifier: item.id,
+                      content: content,
+                      trigger: trigger
+                  )
+
+                  UNUserNotificationCenter.current().add(request)
+              }
+
+              private func sendNotification(for item: TempItem) {
+                  let content = UNMutableNotificationContent()
+                  content.title = "⏰ انتهاء المدة المؤقتة"
+                  content.body = "تم حذف الملف '\(item.name)' تلقائياً"
+                  content.sound = .default
+
+                  let request = UNNotificationRequest(
+                      identifier: item.id + "_expired",
+                      content: content,
+                      trigger: nil
+                  )
+
+                  UNUserNotificationCenter.current().add(request)
+              }
+
+              func getRemainingTime(for id: String) -> String {
+                  let items = getItems()
+                  guard let item = items.first(where: { $0.id == id }) else { return "00:00:00" }
+                  return item.timeRemaining
               }
           }
+          TEOF
 
-          UEOF
-
-      - name: Generate Source - File Browser Core
+      - name: Generate Source - Temp Browser Core
         run: |
           cd ${{ github.workspace }}
-          cat > FileBrowserCore.swift << 'CEOF'
+          cat > TempBrowserCore.swift << 'CEOF'
           import UIKit
           import UniformTypeIdentifiers
 
-          // MARK: - File Browser (متصفح ملفات هرمي بالكامل)
-
-          final class FileBrowserViewController: UITableViewController, UIDocumentPickerDelegate, UISearchResultsUpdating {
-
-              // المسار النسبي داخل مجلد Documents، فارغ يعني الجذر
-              let relativePath: String
+          final class TempBrowserViewController: UITableViewController, UIDocumentPickerDelegate {
               let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-
-              var allItems: [FileItem] = []
-              var filteredItems: [FileItem] = []
-              var sortByDate = false
-              var isSelecting = false
-              var selectedPaths: Set<String> = []
-
-              let searchController = UISearchController(searchResultsController: nil)
-
+              var allItems: [TempManager.TempItem] = []
+              var filteredItems: [TempManager.TempItem] = []
               let accentPurple = UIColor(red: 124/255, green: 58/255, blue: 237/255, alpha: 1)
               let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
               let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
               let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-
-              init(relativePath: String) {
-                  self.relativePath = relativePath
-                  super.init(style: .plain)
-              }
-
-              required init?(coder: NSCoder) {
-                  self.relativePath = ""
-                  super.init(coder: coder)
-              }
-
-              var fullPath: String {
-                  relativePath.isEmpty ? documentsPath : (documentsPath as NSString).appendingPathComponent(relativePath)
-              }
-
-              var isRoot: Bool { relativePath.isEmpty }
-
-              struct FileItem {
-                  let name: String
-                  let relPath: String
-                  let isDirectory: Bool
-                  let size: Int64
-                  let modified: Date
-              }
 
               let emptyLabel: UILabel = {
                   let label = UILabel()
@@ -392,15 +379,15 @@ jobs:
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  title = isRoot ? "21s" : (relativePath as NSString).lastPathComponent
+                  title = "⏱️ مؤقت"
                   view.backgroundColor = bgDark
                   tableView.backgroundColor = bgDark
                   tableView.separatorStyle = .none
-                  tableView.rowHeight = 74
-                  tableView.register(FileCell.self, forCellReuseIdentifier: FileCell.reuseID)
+                  tableView.rowHeight = 88
+                  tableView.register(TempFileCell.self, forCellReuseIdentifier: TempFileCell.reuseID)
 
                   navigationController?.navigationBar.prefersLargeTitles = true
-                  navigationItem.largeTitleDisplayMode = isRoot ? .always : .never
+                  navigationItem.largeTitleDisplayMode = .always
                   navigationController?.navigationBar.barTintColor = bgDark
                   navigationController?.navigationBar.tintColor = accentTeal
                   navigationController?.navigationBar.titleTextAttributes = [
@@ -415,16 +402,6 @@ jobs:
                   if #available(iOS 13.0, *) {
                       overrideUserInterfaceStyle = .dark
                   }
-                  navigationController?.toolbar.barTintColor = bgDark
-                  navigationController?.toolbar.tintColor = accentTeal
-                  navigationController?.toolbar.isTranslucent = false
-
-                  searchController.searchResultsUpdater = self
-                  searchController.obscuresBackgroundDuringPresentation = false
-                  searchController.searchBar.placeholder = "بحث في الملفات"
-                  searchController.searchBar.tintColor = accentTeal
-                  navigationItem.searchController = searchController
-                  definesPresentationContext = true
 
                   setupToolbar()
 
@@ -433,106 +410,27 @@ jobs:
                   refresh.addTarget(self, action: #selector(pullToRefresh), for: .valueChanged)
                   tableView.refreshControl = refresh
 
+                  TempManager.shared.startTimer { [weak self] in
+                      self?.reload()
+                  }
+
                   reload()
               }
 
-              override func viewWillAppear(_ animated: Bool) {
-                  super.viewWillAppear(animated)
-                  navigationController?.setToolbarHidden(false, animated: animated)
-                  reload()
+              override func viewWillDisappear(_ animated: Bool) {
+                  super.viewWillDisappear(animated)
+                  TempManager.shared.stopTimer()
               }
 
               func setupToolbar() {
-                  let sortBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.up.arrow.down"), style: .plain, target: self, action: #selector(toggleSort))
-                  sortBtn.tintColor = accentTeal
-                  let selectBtn = UIBarButtonItem(title: isSelecting ? "تم" : "تحديد", style: .plain, target: self, action: #selector(toggleSelectMode))
-                  selectBtn.tintColor = accentTeal
-                  navigationItem.rightBarButtonItems = [selectBtn, sortBtn]
-                  updateBottomToolbar()
-              }
-
-              func updateBottomToolbar() {
                   let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-
-                  if isSelecting {
-                      let count = selectedPaths.count
-                      let mergeBtn = UIBarButtonItem(title: "🔗 دمج PDF", style: .plain, target: self, action: #selector(mergeSelectedTapped))
-                      mergeBtn.tintColor = accentTeal
-                      mergeBtn.isEnabled = count >= 2
-                      let shareBtn = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.up"), style: .plain, target: self, action: #selector(shareSelectedTapped))
-                      shareBtn.tintColor = accentTeal
-                      shareBtn.isEnabled = count >= 1
-                      let deleteBtn = UIBarButtonItem(image: UIImage(systemName: "trash"), style: .plain, target: self, action: #selector(deleteSelectedTapped))
-                      deleteBtn.tintColor = .systemRed
-                      deleteBtn.isEnabled = count >= 1
-                      let countLabel = UIBarButtonItem(title: "\(count) محدد", style: .plain, target: nil, action: nil)
-                      countLabel.tintColor = UIColor.white.withAlphaComponent(0.4)
-                      countLabel.isEnabled = false
-                      toolbarItems = [deleteBtn, flex, countLabel, flex, mergeBtn, flex, shareBtn]
-                  } else if isRoot {
-                      let importBtn = UIBarButtonItem(title: "📂  استيراد", style: .plain, target: self, action: #selector(importFilesTapped))
-                      importBtn.tintColor = accentTeal
-                      toolbarItems = [flex, importBtn, flex]
-                  } else {
-                      let newFolderBtn = UIBarButtonItem(title: "📁  مجلد جديد", style: .plain, target: self, action: #selector(newFolderTapped))
-                      newFolderBtn.tintColor = accentTeal
-                      toolbarItems = [flex, newFolderBtn, flex]
-                  }
-              }
-
-              @objc func toggleSort() {
-                  sortByDate.toggle()
-                  reload()
-                  showToast(sortByDate ? "🕒 الترتيب حسب الأحدث" : "🔤 الترتيب أبجدياً")
-              }
-
-              @objc func toggleSelectMode() {
-                  isSelecting.toggle()
-                  if !isSelecting { selectedPaths.removeAll() }
-                  tableView.setEditing(false, animated: true)
-                  setupToolbar()
-                  tableView.reloadData()
-              }
-
-              @objc func mergeSelectedTapped() {
-                  let items = allItems.filter { selectedPaths.contains($0.relPath) && isPDF($0) }
-                  guard items.count >= 2 else {
-                      showAlert(title: "⚠️ اختر ملفي PDF على الأقل", message: "عملية الدمج تتطلب تحديد ملفي PDF أو أكثر")
-                      return
-                  }
-                  mergePDFs(items)
-              }
-
-              @objc func shareSelectedTapped() {
-                  let urls = allItems
-                      .filter { selectedPaths.contains($0.relPath) }
-                      .map { URL(fileURLWithPath: (documentsPath as NSString).appendingPathComponent($0.relPath)) }
-                  guard !urls.isEmpty else { return }
-                  let activityVC = UIActivityViewController(activityItems: urls, applicationActivities: nil)
-                  if let popover = activityVC.popoverPresentationController {
-                      popover.sourceView = view
-                      popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-                  }
-                  present(activityVC, animated: true)
-              }
-
-              @objc func deleteSelectedTapped() {
-                  let items = allItems.filter { selectedPaths.contains($0.relPath) }
-                  guard !items.isEmpty else { return }
-                  let alert = UIAlertController(title: "🗑️ حذف \(items.count) عنصر؟", message: "لا يمكن التراجع عن هذا الإجراء", preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive, handler: { [weak self] _ in
-                      guard let self = self else { return }
-                      for entry in items {
-                          let full = (self.documentsPath as NSString).appendingPathComponent(entry.relPath)
-                          try? FileManager.default.removeItem(atPath: full)
-                      }
-                      self.selectedPaths.removeAll()
-                      self.isSelecting = false
-                      self.setupToolbar()
-                      self.reload()
-                  }))
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
+                  let importBtn = UIBarButtonItem(title: "📂 إضافة مؤقت", style: .plain, target: self, action: #selector(importFilesTapped))
+                  importBtn.tintColor = accentTeal
+                  toolbarItems = [flex, importBtn, flex]
+                  navigationController?.setToolbarHidden(false, animated: true)
+                  navigationController?.toolbar.barTintColor = bgDark
+                  navigationController?.toolbar.tintColor = accentTeal
+                  navigationController?.toolbar.isTranslucent = false
               }
 
               @objc func pullToRefresh() {
@@ -541,44 +439,12 @@ jobs:
               }
 
               func reload() {
-                  let fm = FileManager.default
-                  var items: [FileItem] = []
-                  if let names = try? fm.contentsOfDirectory(atPath: fullPath) {
-                      for name in names {
-                          let itemFull = (fullPath as NSString).appendingPathComponent(name)
-                          var isDir: ObjCBool = false
-                          fm.fileExists(atPath: itemFull, isDirectory: &isDir)
-                          let attrs = try? fm.attributesOfItem(atPath: itemFull)
-                          let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-                          let modified = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
-                          let relPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
-                          items.append(FileItem(name: name, relPath: relPath, isDirectory: isDir.boolValue, size: size, modified: modified))
-                      }
-                  }
-                  if sortByDate {
-                      items.sort { $0.modified > $1.modified }
-                  } else {
-                      items.sort {
-                          if $0.isDirectory != $1.isDirectory { return $0.isDirectory && !$1.isDirectory }
-                          return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                      }
-                  }
-                  allItems = items
-                  filteredItems = items
-                  emptyLabel.text = isRoot
-                      ? "📭  لا توجد ملفات بعد\nاضغط \"استيراد\" لإضافة ملف من جهازك"
-                      : "📭  المجلد فارغ"
-                  tableView.backgroundView = items.isEmpty ? emptyLabel : nil
+                  allItems = TempManager.shared.getItems()
+                  filteredItems = allItems
+                  emptyLabel.text = "📭  لا توجد ملفات مؤقتة\nاضغط \"إضافة مؤقت\" لإضافة ملف بمدة محددة"
+                  tableView.backgroundView = allItems.isEmpty ? emptyLabel : nil
                   tableView.reloadData()
               }
-
-              func updateSearchResults(for searchController: UISearchController) {
-                  let query = searchController.searchBar.text?.lowercased() ?? ""
-                  filteredItems = query.isEmpty ? allItems : allItems.filter { $0.name.lowercased().contains(query) }
-                  tableView.reloadData()
-              }
-
-              // MARK: - استيراد من تطبيق الملفات
 
               @objc func importFilesTapped() {
                   let picker: UIDocumentPickerViewController
@@ -593,129 +459,47 @@ jobs:
               }
 
               func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+                  let alert = UIAlertController(title: "⏱️ المدة المؤقتة", message: "اختر المدة التي سيظل فيها الملف موجوداً", preferredStyle: .alert)
+                  let durations: [(String, TimeInterval)] = [
+                      ("1 دقيقة", 60),
+                      ("5 دقائق", 300),
+                      ("15 دقيقة", 900),
+                      ("30 دقيقة", 1800),
+                      ("1 ساعة", 3600),
+                      ("6 ساعات", 21600),
+                      ("12 ساعة", 43200),
+                      ("24 ساعة", 86400),
+                  ]
+                  for (label, duration) in durations {
+                      alert.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
+                          self?.importFiles(urls: urls, duration: duration)
+                      })
+                  }
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+
+              private func importFiles(urls: [URL], duration: TimeInterval) {
                   let fm = FileManager.default
                   var count = 0
                   for url in urls {
-                      let dest = (fullPath as NSString).appendingPathComponent(url.lastPathComponent)
+                      let dest = (documentsPath as NSString).appendingPathComponent(url.lastPathComponent)
                       try? fm.removeItem(atPath: dest)
-                      if (try? fm.copyItem(atPath: url.path, toPath: dest)) != nil { count += 1 }
-                  }
-                  reload()
-                  showToast("✅ تم استيراد \(count) ملف — اضغط على أي أرشيف لاستخراجه تلقائياً")
-              }
-
-              @objc func newFolderTapped() {
-                  let alert = UIAlertController(title: "📁 مجلد جديد", message: nil, preferredStyle: .alert)
-                  alert.addTextField { $0.placeholder = "اسم المجلد" }
-                  alert.addAction(UIAlertAction(title: "إنشاء", style: .default, handler: { [weak self, weak alert] _ in
-                      guard let self = self, let name = alert?.textFields?.first?.text, !name.isEmpty else { return }
-                      let dest = (self.fullPath as NSString).appendingPathComponent(name)
-                      try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
-                      self.reload()
-                  }))
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-
-              // MARK: - الاستخراج التلقائي ثم الانتقال مباشرة للمشروع المفكوك
-
-              func extractArchive(_ item: FileItem) {
-                  let zipPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let destName = (item.name as NSString).deletingPathExtension + "_extracted"
-                  let destRelPath = relativePath.isEmpty ? destName : "\(relativePath)/\(destName)"
-                  let destDir = (documentsPath as NSString).appendingPathComponent(destRelPath)
-
-                  let progress = UIAlertController(title: "📦 جارِ الاستخراج...", message: item.name, preferredStyle: .alert)
-                  present(progress, animated: true)
-
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
-                      do {
-                          try SimpleUnzip.extract(zipPath: zipPath, to: destDir)
-                          DispatchQueue.main.async {
-                              progress.dismiss(animated: true) {
-                                  self.reload()
-                                  let browser = FileBrowserViewController(relativePath: destRelPath)
-                                  self.navigationController?.pushViewController(browser, animated: true)
-                              }
-                          }
-                      } catch {
-                          DispatchQueue.main.async {
-                              progress.dismiss(animated: true) {
-                                  self.showAlert(title: "❌ فشل الاستخراج", message: "تعذر استخراج \(item.name)")
-                              }
-                          }
+                      if (try? fm.copyItem(atPath: url.path, toPath: dest)) != nil {
+                          count += 1
+                          TempManager.shared.addItem(name: url.lastPathComponent, duration: duration)
                       }
                   }
+                  reload()
+                  showToast("✅ تم إضافة \(count) ملف لمدة \(formatDuration(duration))")
               }
 
-              // MARK: - عارض Info.plist (اطّلاع فقط، بدون تعديل)
-
-              func showPlistInspector(for item: FileItem) {
-                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  guard let data = FileManager.default.contents(atPath: fullItemPath),
-                        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-                      showAlert(title: "⚠️ تعذرت القراءة", message: "الملف ليس Property List صالح")
-                      return
-                  }
-                  let inspector = PlistInspectorViewController(fileName: item.name, values: plist)
-                  navigationController?.pushViewController(inspector, animated: true)
-              }
-
-              // MARK: - عارض نصوص بسيط
-
-              func showTextPreview(for item: FileItem) {
-                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let text = (try? String(contentsOfFile: fullItemPath, encoding: .utf8)) ?? "تعذّرت قراءة الملف كنص"
-                  let viewer = TextPreviewViewController(fileName: item.name, text: text)
-                  navigationController?.pushViewController(viewer, animated: true)
-              }
-
-              // MARK: - مشاركة / إعادة تسمية / حذف
-
-              func shareFile(_ item: FileItem) {
-                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let url = URL(fileURLWithPath: fullItemPath)
-                  let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                  if let popover = activityVC.popoverPresentationController {
-                      popover.sourceView = view
-                      popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-                  }
-                  present(activityVC, animated: true)
-              }
-
-              func renameItem(_ item: FileItem) {
-                  let alert = UIAlertController(title: "✏️ إعادة تسمية", message: nil, preferredStyle: .alert)
-                  alert.addTextField { $0.text = item.name }
-                  alert.addAction(UIAlertAction(title: "حفظ", style: .default, handler: { [weak self, weak alert] _ in
-                      guard let self = self, let newName = alert?.textFields?.first?.text, !newName.isEmpty else { return }
-                      let oldFull = (self.documentsPath as NSString).appendingPathComponent(item.relPath)
-                      let newFull = (self.fullPath as NSString).appendingPathComponent(newName)
-                      try? FileManager.default.moveItem(atPath: oldFull, toPath: newFull)
-                      self.reload()
-                  }))
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-
-              func deleteItem(_ item: FileItem) {
-                  let alert = UIAlertController(title: "🗑️ حذف \"\(item.name)\"؟", message: "لا يمكن التراجع عن هذا الإجراء", preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive, handler: { [weak self] _ in
-                      guard let self = self else { return }
-                      let fullItemPath = (self.documentsPath as NSString).appendingPathComponent(item.relPath)
-                      try? FileManager.default.removeItem(atPath: fullItemPath)
-                      self.reload()
-                  }))
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-
-              // MARK: - أدوات مساعدة (تنبيهات وتوست)
-
-              func showAlert(title: String, message: String) {
-                  let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                  present(alert, animated: true)
+              private func formatDuration(_ duration: TimeInterval) -> String {
+                  let hours = Int(duration) / 3600
+                  let minutes = Int(duration) / 60 % 60
+                  if hours > 0 { return "\(hours) ساعة" }
+                  if minutes > 0 { return "\(minutes) دقيقة" }
+                  return "\(Int(duration)) ثانية"
               }
 
               func showToast(_ text: String) {
@@ -744,60 +528,32 @@ jobs:
           }
           CEOF
 
-      - name: Generate Source - File Browser Table
+      - name: Generate Source - Temp Browser Table
         run: |
           cd ${{ github.workspace }}
-          cat > FileBrowserTable.swift << 'TEOF'
+          cat > TempBrowserTable.swift << 'TEOF'
           import UIKit
 
-          extension FileBrowserViewController {
+          extension TempBrowserViewController {
 
-              // MARK: - أيقونة ولون لكل نوع
-
-              func icon(for item: FileItem) -> String {
-                  if item.isDirectory { return item.name.hasSuffix("_extracted") ? "📱" : "🗂️" }
+              func icon(for item: TempManager.TempItem) -> String {
                   let lower = item.name.lowercased()
-                  if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return "📦" }
                   if lower.hasSuffix(".pdf") { return "📕" }
                   if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return "🖼️" }
                   if lower.hasSuffix(".txt") || lower.hasSuffix(".md") { return "📄" }
                   if lower.hasSuffix(".plist") { return "🧩" }
                   if lower.hasSuffix(".json") { return "🧾" }
+                  if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return "📦" }
                   return "📁"
               }
 
-              func badgeColor(for item: FileItem) -> UIColor {
-                  if item.isDirectory {
-                      return item.name.hasSuffix("_extracted") ? accentPurple : accentTeal
-                  }
-                  let lower = item.name.lowercased()
-                  if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return UIColor(red: 234/255, green: 158/255, blue: 46/255, alpha: 1) }
-                  if lower.hasSuffix(".pdf") { return UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1) }
-                  if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return UIColor(red: 236/255, green: 72/255, blue: 153/255, alpha: 1) }
-                  if lower.hasSuffix(".txt") || lower.hasSuffix(".md") || lower.hasSuffix(".json") { return UIColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1) }
-                  if lower.hasSuffix(".plist") { return accentPurple }
-                  return UIColor.white.withAlphaComponent(0.3)
+              func badgeColor(for item: TempManager.TempItem) -> UIColor {
+                  let remaining = Date().timeIntervalSince(item.createdAt)
+                  let progress = remaining / item.expiryDuration
+                  if progress < 0.3 { return UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1) }
+                  if progress < 0.6 { return UIColor(red: 234/255, green: 158/255, blue: 46/255, alpha: 1) }
+                  return UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)
               }
-
-              func isArchive(_ item: FileItem) -> Bool {
-                  let lower = item.name.lowercased()
-                  return !item.isDirectory && (lower.hasSuffix(".zip") || lower.hasSuffix(".ipa"))
-              }
-
-              func isPDF(_ item: FileItem) -> Bool {
-                  !item.isDirectory && item.name.lowercased().hasSuffix(".pdf")
-              }
-
-              func isPlist(_ item: FileItem) -> Bool {
-                  !item.isDirectory && item.name.lowercased().hasSuffix(".plist")
-              }
-
-              func isText(_ item: FileItem) -> Bool {
-                  let lower = item.name.lowercased()
-                  return !item.isDirectory && (lower.hasSuffix(".txt") || lower.hasSuffix(".md") || lower.hasSuffix(".json"))
-              }
-
-              // MARK: - UITableView
 
               override func numberOfSections(in tableView: UITableView) -> Int { 1 }
 
@@ -806,33 +562,23 @@ jobs:
               }
 
               override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-                  filteredItems.isEmpty ? nil : (isRoot ? "الملفات (\(filteredItems.count))" : "المحتوى (\(filteredItems.count))")
+                  filteredItems.isEmpty ? nil : "الملفات المؤقتة (\(filteredItems.count))"
               }
 
               override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let cell = tableView.dequeueReusableCell(withIdentifier: FileCell.reuseID, for: indexPath) as! FileCell
+                  let cell = tableView.dequeueReusableCell(withIdentifier: TempFileCell.reuseID, for: indexPath) as! TempFileCell
                   let item = filteredItems[indexPath.row]
 
-                  let sizeText = item.isDirectory ? "مجلد" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
-                  var hint = ""
-                  if isArchive(item) { hint = " • اضغط للاستخراج التلقائي" }
-                  else if item.isDirectory { hint = " • اضغط للتصفح" }
-                  else if isPDF(item) { hint = " • اضغط للعرض والتوقيع" }
-                  else if isPlist(item) { hint = " • اضغط للمعاينة" }
-
-                  let subtitleColor = (isArchive(item) || item.isDirectory || isPDF(item))
-                      ? accentTeal : UIColor.white.withAlphaComponent(0.4)
-                  let showChevron = item.isDirectory || isArchive(item) || isPDF(item) || isPlist(item) || isText(item)
+                  let timeRemaining = item.timeRemaining
+                  let sizeText = "⏱️ ينتهي خلال:"
 
                   cell.configure(
                       emoji: icon(for: item),
                       badgeColor: badgeColor(for: item),
                       name: item.name,
-                      subtitle: "\(sizeText)\(hint)",
-                      subtitleColor: subtitleColor,
-                      showChevron: showChevron,
-                      isSelected: selectedPaths.contains(item.relPath),
-                      isSelecting: isSelecting
+                      subtitle: sizeText,
+                      timeRemaining: timeRemaining,
+                      showChevron: true
                   )
                   return cell
               }
@@ -840,580 +586,54 @@ jobs:
               override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
                   tableView.deselectRow(at: indexPath, animated: true)
                   let item = filteredItems[indexPath.row]
-
-                  if isSelecting {
-                      if selectedPaths.contains(item.relPath) {
-                          selectedPaths.remove(item.relPath)
-                      } else {
-                          selectedPaths.insert(item.relPath)
-                      }
-                      updateBottomToolbar()
-                      tableView.reloadRows(at: [indexPath], with: .none)
-                      return
-                  }
-
-                  if item.isDirectory {
-                      let browser = FileBrowserViewController(relativePath: item.relPath)
-                      navigationController?.pushViewController(browser, animated: true)
-                  } else if isArchive(item) {
-                      extractArchive(item)
-                  } else if isPDF(item) {
-                      openPDFViewer(for: item)
-                  } else if isPlist(item) {
-                      showPlistInspector(for: item)
-                  } else if isText(item) {
-                      showTextPreview(for: item)
-                  } else {
-                      shareFile(item)
-                  }
+                  showItemDetails(item)
               }
 
               override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
                   let item = filteredItems[indexPath.row]
-                  var actions: [UIContextualAction] = []
-
                   let delete = UIContextualAction(style: .destructive, title: "حذف") { [weak self] _, _, done in
                       self?.deleteItem(item)
                       done(true)
                   }
-                  actions.append(delete)
-
-                  let duplicate = UIContextualAction(style: .normal, title: "تكرار") { [weak self] _, _, done in
-                      self?.duplicateItem(item)
-                      done(true)
-                  }
-                  duplicate.backgroundColor = UIColor(red: 100/255, green: 100/255, blue: 132/255, alpha: 1)
-                  actions.append(duplicate)
-
-                  let rename = UIContextualAction(style: .normal, title: "إعادة تسمية") { [weak self] _, _, done in
-                      self?.renameItem(item)
-                      done(true)
-                  }
-                  rename.backgroundColor = accentPurple
-                  actions.append(rename)
-
-                  if isPDF(item) {
-                      let sign = UIContextualAction(style: .normal, title: "توقيع") { [weak self] _, _, done in
-                          self?.signPDF(item)
-                          done(true)
-                      }
-                      sign.backgroundColor = UIColor(red: 234/255, green: 88/255, blue: 12/255, alpha: 1)
-                      actions.append(sign)
-                  }
-
-                  let share = UIContextualAction(style: .normal, title: "مشاركة") { [weak self] _, _, done in
-                      self?.shareFile(item)
-                      done(true)
-                  }
-                  share.backgroundColor = accentTeal
-                  actions.append(share)
-
-                  return UISwipeActionsConfiguration(actions: actions)
+                  return UISwipeActionsConfiguration(actions: [delete])
               }
 
-              override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-                  let item = filteredItems[indexPath.row]
-                  guard isPDF(item) else { return nil }
-                  let sign = UIContextualAction(style: .normal, title: "✍️ توقيع") { [weak self] _, _, done in
-                      self?.signPDF(item)
-                      done(true)
-                  }
-                  sign.backgroundColor = UIColor(red: 234/255, green: 88/255, blue: 12/255, alpha: 1)
-                  return UISwipeActionsConfiguration(actions: [sign])
+              func deleteItem(_ item: TempManager.TempItem) {
+                  let alert = UIAlertController(title: "🗑️ حذف \"\(item.name)\"؟", message: "سيتم حذف الملف نهائياً", preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive) { [weak self] _ in
+                      TempManager.shared.removeItem(id: item.id)
+                      self?.reload()
+                  })
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+
+              func showItemDetails(_ item: TempManager.TempItem) {
+                  let alert = UIAlertController(
+                      title: "📄 \(item.name)",
+                      message: """
+                      📅 تاريخ الإنشاء: \(formattedDate(item.createdAt))
+                      ⏱️ المدة المتبقية: \(item.timeRemaining)
+                      📊 نسبة انتهاء: \(String(format: "%.0f%%", min(100, (Date().timeIntervalSince(item.createdAt) / item.expiryDuration) * 100)))
+                      """,
+                      preferredStyle: .alert
+                  )
+                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive) { [weak self] _ in
+                      TempManager.shared.removeItem(id: item.id)
+                      self?.reload()
+                  })
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+
+              private func formattedDate(_ date: Date) -> String {
+                  let formatter = DateFormatter()
+                  formatter.dateStyle = .medium
+                  formatter.timeStyle = .medium
+                  return formatter.string(from: date)
               }
           }
           TEOF
-
-      - name: Generate Source - Viewers
-        run: |
-          cd ${{ github.workspace }}
-          cat > Viewers.swift << 'VEOF'
-          import UIKit
-
-          // MARK: - عارض قيم Info.plist (اطّلاع فقط)
-
-          final class PlistInspectorViewController: UITableViewController {
-              let fileName: String
-              let rows: [(String, String)]
-
-              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
-
-              init(fileName: String, values: [String: Any]) {
-                  self.fileName = fileName
-                  self.rows = values
-                      .map { (String(describing: $0.key), String(describing: $0.value)) }
-                      .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
-                  super.init(style: .plain)
-              }
-
-              required init?(coder: NSCoder) {
-                  self.fileName = ""
-                  self.rows = []
-                  super.init(coder: coder)
-              }
-
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = "🧩 \(fileName)"
-                  view.backgroundColor = bgDark
-                  tableView.backgroundColor = bgDark
-                  tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
-                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
-              }
-
-              override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
-
-              override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "plistCell")
-                  let (key, value) = rows[indexPath.row]
-                  cell.backgroundColor = cardDark
-                  cell.textLabel?.text = key
-                  cell.textLabel?.textColor = accentTeal
-                  cell.textLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
-                  cell.detailTextLabel?.text = value
-                  cell.detailTextLabel?.textColor = .white
-                  cell.detailTextLabel?.numberOfLines = 3
-                  cell.selectionStyle = .none
-                  return cell
-              }
-          }
-
-          // MARK: - عارض نصوص بسيط
-
-          final class TextPreviewViewController: UIViewController {
-              let fileName: String
-              let text: String
-              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-
-              init(fileName: String, text: String) {
-                  self.fileName = fileName
-                  self.text = text
-                  super.init(nibName: nil, bundle: nil)
-              }
-
-              required init?(coder: NSCoder) {
-                  self.fileName = ""
-                  self.text = ""
-                  super.init(coder: coder)
-              }
-
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = fileName
-                  view.backgroundColor = bgDark
-                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
-
-                  let textView = UITextView(frame: view.bounds)
-                  textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  textView.backgroundColor = bgDark
-                  textView.textColor = .white
-                  textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-                  textView.text = text
-                  textView.isEditable = false
-                  textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
-                  view.addSubview(textView)
-              }
-          }
-
-          VEOF
-
-      - name: Generate Source - PDF Tools (توقيع / دمج / عرض)
-        run: |
-          cd ${{ github.workspace }}
-          cat > PDFTools.swift << 'PEOF'
-          import UIKit
-          import PDFKit
-
-          // MARK: - لوحة رسم التوقيع بإصبعك
-
-          final class SignatureDrawView: UIView {
-              private var paths: [UIBezierPath] = []
-              private var currentPath = UIBezierPath()
-              var strokeColor: UIColor = .white
-              var lineWidth: CGFloat = 3.5
-
-              override init(frame: CGRect) {
-                  super.init(frame: frame)
-                  backgroundColor = .clear
-                  isMultipleTouchEnabled = false
-              }
-              required init?(coder: NSCoder) { super.init(coder: coder) }
-
-              var isEmpty: Bool { paths.isEmpty }
-
-              func clear() {
-                  paths.removeAll()
-                  currentPath = UIBezierPath()
-                  setNeedsDisplay()
-              }
-
-              override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-                  guard let point = touches.first?.location(in: self) else { return }
-                  currentPath = UIBezierPath()
-                  currentPath.lineWidth = lineWidth
-                  currentPath.lineCapStyle = .round
-                  currentPath.lineJoinStyle = .round
-                  currentPath.move(to: point)
-              }
-
-              override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-                  guard let point = touches.first?.location(in: self) else { return }
-                  currentPath.addLine(to: point)
-                  setNeedsDisplay()
-              }
-
-              override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-                  paths.append(currentPath)
-                  currentPath = UIBezierPath()
-                  setNeedsDisplay()
-              }
-
-              override func draw(_ rect: CGRect) {
-                  strokeColor.setStroke()
-                  for path in paths { path.stroke() }
-                  currentPath.stroke()
-              }
-
-              /// يصدّر التوقيع كصورة بخلفية شفافة لوضعها فوق صفحة PDF
-              func exportImage() -> UIImage? {
-                  guard !isEmpty else { return nil }
-                  let renderer = UIGraphicsImageRenderer(size: bounds.size)
-                  return renderer.image { _ in
-                      strokeColor.setStroke()
-                      for path in paths { path.stroke() }
-                  }
-              }
-          }
-
-          // MARK: - شاشة التوقيع (مودال)
-
-          final class SignatureViewController: UIViewController {
-              var onComplete: ((UIImage) -> Void)?
-              private let drawView = SignatureDrawView()
-              private let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              private let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
-
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  view.backgroundColor = bgDark
-                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
-                  title = "✍️ ارسم توقيعك"
-
-                  navigationItem.leftBarButtonItem = UIBarButtonItem(title: "إلغاء", style: .plain, target: self, action: #selector(cancelTapped))
-                  let doneBtn = UIBarButtonItem(title: "استخدام التوقيع", style: .done, target: self, action: #selector(doneTapped))
-                  doneBtn.tintColor = accentTeal
-                  navigationItem.rightBarButtonItem = doneBtn
-
-                  let hint = UILabel()
-                  hint.text = "استخدم إصبعك للتوقيع داخل الإطار بالأسفل"
-                  hint.textColor = UIColor.white.withAlphaComponent(0.4)
-                  hint.font = .systemFont(ofSize: 13, weight: .medium)
-                  hint.textAlignment = .center
-                  hint.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(hint)
-
-                  let card = UIView()
-                  card.backgroundColor = cardDark
-                  card.layer.cornerRadius = 20
-                  card.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(card)
-
-                  drawView.strokeColor = .white
-                  drawView.translatesAutoresizingMaskIntoConstraints = false
-                  card.addSubview(drawView)
-
-                  let clearBtn = UIButton(type: .system)
-                  clearBtn.setTitle("🗑️  مسح التوقيع", for: .normal)
-                  clearBtn.setTitleColor(UIColor.white.withAlphaComponent(0.6), for: .normal)
-                  clearBtn.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
-                  clearBtn.addTarget(self, action: #selector(clearTapped), for: .touchUpInside)
-                  clearBtn.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(clearBtn)
-
-                  NSLayoutConstraint.activate([
-                      hint.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-                      hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-
-                      card.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 16),
-                      card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-                      card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-                      card.heightAnchor.constraint(equalToConstant: 260),
-
-                      drawView.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
-                      drawView.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
-                      drawView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
-                      drawView.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
-
-                      clearBtn.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 16),
-                      clearBtn.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                  ])
-              }
-
-              @objc private func clearTapped() { drawView.clear() }
-              @objc private func cancelTapped() { dismiss(animated: true) }
-              @objc private func doneTapped() {
-                  guard let image = drawView.exportImage() else {
-                      let alert = UIAlertController(title: "⚠️ لا يوجد توقيع", message: "ارسم توقيعك أولاً بإصبعك", preferredStyle: .alert)
-                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                      present(alert, animated: true)
-                      return
-                  }
-                  dismiss(animated: true) { [weak self] in self?.onComplete?(image) }
-              }
-          }
-
-          // MARK: - أنوتيشن مخصص لرسم صورة التوقيع فوق صفحة PDF
-
-          final class SignatureStampAnnotation: PDFAnnotation {
-              private let stampImage: UIImage
-
-              init(bounds: CGRect, image: UIImage) {
-                  self.stampImage = image
-                  super.init(bounds: bounds, forType: .stamp, withProperties: nil)
-              }
-
-              required init?(coder: NSCoder) { fatalError("init(coder:) غير مدعوم") }
-
-              override func draw(with box: PDFDisplayBox, in context: CGContext) {
-                  guard let cgImage = stampImage.cgImage else { return }
-                  context.saveGState()
-                  context.draw(cgImage, in: bounds)
-                  context.restoreGState()
-              }
-          }
-
-          // MARK: - عارض PDF كامل (تصفح + توقيع + تكرار + دمج + مشاركة)
-
-          final class PDFViewerViewController: UIViewController {
-              private let fileURL: URL
-              private let fileName: String
-              private weak var browser: FileBrowserViewController?
-              private let item: FileBrowserViewController.FileItem
-              private let pdfView = PDFView()
-
-              private let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
-
-              init(fileURL: URL, fileName: String, browser: FileBrowserViewController, item: FileBrowserViewController.FileItem) {
-                  self.fileURL = fileURL
-                  self.fileName = fileName
-                  self.browser = browser
-                  self.item = item
-                  super.init(nibName: nil, bundle: nil)
-              }
-              required init?(coder: NSCoder) { fatalError("init(coder:) غير مدعوم") }
-
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = fileName
-                  view.backgroundColor = bgDark
-                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
-
-                  pdfView.frame = view.bounds
-                  pdfView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  pdfView.backgroundColor = bgDark
-                  pdfView.autoScales = true
-                  pdfView.displayMode = .singlePageContinuous
-                  pdfView.usePageViewController(false)
-                  pdfView.document = PDFDocument(url: fileURL)
-                  view.addSubview(pdfView)
-
-                  let thumb = PDFThumbnailView()
-                  thumb.pdfView = pdfView
-
-                  let moreBtn = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle.fill"), style: .plain, target: self, action: #selector(moreTapped))
-                  moreBtn.tintColor = accentTeal
-                  navigationItem.rightBarButtonItem = moreBtn
-              }
-
-              @objc private func moreTapped() {
-                  let sheet = UIAlertController(title: fileName, message: nil, preferredStyle: .actionSheet)
-                  sheet.addAction(UIAlertAction(title: "✍️  توقيع الملف", style: .default) { [weak self] _ in self?.startSigning() })
-                  sheet.addAction(UIAlertAction(title: "📑  تكرار الملف", style: .default) { [weak self] _ in
-                      guard let self = self else { return }
-                      self.browser?.duplicateItem(self.item)
-                  })
-                  sheet.addAction(UIAlertAction(title: "🔗  دمج مع ملف PDF آخر", style: .default) { [weak self] _ in self?.startMerge() })
-                  sheet.addAction(UIAlertAction(title: "📤  مشاركة", style: .default) { [weak self] _ in self?.shareTapped() })
-                  sheet.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  if let popover = sheet.popoverPresentationController {
-                      popover.barButtonItem = navigationItem.rightBarButtonItem
-                  }
-                  present(sheet, animated: true)
-              }
-
-              private func shareTapped() {
-                  let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-                  if let popover = activityVC.popoverPresentationController {
-                      popover.barButtonItem = navigationItem.rightBarButtonItem
-                  }
-                  present(activityVC, animated: true)
-              }
-
-              private func startSigning() {
-                  let sigVC = SignatureViewController()
-                  sigVC.onComplete = { [weak self] image in
-                      self?.placeSignatureAndSave(image)
-                  }
-                  let nav = UINavigationController(rootViewController: sigVC)
-                  present(nav, animated: true)
-              }
-
-              private func placeSignatureAndSave(_ signatureImage: UIImage) {
-                  guard let document = pdfView.document,
-                        let page = pdfView.currentPage ?? document.page(at: 0) else { return }
-
-                  let pageBounds = page.bounds(for: .mediaBox)
-                  let sigWidth = min(pageBounds.width * 0.42, 220)
-                  let sigHeight = sigWidth * (signatureImage.size.height / max(signatureImage.size.width, 1))
-                  let sigBounds = CGRect(x: pageBounds.width - sigWidth - 24, y: 24, width: sigWidth, height: sigHeight)
-
-                  let stamp = SignatureStampAnnotation(bounds: sigBounds, image: signatureImage)
-                  page.addAnnotation(stamp)
-                  pdfView.setNeedsDisplay(pdfView.bounds)
-
-                  guard document.write(to: fileURL) else {
-                      let alert = UIAlertController(title: "❌ فشل الحفظ", message: "تعذر حفظ التوقيع في الملف", preferredStyle: .alert)
-                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                      present(alert, animated: true)
-                      return
-                  }
-                  browser?.showToast("✅ تم توقيع المستند وحفظه بنجاح")
-              }
-
-              private func startMerge() {
-                  guard let browser = browser else { return }
-                  let others = browser.allItems.filter { browser.isPDF($0) && $0.relPath != item.relPath }
-                  guard !others.isEmpty else {
-                      let alert = UIAlertController(title: "⚠️ لا يوجد ملف آخر", message: "لا يوجد ملف PDF آخر في هذا المجلد للدمج معه", preferredStyle: .alert)
-                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                      present(alert, animated: true)
-                      return
-                  }
-                  let sheet = UIAlertController(title: "🔗 دمج مع:", message: nil, preferredStyle: .actionSheet)
-                  for other in others {
-                      sheet.addAction(UIAlertAction(title: other.name, style: .default) { [weak self] _ in
-                          guard let self = self else { return }
-                          browser.mergePDFs([self.item, other])
-                          self.navigationController?.popViewController(animated: true)
-                      })
-                  }
-                  sheet.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  if let popover = sheet.popoverPresentationController {
-                      popover.barButtonItem = navigationItem.rightBarButtonItem
-                  }
-                  present(sheet, animated: true)
-              }
-          }
-
-          // MARK: - امتداد المتصفح: فتح / توقيع / دمج / تكرار ملفات PDF
-
-          extension FileBrowserViewController {
-
-              func openPDFViewer(for item: FileItem) {
-                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let url = URL(fileURLWithPath: fullItemPath)
-                  let viewer = PDFViewerViewController(fileURL: url, fileName: item.name, browser: self, item: item)
-                  navigationController?.pushViewController(viewer, animated: true)
-              }
-
-              /// توقيع سريع من قائمة الملفات مباشرة (بدون فتح العارض)
-              func signPDF(_ item: FileItem) {
-                  let sigVC = SignatureViewController()
-                  sigVC.onComplete = { [weak self] image in
-                      self?.applySignature(image, to: item)
-                  }
-                  let nav = UINavigationController(rootViewController: sigVC)
-                  present(nav, animated: true)
-              }
-
-              private func applySignature(_ image: UIImage, to item: FileItem) {
-                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let url = URL(fileURLWithPath: fullItemPath)
-                  guard let document = PDFDocument(url: url),
-                        let page = document.page(at: max(document.pageCount - 1, 0)) else {
-                      showAlert(title: "❌ خطأ", message: "تعذر فتح ملف PDF")
-                      return
-                  }
-                  let pageBounds = page.bounds(for: .mediaBox)
-                  let sigWidth = min(pageBounds.width * 0.42, 220)
-                  let sigHeight = sigWidth * (image.size.height / max(image.size.width, 1))
-                  let sigBounds = CGRect(x: pageBounds.width - sigWidth - 24, y: 24, width: sigWidth, height: sigHeight)
-                  let stamp = SignatureStampAnnotation(bounds: sigBounds, image: image)
-                  page.addAnnotation(stamp)
-
-                  guard document.write(to: url) else {
-                      showAlert(title: "❌ فشل الحفظ", message: "تعذر حفظ التوقيع")
-                      return
-                  }
-                  reload()
-                  showToast("✅ تم توقيع \(item.name)")
-              }
-
-              /// دمج عدة ملفات PDF في ملف واحد جديد داخل نفس المجلد
-              func mergePDFs(_ items: [FileItem]) {
-                  guard items.count >= 2 else { return }
-                  let merged = PDFDocument()
-                  var pageIndex = 0
-                  for pdfItem in items {
-                      let fullItemPath = (documentsPath as NSString).appendingPathComponent(pdfItem.relPath)
-                      guard let doc = PDFDocument(url: URL(fileURLWithPath: fullItemPath)) else { continue }
-                      for i in 0..<doc.pageCount {
-                          if let page = doc.page(at: i) {
-                              merged.insert(page, at: pageIndex)
-                              pageIndex += 1
-                          }
-                      }
-                  }
-                  guard merged.pageCount > 0 else {
-                      showAlert(title: "❌ فشل الدمج", message: "تعذرت قراءة ملفات PDF المحددة")
-                      return
-                  }
-                  var name = "مدمج.pdf"
-                  var n = 2
-                  while FileManager.default.fileExists(atPath: (fullPath as NSString).appendingPathComponent(name)) {
-                      name = "مدمج \(n).pdf"
-                      n += 1
-                  }
-                  let destURL = URL(fileURLWithPath: (fullPath as NSString).appendingPathComponent(name))
-                  guard merged.write(to: destURL) else {
-                      showAlert(title: "❌ فشل الحفظ", message: "تعذر حفظ الملف المدمج")
-                      return
-                  }
-                  isSelecting = false
-                  selectedPaths.removeAll()
-                  tableView.setEditing(false, animated: true)
-                  setupToolbar()
-                  reload()
-                  showToast("✅ تم إنشاء ملف مدمج جديد: \(name)")
-              }
-
-              /// إنشاء نسخة مطابقة من أي ملف أو مجلد بنفس المكان
-              func duplicateItem(_ item: FileItem) {
-                  let fm = FileManager.default
-                  let srcFull = (documentsPath as NSString).appendingPathComponent(item.relPath)
-                  let ext = (item.name as NSString).pathExtension
-                  let base = (item.name as NSString).deletingPathExtension
-                  var candidate = ext.isEmpty ? "\(base) - نسخة" : "\(base) - نسخة.\(ext)"
-                  var n = 2
-                  while fm.fileExists(atPath: (fullPath as NSString).appendingPathComponent(candidate)) {
-                      candidate = ext.isEmpty ? "\(base) - نسخة \(n)" : "\(base) - نسخة \(n).\(ext)"
-                      n += 1
-                  }
-                  let destFull = (fullPath as NSString).appendingPathComponent(candidate)
-                  do {
-                      try fm.copyItem(atPath: srcFull, toPath: destFull)
-                      reload()
-                      showToast("✅ تم إنشاء نسخة: \(candidate)")
-                  } catch {
-                      showAlert(title: "❌ فشل النسخ", message: error.localizedDescription)
-                  }
-              }
-          }
-          PEOF
 
       - name: Generate Source - Entry Point
         run: |
@@ -1421,22 +641,18 @@ jobs:
           cat > main.swift << 'EEOF'
           import UIKit
 
-          // MARK: - App Delegate
-
           final class AppDelegate: UIResponder, UIApplicationDelegate {
               var window: UIWindow?
 
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
-                  let root = FileBrowserViewController(relativePath: "")
+                  let root = TempBrowserViewController()
                   let nav = UINavigationController(rootViewController: root)
                   window?.rootViewController = nav
                   window?.makeKeyAndVisible()
                   return true
               }
           }
-
-          // MARK: - Entry point (this file must be named main.swift)
 
           UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))
           EEOF
@@ -1452,15 +668,15 @@ jobs:
               <key>CFBundleDevelopmentRegion</key>
               <string>en</string>
               <key>CFBundleExecutable</key>
-              <string>TwentyOneS</string>
+              <string>TempS</string>
               <key>CFBundleIdentifier</key>
-              <string>com.example.s21</string>
+              <string>com.example.temps</string>
               <key>CFBundleInfoDictionaryVersion</key>
               <string>6.0</string>
               <key>CFBundleName</key>
-              <string>21s</string>
+              <string>⏱️ مؤقت</string>
               <key>CFBundleDisplayName</key>
-              <string>21s</string>
+              <string>⏱️ مؤقت</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
@@ -1521,41 +737,41 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Using SDK: $SDK_PATH"
 
-          xcrun swiftc main.swift SimpleUnzip.swift UIComponents.swift FileBrowserCore.swift FileBrowserTable.swift Viewers.swift PDFTools.swift \
+          xcrun swiftc main.swift UIComponents.swift TempManager.swift TempBrowserCore.swift TempBrowserTable.swift \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios14.0 \
             -O \
             -framework UIKit \
             -framework Foundation \
-            -framework PDFKit \
-            -o TwentyOneS
+            -framework UserNotifications \
+            -o TempS
 
-          file TwentyOneS
+          file TempS
 
       - name: Create IPA Package
         run: |
           cd ${{ github.workspace }}
           mkdir -p artifacts
           rm -rf build-output
-          mkdir -p build-output/Payload/TwentyOneS.app
+          mkdir -p build-output/Payload/TempS.app
 
-          cp TwentyOneS build-output/Payload/TwentyOneS.app/TwentyOneS
-          cp Resources/Info.plist build-output/Payload/TwentyOneS.app/Info.plist
-          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/TwentyOneS.app/
-          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/TwentyOneS.app/
+          cp TempS build-output/Payload/TempS.app/TempS
+          cp Resources/Info.plist build-output/Payload/TempS.app/Info.plist
+          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/TempS.app/
+          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/TempS.app/
 
-          ldid -S build-output/Payload/TwentyOneS.app/TwentyOneS
+          ldid -S build-output/Payload/TempS.app/TempS
 
           cd build-output
-          zip -r -q ../artifacts/TwentyOneS.ipa Payload/
+          zip -r -q ../artifacts/TempS.ipa Payload/
           cd ..
 
           echo "IPA contents:"
-          unzip -l artifacts/TwentyOneS.ipa
+          unzip -l artifacts/TempS.ipa
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TwentyOneS-IPA
-          path: artifacts/TwentyOneS.ipa
+          name: TempS-IPA
+          path: artifacts/TempS.ipa
           retention-days: 30
