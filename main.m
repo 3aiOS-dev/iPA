@@ -28,7 +28,7 @@
     messageLabel.textColor = [UIColor grayColor];
     messageLabel.frame = CGRectMake(0, 220, self.window.frame.size.width, 100);
     
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeRounded];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeRoundedRect];
     button.frame = CGRectMake(50, 350, self.window.frame.size.width - 100, 50);
     button.backgroundColor = [UIColor blueColor];
     [button setTitle:@"تم" forState:UIControlStateNormal];
