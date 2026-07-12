@@ -21,6 +21,12 @@ jobs:
       - name: Setup Dependencies
         run: |
           brew install ldid
+          brew install zip
+          # ملاحظة: ميزات PDF (توقيع/دمج/تعديل) تعتمد على PDFKit وهو إطار عمل
+          # مدمج في نظام iOS من Apple، لا يحتاج أي تثبيت عبر brew أو CocoaPods —
+          # فقط يتم ربطه في خطوة الـ build عبر "-framework PDFKit"
+          unzip -v | head -1
+          zip -v | head -1
 
       - name: Generate App Icons
         run: |
@@ -72,6 +78,141 @@ jobs:
           PYEOF
           ls -la Resources
 
+
+      - name: Generate Source - UI Components (تصميم جديد)
+        run: |
+          cd ${{ github.workspace }}
+          cat > UIComponents.swift << 'WEOF'
+          import UIKit
+
+          // MARK: - خلية ملف مُعاد تصميمها بالكامل (بطاقة مستديرة + شارة ملونة)
+
+          final class FileCell: UITableViewCell {
+              static let reuseID = "FileCell"
+
+              private let card = UIView()
+              private let badge = UIView()
+              private let badgeLabel = UILabel()
+              private let nameLabel = UILabel()
+              private let subtitleLabel = UILabel()
+              private let chevron = UIImageView()
+              private var checkView: UIImageView?
+
+              override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+                  super.init(style: .default, reuseIdentifier: reuseIdentifier)
+                  build()
+              }
+
+              required init?(coder: NSCoder) {
+                  super.init(coder: coder)
+                  build()
+              }
+
+              private func build() {
+                  backgroundColor = .clear
+                  selectionStyle = .none
+
+                  card.backgroundColor = UIColor(red: 26/255, green: 26/255, blue: 42/255, alpha: 1)
+                  card.layer.cornerRadius = 16
+                  card.layer.borderWidth = 1
+                  card.layer.borderColor = UIColor.white.withAlphaComponent(0.05).cgColor
+                  card.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(card)
+
+                  badge.layer.cornerRadius = 12
+                  badge.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(badge)
+
+                  badgeLabel.textAlignment = .center
+                  badgeLabel.font = .systemFont(ofSize: 19)
+                  badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+                  badge.addSubview(badgeLabel)
+
+                  nameLabel.textColor = .white
+                  nameLabel.font = .systemFont(ofSize: 15.5, weight: .semibold)
+                  nameLabel.numberOfLines = 1
+                  nameLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(nameLabel)
+
+                  subtitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+                  subtitleLabel.numberOfLines = 1
+                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(subtitleLabel)
+
+                  chevron.image = UIImage(systemName: "chevron.left.circle.fill")
+                  chevron.tintColor = UIColor.white.withAlphaComponent(0.15)
+                  chevron.contentMode = .scaleAspectFit
+                  chevron.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(chevron)
+
+                  NSLayoutConstraint.activate([
+                      card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
+                      card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+                      card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                      card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+                      badge.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+                      badge.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+                      badge.widthAnchor.constraint(equalToConstant: 44),
+                      badge.heightAnchor.constraint(equalToConstant: 44),
+
+                      badgeLabel.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+                      badgeLabel.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+
+                      nameLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 12),
+                      nameLabel.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
+                      nameLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+
+                      subtitleLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+                      subtitleLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
+                      subtitleLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3),
+                      subtitleLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+
+                      chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+                      chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+                      chevron.widthAnchor.constraint(equalToConstant: 20),
+                      chevron.heightAnchor.constraint(equalToConstant: 20),
+                  ])
+              }
+
+              func configure(emoji: String, badgeColor: UIColor, name: String, subtitle: String,
+                             subtitleColor: UIColor, showChevron: Bool, isSelected: Bool, isSelecting: Bool) {
+                  badgeLabel.text = emoji
+                  badge.backgroundColor = badgeColor.withAlphaComponent(0.20)
+                  nameLabel.text = name
+                  subtitleLabel.text = subtitle
+                  subtitleLabel.textColor = subtitleColor
+                  chevron.isHidden = !showChevron || isSelecting
+                  chevron.tintColor = badgeColor.withAlphaComponent(0.55)
+
+                  checkView?.removeFromSuperview()
+                  checkView = nil
+                  if isSelecting {
+                      let check = UIImageView(image: UIImage(systemName: isSelected ? "checkmark.circle.fill" : "circle"))
+                      check.tintColor = isSelected
+                          ? UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
+                          : UIColor.white.withAlphaComponent(0.25)
+                      check.contentMode = .scaleAspectFit
+                      check.translatesAutoresizingMaskIntoConstraints = false
+                      card.addSubview(check)
+                      NSLayoutConstraint.activate([
+                          check.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+                          check.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+                          check.widthAnchor.constraint(equalToConstant: 22),
+                          check.heightAnchor.constraint(equalToConstant: 22),
+                      ])
+                      checkView = check
+                  }
+
+                  card.transform = isSelecting && isSelected
+                      ? CGAffineTransform(scaleX: 0.99, y: 0.99)
+                      : .identity
+                  card.layer.borderColor = (isSelecting && isSelected)
+                      ? UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1).cgColor
+                      : UIColor.white.withAlphaComponent(0.05).cgColor
+              }
+          }
+          WEOF
 
       - name: Generate Source - Unzip Engine
         run: |
@@ -206,6 +347,8 @@ jobs:
               var allItems: [FileItem] = []
               var filteredItems: [FileItem] = []
               var sortByDate = false
+              var isSelecting = false
+              var selectedPaths: Set<String> = []
 
               let searchController = UISearchController(searchResultsController: nil)
 
@@ -252,14 +395,21 @@ jobs:
                   title = isRoot ? "21s" : (relativePath as NSString).lastPathComponent
                   view.backgroundColor = bgDark
                   tableView.backgroundColor = bgDark
-                  tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
-                  tableView.rowHeight = 68
+                  tableView.separatorStyle = .none
+                  tableView.rowHeight = 74
+                  tableView.register(FileCell.self, forCellReuseIdentifier: FileCell.reuseID)
 
+                  navigationController?.navigationBar.prefersLargeTitles = true
+                  navigationItem.largeTitleDisplayMode = isRoot ? .always : .never
                   navigationController?.navigationBar.barTintColor = bgDark
                   navigationController?.navigationBar.tintColor = accentTeal
                   navigationController?.navigationBar.titleTextAttributes = [
                       .foregroundColor: UIColor.white,
                       .font: UIFont.boldSystemFont(ofSize: 20)
+                  ]
+                  navigationController?.navigationBar.largeTitleTextAttributes = [
+                      .foregroundColor: UIColor.white,
+                      .font: UIFont.systemFont(ofSize: 32, weight: .heavy)
                   ]
                   navigationController?.navigationBar.isTranslucent = false
                   if #available(iOS 13.0, *) {
@@ -293,8 +443,33 @@ jobs:
               }
 
               func setupToolbar() {
+                  let sortBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.up.arrow.down"), style: .plain, target: self, action: #selector(toggleSort))
+                  sortBtn.tintColor = accentTeal
+                  let selectBtn = UIBarButtonItem(title: isSelecting ? "تم" : "تحديد", style: .plain, target: self, action: #selector(toggleSelectMode))
+                  selectBtn.tintColor = accentTeal
+                  navigationItem.rightBarButtonItems = [selectBtn, sortBtn]
+                  updateBottomToolbar()
+              }
+
+              func updateBottomToolbar() {
                   let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-                  if isRoot {
+
+                  if isSelecting {
+                      let count = selectedPaths.count
+                      let mergeBtn = UIBarButtonItem(title: "🔗 دمج PDF", style: .plain, target: self, action: #selector(mergeSelectedTapped))
+                      mergeBtn.tintColor = accentTeal
+                      mergeBtn.isEnabled = count >= 2
+                      let shareBtn = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.up"), style: .plain, target: self, action: #selector(shareSelectedTapped))
+                      shareBtn.tintColor = accentTeal
+                      shareBtn.isEnabled = count >= 1
+                      let deleteBtn = UIBarButtonItem(image: UIImage(systemName: "trash"), style: .plain, target: self, action: #selector(deleteSelectedTapped))
+                      deleteBtn.tintColor = .systemRed
+                      deleteBtn.isEnabled = count >= 1
+                      let countLabel = UIBarButtonItem(title: "\(count) محدد", style: .plain, target: nil, action: nil)
+                      countLabel.tintColor = UIColor.white.withAlphaComponent(0.4)
+                      countLabel.isEnabled = false
+                      toolbarItems = [deleteBtn, flex, countLabel, flex, mergeBtn, flex, shareBtn]
+                  } else if isRoot {
                       let importBtn = UIBarButtonItem(title: "📂  استيراد", style: .plain, target: self, action: #selector(importFilesTapped))
                       importBtn.tintColor = accentTeal
                       toolbarItems = [flex, importBtn, flex]
@@ -303,16 +478,61 @@ jobs:
                       newFolderBtn.tintColor = accentTeal
                       toolbarItems = [flex, newFolderBtn, flex]
                   }
-
-                  let sortBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.up.arrow.down"), style: .plain, target: self, action: #selector(toggleSort))
-                  sortBtn.tintColor = accentTeal
-                  navigationItem.rightBarButtonItem = sortBtn
               }
 
               @objc func toggleSort() {
                   sortByDate.toggle()
                   reload()
                   showToast(sortByDate ? "🕒 الترتيب حسب الأحدث" : "🔤 الترتيب أبجدياً")
+              }
+
+              @objc func toggleSelectMode() {
+                  isSelecting.toggle()
+                  if !isSelecting { selectedPaths.removeAll() }
+                  tableView.setEditing(false, animated: true)
+                  setupToolbar()
+                  tableView.reloadData()
+              }
+
+              @objc func mergeSelectedTapped() {
+                  let items = allItems.filter { selectedPaths.contains($0.relPath) && isPDF($0) }
+                  guard items.count >= 2 else {
+                      showAlert(title: "⚠️ اختر ملفي PDF على الأقل", message: "عملية الدمج تتطلب تحديد ملفي PDF أو أكثر")
+                      return
+                  }
+                  mergePDFs(items)
+              }
+
+              @objc func shareSelectedTapped() {
+                  let urls = allItems
+                      .filter { selectedPaths.contains($0.relPath) }
+                      .map { URL(fileURLWithPath: (documentsPath as NSString).appendingPathComponent($0.relPath)) }
+                  guard !urls.isEmpty else { return }
+                  let activityVC = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+                  if let popover = activityVC.popoverPresentationController {
+                      popover.sourceView = view
+                      popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+                  }
+                  present(activityVC, animated: true)
+              }
+
+              @objc func deleteSelectedTapped() {
+                  let items = allItems.filter { selectedPaths.contains($0.relPath) }
+                  guard !items.isEmpty else { return }
+                  let alert = UIAlertController(title: "🗑️ حذف \(items.count) عنصر؟", message: "لا يمكن التراجع عن هذا الإجراء", preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive, handler: { [weak self] _ in
+                      guard let self = self else { return }
+                      for entry in items {
+                          let full = (self.documentsPath as NSString).appendingPathComponent(entry.relPath)
+                          try? FileManager.default.removeItem(atPath: full)
+                      }
+                      self.selectedPaths.removeAll()
+                      self.isSelecting = false
+                      self.setupToolbar()
+                      self.reload()
+                  }))
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
               }
 
               @objc func pullToRefresh() {
@@ -538,6 +758,7 @@ jobs:
                   if item.isDirectory { return item.name.hasSuffix("_extracted") ? "📱" : "🗂️" }
                   let lower = item.name.lowercased()
                   if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return "📦" }
+                  if lower.hasSuffix(".pdf") { return "📕" }
                   if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return "🖼️" }
                   if lower.hasSuffix(".txt") || lower.hasSuffix(".md") { return "📄" }
                   if lower.hasSuffix(".plist") { return "🧩" }
@@ -545,9 +766,26 @@ jobs:
                   return "📁"
               }
 
+              func badgeColor(for item: FileItem) -> UIColor {
+                  if item.isDirectory {
+                      return item.name.hasSuffix("_extracted") ? accentPurple : accentTeal
+                  }
+                  let lower = item.name.lowercased()
+                  if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return UIColor(red: 234/255, green: 158/255, blue: 46/255, alpha: 1) }
+                  if lower.hasSuffix(".pdf") { return UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1) }
+                  if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return UIColor(red: 236/255, green: 72/255, blue: 153/255, alpha: 1) }
+                  if lower.hasSuffix(".txt") || lower.hasSuffix(".md") || lower.hasSuffix(".json") { return UIColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1) }
+                  if lower.hasSuffix(".plist") { return accentPurple }
+                  return UIColor.white.withAlphaComponent(0.3)
+              }
+
               func isArchive(_ item: FileItem) -> Bool {
                   let lower = item.name.lowercased()
                   return !item.isDirectory && (lower.hasSuffix(".zip") || lower.hasSuffix(".ipa"))
+              }
+
+              func isPDF(_ item: FileItem) -> Bool {
+                  !item.isDirectory && item.name.lowercased().hasSuffix(".pdf")
               }
 
               func isPlist(_ item: FileItem) -> Bool {
@@ -572,28 +810,30 @@ jobs:
               }
 
               override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "cell")
+                  let cell = tableView.dequeueReusableCell(withIdentifier: FileCell.reuseID, for: indexPath) as! FileCell
                   let item = filteredItems[indexPath.row]
-
-                  cell.backgroundColor = cardDark
-                  let bg = UIView()
-                  bg.backgroundColor = accentPurple.withAlphaComponent(0.15)
-                  cell.selectedBackgroundView = bg
-
-                  cell.textLabel?.textColor = .white
-                  cell.textLabel?.font = .systemFont(ofSize: 16, weight: .medium)
-                  cell.textLabel?.text = "\(icon(for: item))  \(item.name)"
 
                   let sizeText = item.isDirectory ? "مجلد" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
                   var hint = ""
-                  if isArchive(item) { hint = "  •  اضغط للاستخراج التلقائي" }
-                  else if item.isDirectory { hint = "  •  اضغط للتصفح" }
-                  else if isPlist(item) { hint = "  •  اضغط للمعاينة" }
-                  cell.detailTextLabel?.text = "\(sizeText)\(hint)"
-                  cell.detailTextLabel?.textColor = (isArchive(item) || item.isDirectory) ? accentTeal : UIColor.white.withAlphaComponent(0.4)
-                  cell.detailTextLabel?.font = .systemFont(ofSize: 12, weight: .regular)
+                  if isArchive(item) { hint = " • اضغط للاستخراج التلقائي" }
+                  else if item.isDirectory { hint = " • اضغط للتصفح" }
+                  else if isPDF(item) { hint = " • اضغط للعرض والتوقيع" }
+                  else if isPlist(item) { hint = " • اضغط للمعاينة" }
 
-                  cell.accessoryType = (item.isDirectory || isArchive(item)) ? .disclosureIndicator : .detailButton
+                  let subtitleColor = (isArchive(item) || item.isDirectory || isPDF(item))
+                      ? accentTeal : UIColor.white.withAlphaComponent(0.4)
+                  let showChevron = item.isDirectory || isArchive(item) || isPDF(item) || isPlist(item) || isText(item)
+
+                  cell.configure(
+                      emoji: icon(for: item),
+                      badgeColor: badgeColor(for: item),
+                      name: item.name,
+                      subtitle: "\(sizeText)\(hint)",
+                      subtitleColor: subtitleColor,
+                      showChevron: showChevron,
+                      isSelected: selectedPaths.contains(item.relPath),
+                      isSelecting: isSelecting
+                  )
                   return cell
               }
 
@@ -601,11 +841,24 @@ jobs:
                   tableView.deselectRow(at: indexPath, animated: true)
                   let item = filteredItems[indexPath.row]
 
+                  if isSelecting {
+                      if selectedPaths.contains(item.relPath) {
+                          selectedPaths.remove(item.relPath)
+                      } else {
+                          selectedPaths.insert(item.relPath)
+                      }
+                      updateBottomToolbar()
+                      tableView.reloadRows(at: [indexPath], with: .none)
+                      return
+                  }
+
                   if item.isDirectory {
                       let browser = FileBrowserViewController(relativePath: item.relPath)
                       navigationController?.pushViewController(browser, animated: true)
                   } else if isArchive(item) {
                       extractArchive(item)
+                  } else if isPDF(item) {
+                      openPDFViewer(for: item)
                   } else if isPlist(item) {
                       showPlistInspector(for: item)
                   } else if isText(item) {
@@ -615,27 +868,58 @@ jobs:
                   }
               }
 
-              override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
-                  shareFile(filteredItems[indexPath.row])
-              }
-
               override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
                   let item = filteredItems[indexPath.row]
+                  var actions: [UIContextualAction] = []
+
                   let delete = UIContextualAction(style: .destructive, title: "حذف") { [weak self] _, _, done in
                       self?.deleteItem(item)
                       done(true)
                   }
+                  actions.append(delete)
+
+                  let duplicate = UIContextualAction(style: .normal, title: "تكرار") { [weak self] _, _, done in
+                      self?.duplicateItem(item)
+                      done(true)
+                  }
+                  duplicate.backgroundColor = UIColor(red: 100/255, green: 100/255, blue: 132/255, alpha: 1)
+                  actions.append(duplicate)
+
                   let rename = UIContextualAction(style: .normal, title: "إعادة تسمية") { [weak self] _, _, done in
                       self?.renameItem(item)
                       done(true)
                   }
                   rename.backgroundColor = accentPurple
+                  actions.append(rename)
+
+                  if isPDF(item) {
+                      let sign = UIContextualAction(style: .normal, title: "توقيع") { [weak self] _, _, done in
+                          self?.signPDF(item)
+                          done(true)
+                      }
+                      sign.backgroundColor = UIColor(red: 234/255, green: 88/255, blue: 12/255, alpha: 1)
+                      actions.append(sign)
+                  }
+
                   let share = UIContextualAction(style: .normal, title: "مشاركة") { [weak self] _, _, done in
                       self?.shareFile(item)
                       done(true)
                   }
                   share.backgroundColor = accentTeal
-                  return UISwipeActionsConfiguration(actions: [delete, rename, share])
+                  actions.append(share)
+
+                  return UISwipeActionsConfiguration(actions: actions)
+              }
+
+              override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+                  let item = filteredItems[indexPath.row]
+                  guard isPDF(item) else { return nil }
+                  let sign = UIContextualAction(style: .normal, title: "✍️ توقيع") { [weak self] _, _, done in
+                      self?.signPDF(item)
+                      done(true)
+                  }
+                  sign.backgroundColor = UIColor(red: 234/255, green: 88/255, blue: 12/255, alpha: 1)
+                  return UISwipeActionsConfiguration(actions: [sign])
               }
           }
           TEOF
@@ -734,6 +1018,402 @@ jobs:
           }
 
           VEOF
+
+      - name: Generate Source - PDF Tools (توقيع / دمج / عرض)
+        run: |
+          cd ${{ github.workspace }}
+          cat > PDFTools.swift << 'PEOF'
+          import UIKit
+          import PDFKit
+
+          // MARK: - لوحة رسم التوقيع بإصبعك
+
+          final class SignatureDrawView: UIView {
+              private var paths: [UIBezierPath] = []
+              private var currentPath = UIBezierPath()
+              var strokeColor: UIColor = .white
+              var lineWidth: CGFloat = 3.5
+
+              override init(frame: CGRect) {
+                  super.init(frame: frame)
+                  backgroundColor = .clear
+                  isMultipleTouchEnabled = false
+              }
+              required init?(coder: NSCoder) { super.init(coder: coder) }
+
+              var isEmpty: Bool { paths.isEmpty }
+
+              func clear() {
+                  paths.removeAll()
+                  currentPath = UIBezierPath()
+                  setNeedsDisplay()
+              }
+
+              override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  guard let point = touches.first?.location(in: self) else { return }
+                  currentPath = UIBezierPath()
+                  currentPath.lineWidth = lineWidth
+                  currentPath.lineCapStyle = .round
+                  currentPath.lineJoinStyle = .round
+                  currentPath.move(to: point)
+              }
+
+              override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  guard let point = touches.first?.location(in: self) else { return }
+                  currentPath.addLine(to: point)
+                  setNeedsDisplay()
+              }
+
+              override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  paths.append(currentPath)
+                  currentPath = UIBezierPath()
+                  setNeedsDisplay()
+              }
+
+              override func draw(_ rect: CGRect) {
+                  strokeColor.setStroke()
+                  for path in paths { path.stroke() }
+                  currentPath.stroke()
+              }
+
+              /// يصدّر التوقيع كصورة بخلفية شفافة لوضعها فوق صفحة PDF
+              func exportImage() -> UIImage? {
+                  guard !isEmpty else { return nil }
+                  let renderer = UIGraphicsImageRenderer(size: bounds.size)
+                  return renderer.image { _ in
+                      strokeColor.setStroke()
+                      for path in paths { path.stroke() }
+                  }
+              }
+          }
+
+          // MARK: - شاشة التوقيع (مودال)
+
+          final class SignatureViewController: UIViewController {
+              var onComplete: ((UIImage) -> Void)?
+              private let drawView = SignatureDrawView()
+              private let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
+              private let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
+              private let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = bgDark
+                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
+                  title = "✍️ ارسم توقيعك"
+
+                  navigationItem.leftBarButtonItem = UIBarButtonItem(title: "إلغاء", style: .plain, target: self, action: #selector(cancelTapped))
+                  let doneBtn = UIBarButtonItem(title: "استخدام التوقيع", style: .done, target: self, action: #selector(doneTapped))
+                  doneBtn.tintColor = accentTeal
+                  navigationItem.rightBarButtonItem = doneBtn
+
+                  let hint = UILabel()
+                  hint.text = "استخدم إصبعك للتوقيع داخل الإطار بالأسفل"
+                  hint.textColor = UIColor.white.withAlphaComponent(0.4)
+                  hint.font = .systemFont(ofSize: 13, weight: .medium)
+                  hint.textAlignment = .center
+                  hint.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(hint)
+
+                  let card = UIView()
+                  card.backgroundColor = cardDark
+                  card.layer.cornerRadius = 20
+                  card.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(card)
+
+                  drawView.strokeColor = .white
+                  drawView.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(drawView)
+
+                  let clearBtn = UIButton(type: .system)
+                  clearBtn.setTitle("🗑️  مسح التوقيع", for: .normal)
+                  clearBtn.setTitleColor(UIColor.white.withAlphaComponent(0.6), for: .normal)
+                  clearBtn.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+                  clearBtn.addTarget(self, action: #selector(clearTapped), for: .touchUpInside)
+                  clearBtn.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(clearBtn)
+
+                  NSLayoutConstraint.activate([
+                      hint.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+                      hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      card.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 16),
+                      card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                      card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+                      card.heightAnchor.constraint(equalToConstant: 260),
+
+                      drawView.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
+                      drawView.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+                      drawView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
+                      drawView.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+
+                      clearBtn.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 16),
+                      clearBtn.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                  ])
+              }
+
+              @objc private func clearTapped() { drawView.clear() }
+              @objc private func cancelTapped() { dismiss(animated: true) }
+              @objc private func doneTapped() {
+                  guard let image = drawView.exportImage() else {
+                      let alert = UIAlertController(title: "⚠️ لا يوجد توقيع", message: "ارسم توقيعك أولاً بإصبعك", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                      present(alert, animated: true)
+                      return
+                  }
+                  dismiss(animated: true) { [weak self] in self?.onComplete?(image) }
+              }
+          }
+
+          // MARK: - أنوتيشن مخصص لرسم صورة التوقيع فوق صفحة PDF
+
+          final class SignatureStampAnnotation: PDFAnnotation {
+              private let stampImage: UIImage
+
+              init(bounds: CGRect, image: UIImage) {
+                  self.stampImage = image
+                  super.init(bounds: bounds, forType: .stamp, withProperties: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) غير مدعوم") }
+
+              override func draw(with box: PDFDisplayBox, in context: CGContext) {
+                  guard let cgImage = stampImage.cgImage else { return }
+                  context.saveGState()
+                  context.draw(cgImage, in: bounds)
+                  context.restoreGState()
+              }
+          }
+
+          // MARK: - عارض PDF كامل (تصفح + توقيع + تكرار + دمج + مشاركة)
+
+          final class PDFViewerViewController: UIViewController {
+              private let fileURL: URL
+              private let fileName: String
+              private weak var browser: FileBrowserViewController?
+              private let item: FileBrowserViewController.FileItem
+              private let pdfView = PDFView()
+
+              private let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
+              private let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
+
+              init(fileURL: URL, fileName: String, browser: FileBrowserViewController, item: FileBrowserViewController.FileItem) {
+                  self.fileURL = fileURL
+                  self.fileName = fileName
+                  self.browser = browser
+                  self.item = item
+                  super.init(nibName: nil, bundle: nil)
+              }
+              required init?(coder: NSCoder) { fatalError("init(coder:) غير مدعوم") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  title = fileName
+                  view.backgroundColor = bgDark
+                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
+
+                  pdfView.frame = view.bounds
+                  pdfView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                  pdfView.backgroundColor = bgDark
+                  pdfView.autoScales = true
+                  pdfView.displayMode = .singlePageContinuous
+                  pdfView.usePageViewController(false)
+                  pdfView.document = PDFDocument(url: fileURL)
+                  view.addSubview(pdfView)
+
+                  let thumb = PDFThumbnailView()
+                  thumb.pdfView = pdfView
+
+                  let moreBtn = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle.fill"), style: .plain, target: self, action: #selector(moreTapped))
+                  moreBtn.tintColor = accentTeal
+                  navigationItem.rightBarButtonItem = moreBtn
+              }
+
+              @objc private func moreTapped() {
+                  let sheet = UIAlertController(title: fileName, message: nil, preferredStyle: .actionSheet)
+                  sheet.addAction(UIAlertAction(title: "✍️  توقيع الملف", style: .default) { [weak self] _ in self?.startSigning() })
+                  sheet.addAction(UIAlertAction(title: "📑  تكرار الملف", style: .default) { [weak self] _ in
+                      guard let self = self else { return }
+                      self.browser?.duplicateItem(self.item)
+                  })
+                  sheet.addAction(UIAlertAction(title: "🔗  دمج مع ملف PDF آخر", style: .default) { [weak self] _ in self?.startMerge() })
+                  sheet.addAction(UIAlertAction(title: "📤  مشاركة", style: .default) { [weak self] _ in self?.shareTapped() })
+                  sheet.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  if let popover = sheet.popoverPresentationController {
+                      popover.barButtonItem = navigationItem.rightBarButtonItem
+                  }
+                  present(sheet, animated: true)
+              }
+
+              private func shareTapped() {
+                  let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                  if let popover = activityVC.popoverPresentationController {
+                      popover.barButtonItem = navigationItem.rightBarButtonItem
+                  }
+                  present(activityVC, animated: true)
+              }
+
+              private func startSigning() {
+                  let sigVC = SignatureViewController()
+                  sigVC.onComplete = { [weak self] image in
+                      self?.placeSignatureAndSave(image)
+                  }
+                  let nav = UINavigationController(rootViewController: sigVC)
+                  present(nav, animated: true)
+              }
+
+              private func placeSignatureAndSave(_ signatureImage: UIImage) {
+                  guard let document = pdfView.document,
+                        let page = pdfView.currentPage ?? document.page(at: 0) else { return }
+
+                  let pageBounds = page.bounds(for: .mediaBox)
+                  let sigWidth = min(pageBounds.width * 0.42, 220)
+                  let sigHeight = sigWidth * (signatureImage.size.height / max(signatureImage.size.width, 1))
+                  let sigBounds = CGRect(x: pageBounds.width - sigWidth - 24, y: 24, width: sigWidth, height: sigHeight)
+
+                  let stamp = SignatureStampAnnotation(bounds: sigBounds, image: signatureImage)
+                  page.addAnnotation(stamp)
+                  pdfView.setNeedsDisplay(pdfView.bounds)
+
+                  guard document.write(to: fileURL) else {
+                      let alert = UIAlertController(title: "❌ فشل الحفظ", message: "تعذر حفظ التوقيع في الملف", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                      present(alert, animated: true)
+                      return
+                  }
+                  browser?.showToast("✅ تم توقيع المستند وحفظه بنجاح")
+              }
+
+              private func startMerge() {
+                  guard let browser = browser else { return }
+                  let others = browser.allItems.filter { browser.isPDF($0) && $0.relPath != item.relPath }
+                  guard !others.isEmpty else {
+                      let alert = UIAlertController(title: "⚠️ لا يوجد ملف آخر", message: "لا يوجد ملف PDF آخر في هذا المجلد للدمج معه", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                      present(alert, animated: true)
+                      return
+                  }
+                  let sheet = UIAlertController(title: "🔗 دمج مع:", message: nil, preferredStyle: .actionSheet)
+                  for other in others {
+                      sheet.addAction(UIAlertAction(title: other.name, style: .default) { [weak self] _ in
+                          guard let self = self else { return }
+                          browser.mergePDFs([self.item, other])
+                          self.navigationController?.popViewController(animated: true)
+                      })
+                  }
+                  sheet.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  if let popover = sheet.popoverPresentationController {
+                      popover.barButtonItem = navigationItem.rightBarButtonItem
+                  }
+                  present(sheet, animated: true)
+              }
+          }
+
+          // MARK: - امتداد المتصفح: فتح / توقيع / دمج / تكرار ملفات PDF
+
+          extension FileBrowserViewController {
+
+              func openPDFViewer(for item: FileItem) {
+                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let url = URL(fileURLWithPath: fullItemPath)
+                  let viewer = PDFViewerViewController(fileURL: url, fileName: item.name, browser: self, item: item)
+                  navigationController?.pushViewController(viewer, animated: true)
+              }
+
+              /// توقيع سريع من قائمة الملفات مباشرة (بدون فتح العارض)
+              func signPDF(_ item: FileItem) {
+                  let sigVC = SignatureViewController()
+                  sigVC.onComplete = { [weak self] image in
+                      self?.applySignature(image, to: item)
+                  }
+                  let nav = UINavigationController(rootViewController: sigVC)
+                  present(nav, animated: true)
+              }
+
+              private func applySignature(_ image: UIImage, to item: FileItem) {
+                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let url = URL(fileURLWithPath: fullItemPath)
+                  guard let document = PDFDocument(url: url),
+                        let page = document.page(at: max(document.pageCount - 1, 0)) else {
+                      showAlert(title: "❌ خطأ", message: "تعذر فتح ملف PDF")
+                      return
+                  }
+                  let pageBounds = page.bounds(for: .mediaBox)
+                  let sigWidth = min(pageBounds.width * 0.42, 220)
+                  let sigHeight = sigWidth * (image.size.height / max(image.size.width, 1))
+                  let sigBounds = CGRect(x: pageBounds.width - sigWidth - 24, y: 24, width: sigWidth, height: sigHeight)
+                  let stamp = SignatureStampAnnotation(bounds: sigBounds, image: image)
+                  page.addAnnotation(stamp)
+
+                  guard document.write(to: url) else {
+                      showAlert(title: "❌ فشل الحفظ", message: "تعذر حفظ التوقيع")
+                      return
+                  }
+                  reload()
+                  showToast("✅ تم توقيع \(item.name)")
+              }
+
+              /// دمج عدة ملفات PDF في ملف واحد جديد داخل نفس المجلد
+              func mergePDFs(_ items: [FileItem]) {
+                  guard items.count >= 2 else { return }
+                  let merged = PDFDocument()
+                  var pageIndex = 0
+                  for pdfItem in items {
+                      let fullItemPath = (documentsPath as NSString).appendingPathComponent(pdfItem.relPath)
+                      guard let doc = PDFDocument(url: URL(fileURLWithPath: fullItemPath)) else { continue }
+                      for i in 0..<doc.pageCount {
+                          if let page = doc.page(at: i) {
+                              merged.insert(page, at: pageIndex)
+                              pageIndex += 1
+                          }
+                      }
+                  }
+                  guard merged.pageCount > 0 else {
+                      showAlert(title: "❌ فشل الدمج", message: "تعذرت قراءة ملفات PDF المحددة")
+                      return
+                  }
+                  var name = "مدمج.pdf"
+                  var n = 2
+                  while FileManager.default.fileExists(atPath: (fullPath as NSString).appendingPathComponent(name)) {
+                      name = "مدمج \(n).pdf"
+                      n += 1
+                  }
+                  let destURL = URL(fileURLWithPath: (fullPath as NSString).appendingPathComponent(name))
+                  guard merged.write(to: destURL) else {
+                      showAlert(title: "❌ فشل الحفظ", message: "تعذر حفظ الملف المدمج")
+                      return
+                  }
+                  isSelecting = false
+                  selectedPaths.removeAll()
+                  tableView.setEditing(false, animated: true)
+                  setupToolbar()
+                  reload()
+                  showToast("✅ تم إنشاء ملف مدمج جديد: \(name)")
+              }
+
+              /// إنشاء نسخة مطابقة من أي ملف أو مجلد بنفس المكان
+              func duplicateItem(_ item: FileItem) {
+                  let fm = FileManager.default
+                  let srcFull = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let ext = (item.name as NSString).pathExtension
+                  let base = (item.name as NSString).deletingPathExtension
+                  var candidate = ext.isEmpty ? "\(base) - نسخة" : "\(base) - نسخة.\(ext)"
+                  var n = 2
+                  while fm.fileExists(atPath: (fullPath as NSString).appendingPathComponent(candidate)) {
+                      candidate = ext.isEmpty ? "\(base) - نسخة \(n)" : "\(base) - نسخة \(n).\(ext)"
+                      n += 1
+                  }
+                  let destFull = (fullPath as NSString).appendingPathComponent(candidate)
+                  do {
+                      try fm.copyItem(atPath: srcFull, toPath: destFull)
+                      reload()
+                      showToast("✅ تم إنشاء نسخة: \(candidate)")
+                  } catch {
+                      showAlert(title: "❌ فشل النسخ", message: error.localizedDescription)
+                  }
+              }
+          }
+          PEOF
 
       - name: Generate Source - Entry Point
         run: |
@@ -841,12 +1521,13 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Using SDK: $SDK_PATH"
 
-          xcrun swiftc main.swift SimpleUnzip.swift FileBrowserCore.swift FileBrowserTable.swift Viewers.swift \
+          xcrun swiftc main.swift SimpleUnzip.swift UIComponents.swift FileBrowserCore.swift FileBrowserTable.swift Viewers.swift PDFTools.swift \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios14.0 \
             -O \
             -framework UIKit \
             -framework Foundation \
+            -framework PDFKit \
             -o TwentyOneS
 
           file TwentyOneS
