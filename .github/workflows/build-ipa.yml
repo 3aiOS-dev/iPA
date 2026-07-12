@@ -12,29 +12,201 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Setup Xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+          xcode-select -p
+
       - name: Setup Dependencies
         run: |
-          brew install ldid
+          brew install ldid dpkg xz wget curl git make
 
-      - name: Setup Theos & SDKs
+      - name: Setup Theos
         run: |
-          # تنظيف شامل للمسارات قبل البدء
-          rm -rf ~/theos
-          # تحميل Theos الأساسي
-          git clone --recursive https://github.com/theos/theos.git ~/theos
-          # مسح مجلد sdks الفارغ الذي ينشئه Theos تلقائياً لتجنب الخطأ 128
-          rm -rf ~/theos/sdks
-          # تحميل الـ SDKs في المجلد المخصص لها
-          git clone --depth 1 https://github.com/theos/sdks.git ~/theos/sdks
-          echo "THEOS=~/theos" >> $GITHUB_ENV
+          export THEOS=$HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          rm -rf "$THEOS"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-      - name: Build Tweak
+      - name: Download iOS SDK
         run: |
-          export THEOS=~/theos
-          make package FINALPACKAGE=1
+          export THEOS=$HOME/theos
+          mkdir -p "$THEOS/sdks"
+          cd "$THEOS/sdks"
+          curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o iPhoneOS16.5.sdk.tar.xz
+          tar -xJf iPhoneOS16.5.sdk.tar.xz
+          rm iPhoneOS16.5.sdk.tar.xz
+          ls -la "$THEOS/sdks"
+
+      - name: Generate App Source Files
+        run: |
+          cd ${{ github.workspace }}
+          mkdir -p Resources
+
+          cat > Makefile << 'MEOF'
+          THEOS ?= $(HOME)/theos
+          export THEOS
+
+          TARGET := iphone:clang:latest:14.0
+          ARCHS = arm64
+
+          include $(THEOS)/makefiles/common.mk
+
+          APPLICATION_NAME = SmartButtons
+
+          SmartButtons_FILES = main.m
+          SmartButtons_FRAMEWORKS = UIKit Foundation
+          SmartButtons_CFLAGS = -fobjc-arc
+
+          include $(THEOS_MAKE_PATH)/application.mk
+          MEOF
+
+          cat > main.m << 'MEOF'
+          @import UIKit;
+          @import Foundation;
+
+          @interface SmartButtonsAppDelegate : UIResponder <UIApplicationDelegate>
+          @property (strong, nonatomic) UIWindow *window;
+          @end
+
+          @implementation SmartButtonsAppDelegate
+
+          - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+              self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+              self.window.backgroundColor = [UIColor whiteColor];
+
+              UIViewController *viewController = [[UIViewController alloc] init];
+              viewController.view.backgroundColor = [UIColor whiteColor];
+
+              UILabel *titleLabel = [[UILabel alloc] init];
+              titleLabel.text = @"Smart Buttons";
+              titleLabel.font = [UIFont boldSystemFontOfSize:32];
+              titleLabel.textAlignment = NSTextAlignmentCenter;
+              titleLabel.textColor = [UIColor blackColor];
+              titleLabel.frame = CGRectMake(0, 100, self.window.frame.size.width, 100);
+
+              UIButton *button = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+              button.frame = CGRectMake(50, 250, self.window.frame.size.width - 100, 50);
+              button.backgroundColor = [UIColor blueColor];
+              [button setTitle:@"Tap Me" forState:UIControlStateNormal];
+              [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+              button.titleLabel.font = [UIFont systemFontOfSize:18];
+              [button addTarget:self action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
+
+              [viewController.view addSubview:titleLabel];
+              [viewController.view addSubview:button];
+
+              self.window.rootViewController = viewController;
+              [self.window makeKeyAndVisible];
+
+              return YES;
+          }
+
+          - (void)buttonTapped {
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Success" message:@"Button tapped!" preferredStyle:UIAlertControllerStyleAlert];
+              [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+              [self.window.rootViewController presentViewController:alert animated:YES completion:nil];
+          }
+
+          - (void)applicationWillResignActive:(UIApplication *)application {}
+          - (void)applicationDidEnterBackground:(UIApplication *)application {}
+          - (void)applicationWillEnterForeground:(UIApplication *)application {}
+          - (void)applicationDidBecomeActive:(UIApplication *)application {}
+          - (void)applicationWillTerminate:(UIApplication *)application {}
+
+          @end
+
+          int main(int argc, char *argv[]) {
+              @autoreleasepool {
+                  return UIApplicationMain(argc, argv, nil, NSStringFromClass([SmartButtonsAppDelegate class]));
+              }
+          }
+          MEOF
+
+          cat > Resources/Info.plist << 'MEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>SmartButtons</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.smartbuttons</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>SmartButtons</string>
+              <key>CFBundleDisplayName</key>
+              <string>Smart Buttons</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>CFBundleSignature</key>
+              <string>????</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>MinimumOSVersion</key>
+              <string>14.0</string>
+              <key>UIDeviceFamily</key>
+              <array>
+                  <integer>1</integer>
+                  <integer>2</integer>
+              </array>
+              <key>UIRequiredDeviceCapabilities</key>
+              <array>
+                  <string>arm64</string>
+              </array>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+          </dict>
+          </plist>
+          MEOF
+
+      - name: Build Application
+        run: |
+          export THEOS=$HOME/theos
+          export PATH=$THEOS/bin:$PATH
+          cd ${{ github.workspace }}
+          make clean
+          make
+
+      - name: Create IPA Package
+        run: |
+          cd ${{ github.workspace }}
+          APP_PATH=$(find .theos -type d -name "*.app" | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app bundle found."
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          rm -rf build-output
+          mkdir -p build-output/Payload
+          cp -r "$APP_PATH" build-output/Payload/SmartButtons.app
+
+          cp Resources/Info.plist build-output/Payload/SmartButtons.app/Info.plist
+          ldid -S build-output/Payload/SmartButtons.app/SmartButtons
+
+          cd build-output
+          zip -r -q ../artifacts/SmartButtons.ipa Payload/
+          cd ..
+
+          echo "IPA contents:"
+          unzip -l artifacts/SmartButtons.ipa
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SmartButtons-Package
-          path: packages/*.deb
+          name: SmartButtons-IPA
+          path: artifacts/SmartButtons.ipa
+          retention-days: 30
