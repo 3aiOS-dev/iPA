@@ -1,4 +1,4 @@
-name: Build Complete iOS IPA
+name: Build iOS IPA Complete
 
 on:
   push:
@@ -12,260 +12,116 @@ jobs:
     runs-on: macos-latest
     
     steps:
-    - name: Checkout Repository
+    - name: Checkout Code
       uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-        
-    - name: Setup Build Environment
+
+    - name: Setup Xcode
       run: |
-        echo "=========================================="
-        echo "Setting up iOS Build Environment"
-        echo "=========================================="
-        
         sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
         xcode-select -p
-        
-        echo "Installing Homebrew packages..."
-        brew install ldid xz gettext lz4 imagemagick wget curl git
-        
-        which ldid
-        which dpkg || brew install dpkg
-        
-    - name: Setup Theos Framework
+
+    - name: Install Dependencies
       run: |
-        echo "=========================================="
-        echo "Setting up Theos Framework"
-        echo "=========================================="
-        
-        if [ ! -d "$HOME/theos" ]; then
-          echo "Cloning Theos repository..."
-          git clone --recursive https://github.com/theos/theos.git $HOME/theos
-        else
-          echo "Theos already installed"
-        fi
-        
+        brew install ldid dpkg xz wget curl git imagemagick
+
+    - name: Setup Theos
+      run: |
+        git clone --recursive https://github.com/theos/theos.git ~/theos
         echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+    - name: Download iOS SDK
+      run: |
         export THEOS=$HOME/theos
-        
-        ls -la $HOME/theos/bin/
-        
-    - name: Download and Setup iOS SDK
+        mkdir -p ~/theos/sdks
+        cd ~/theos/sdks
+        curl -L https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -o iPhoneOS.sdk.tar.gz
+        tar -xzf iPhoneOS.sdk.tar.gz
+        rm iPhoneOS.sdk.tar.gz
+
+    - name: Create Build Directories
       run: |
-        echo "=========================================="
-        echo "Setting up iOS SDK"
-        echo "=========================================="
-        
-        export THEOS=$HOME/theos
-        mkdir -p $THEOS/sdks
-        
-        cd $THEOS/sdks
-        
-        if [ ! -d "iPhoneOS.sdk" ]; then
-          echo "Downloading iOS SDK..."
-          
-          curl -L https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -o iPhoneOS.sdk.tar.gz --progress-bar || wget https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -O iPhoneOS.sdk.tar.gz
-          
-          echo "Extracting iOS SDK..."
-          tar -xzf iPhoneOS.sdk.tar.gz
-          rm -f iPhoneOS.sdk.tar.gz
-          
-          echo "SDK extraction completed"
-        else
-          echo "iOS SDK already exists"
-        fi
-        
-        ls -la $THEOS/sdks/
-        
-    - name: Prepare Build Directory
+        mkdir -p Resources artifacts
+
+    - name: Create App Icon
       run: |
-        echo "=========================================="
-        echo "Preparing Build Directory"
-        echo "=========================================="
-        
-        cd ${{ github.workspace }}
-        
-        mkdir -p Resources artifacts build-output
-        
-        if [ ! -f "Resources/icon.png" ]; then
-          echo "Creating application icon..."
-          convert -size 120x120 xc:FF3333 -fill white -pointsize 14 -gravity center -annotate +0+0 "Test" Resources/icon.png
-          convert Resources/icon.png -resize 180x180 Resources/icon-180.png
-          convert Resources/icon.png -resize 120x120 Resources/icon-120.png
-          echo "Icons created successfully"
-        fi
-        
-        ls -la Resources/
-        
-    - name: Display Build Configuration
+        convert -size 120x120 xc:FF3333 -fill white -pointsize 14 -gravity center -annotate +0+0 "Test" Resources/icon.png
+
+    - name: Build Application
       run: |
-        echo "=========================================="
-        echo "Build Configuration"
-        echo "=========================================="
-        
-        export THEOS=$HOME/theos
-        
-        echo "THEOS: $THEOS"
-        echo "SDK Path: $THEOS/sdks/iPhoneOS.sdk"
-        echo "Bin Path: $THEOS/bin"
-        echo ""
-        echo "Available tools:"
-        ls -la $THEOS/bin/
-        
-    - name: Build iOS Application with Theos
-      run: |
-        echo "=========================================="
-        echo "Building iOS Application"
-        echo "=========================================="
-        
         export THEOS=$HOME/theos
         export PATH=$THEOS/bin:$PATH
-        
         cd ${{ github.workspace }}
-        
-        echo "Cleaning previous builds..."
-        make clean || true
-        
-        echo "Make version:"
-        make --version | head -5
-        
-        echo "Starting build process..."
-        make -j$(sysctl -n hw.ncpu) VERBOSE=1
-        
-        echo ""
-        echo "Build completed!"
-        
-    - name: Verify Build Artifacts
+        make clean
+        make
+
+    - name: Copy Build Artifacts
       run: |
-        echo "=========================================="
-        echo "Verifying Build Artifacts"
-        echo "=========================================="
-        
         cd ${{ github.workspace }}
-        
-        echo "Searching for build outputs..."
-        
-        find . -type d -name "*.app" -ls 2>/dev/null || echo "No .app found"
-        echo ""
-        find . -type f -name "*.deb" -ls 2>/dev/null || echo "No .deb found"
-        echo ""
-        find . -type f -name "*.ipa" -ls 2>/dev/null || echo "No .ipa found"
-        echo ""
-        find .theos -type f -ls 2>/dev/null | head -50 || echo "No .theos directory"
-        
+        find .theos/obj/debug -name "*.deb" -exec cp {} artifacts/ \;
+        find .theos/obj/debug -name "*.ipa" -exec cp {} artifacts/ \;
+        find .theos/obj/debug -type d -name "*.app" -exec cp -r {} artifacts/ \;
+
     - name: Create IPA Package
       run: |
-        echo "=========================================="
-        echo "Creating IPA Package"
-        echo "=========================================="
-        
-        export THEOS=$HOME/theos
         cd ${{ github.workspace }}
-        
         mkdir -p build-output/Payload/TestApp.app
-        mkdir -p build-output/iTunesArtwork
         
         if [ -d ".theos/obj/debug/TestApp.app" ]; then
-          echo "Found app bundle, copying..."
           cp -r .theos/obj/debug/TestApp.app/* build-output/Payload/TestApp.app/
-          mkdir -p build-output/Payload/TestApp.app/_CodeSignature
-          echo "App bundle copied successfully"
-        else
-          echo "Creating minimal app structure..."
-          touch build-output/Payload/TestApp.app/PkgInfo
-          echo "APPL????" > build-output/Payload/TestApp.app/PkgInfo
         fi
         
-        echo "Packaging IPA..."
         cd build-output
-        zip -r -q ../artifacts/TestApp-${GITHUB_RUN_ID}.ipa Payload/
+        zip -r -q ../artifacts/TestApp.ipa Payload/
         cd ..
-        
-        echo "IPA created successfully"
-        
+
     - name: Create DEB Package
       run: |
-        echo "=========================================="
-        echo "Creating DEB Package"
-        echo "=========================================="
-        
         cd ${{ github.workspace }}
+        mkdir -p deb-temp/DEBIAN
         
-        find . -name "*.deb" -type f -exec cp {} artifacts/ \;
-        
-        if [ ! -f "artifacts/*.deb" ]; then
-          echo "Creating DEB package..."
-          
-          mkdir -p deb-package/DEBIAN
-          mkdir -p deb-package/Applications/TestApp.app
-          
-          cat > deb-package/DEBIAN/control <<'CONTROL'
+        cat > deb-temp/DEBIAN/control << 'EOF'
 Package: com.example.testapp
 Name: Test App
 Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: Test iOS Application
+Description: Simple iOS Test Application
 Maintainer: 3aiOS-dev
 Author: 3aiOS-dev
 Section: Utilities
 Depends: mobilesubstrate
-CONTROL
-          
-          cat > deb-package/DEBIAN/postinst <<'POSTINST'
+EOF
+
+        cat > deb-temp/DEBIAN/postinst << 'EOF'
 #!/bin/bash
 echo "Test App installed successfully"
 exit 0
-POSTINST
-          chmod 0755 deb-package/DEBIAN/postinst
-          
-          cat > deb-package/DEBIAN/postrm <<'POSTRM'
+EOF
+        chmod 0755 deb-temp/DEBIAN/postinst
+
+        cat > deb-temp/DEBIAN/postrm << 'EOF'
 #!/bin/bash
 echo "Test App removed"
 exit 0
-POSTRM
-          chmod 0755 deb-package/DEBIAN/postrm
-          
-          dpkg-deb -b deb-package artifacts/com.example.testapp_1.0.0_iphoneos-arm64.deb
-          
-          echo "DEB package created"
-        fi
-        
-    - name: Verify Artifacts
-      run: |
-        echo "=========================================="
-        echo "Final Artifact Verification"
-        echo "=========================================="
-        
-        cd ${{ github.workspace }}/artifacts
-        
-        echo "Artifacts created:"
-        ls -lh ./ || echo "No artifacts directory"
-        
-        echo ""
-        echo "File details:"
-        file * 2>/dev/null || echo "No files found"
-        
-    - name: Upload Build Artifacts
+EOF
+        chmod 0755 deb-temp/DEBIAN/postrm
+
+        dpkg-deb -b deb-temp artifacts/TestApp.deb
+
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v3
       with:
-        name: iOS-Build-Artifacts-${{ github.run_id }}
-        path: |
-          artifacts/
-          build-output/
+        name: iOS-App-Build
+        path: artifacts/
         retention-days: 30
-        
-    - name: Build Status Summary
+
+    - name: Build Summary
       if: always()
       run: |
         echo "=========================================="
-        echo "Build Status Summary"
+        echo "Build Complete"
         echo "=========================================="
-        echo "Build Status: ${{ job.status }}"
-        echo "Run ID: ${{ github.run_id }}"
-        echo "Branch: ${{ github.ref }}"
+        echo "Status: ${{ job.status }}"
         echo ""
         echo "Artifacts:"
-        ls -lh artifacts/ 2>/dev/null || echo "No artifacts found"
-        echo ""
-        echo "Build complete! Check the Artifacts section to download."
+        ls -lh artifacts/ 2>/dev/null || echo "No artifacts"
         echo "=========================================="
