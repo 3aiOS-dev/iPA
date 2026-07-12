@@ -1,4 +1,4 @@
-name: Build_Esign_Clone
+name: Build_21s_Temp_eSign
 
 on:
   push:
@@ -22,11 +22,7 @@ jobs:
         run: |
           brew install ldid
           brew install zip
-          brew install openssl
-          brew install zlib
-          brew install libplist
-          brew install libimobiledevice
-          brew install ideviceinstaller
+          brew install p7zip
           unzip -v | head -1
           zip -v | head -1
 
@@ -42,8 +38,8 @@ jobs:
               img = Image.new("RGB", (size, size), (18, 18, 30))
               draw = ImageDraw.Draw(img)
 
-              top = (30, 144, 255)
-              bottom = (0, 191, 255)
+              top = (124, 58, 237)
+              bottom = (6, 182, 212)
               for y in range(size):
                   t = y / size
                   r = int(top[0] * (1 - t) + bottom[0] * t)
@@ -52,14 +48,14 @@ jobs:
                   draw.line([(0, y), (size, y)], fill=(r, g, b))
 
               draw.ellipse(
-                  [size * 0.15, size * 0.15, size * 0.85, size * 0.85],
+                  [size * 0.18, size * 0.18, size * 0.82, size * 0.82],
                   outline=(255, 255, 255),
                   width=max(2, size // 40),
               )
 
-              text = "E"
+              text = "✍️"
               try:
-                  font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.45))
+                  font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.30))
               except Exception:
                   font = ImageFont.load_default()
 
@@ -78,655 +74,544 @@ jobs:
           PYEOF
           ls -la Resources
 
-      - name: Generate Source - Certificate Manager
+      - name: Generate eSign Core Functions
         run: |
           cd ${{ github.workspace }}
-          cat > CertificateManager.swift << 'CEOF'
-          import Foundation
-          import Security
-          import UIKit
-
-          class CertificateManager {
-              static let shared = CertificateManager()
-              private let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-              
-              struct Certificate: Codable {
-                  let name: String
-                  let filePath: String
-                  let password: String
-                  let expiryDate: Date?
-                  let teamID: String?
-                  let bundleID: String?
-                  let isRevoked: Bool
-                  let createdAt: Date
-                  let type: CertType
-                  
-                  enum CertType: String, Codable {
-                      case developer = "مطور"
-                      case distribution = "توزيع"
-                      case enterprise = "شركات"
-                  }
-                  
-                  var isValid: Bool {
-                      guard let expiry = expiryDate else { return false }
-                      return expiry > Date() && !isRevoked
-                  }
-                  
-                  var daysRemaining: Int {
-                      guard let expiry = expiryDate else { return 0 }
-                      return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day ?? 0
-                  }
-              }
-              
-              private let certificatesKey = "saved_certificates"
-              private var certificates: [Certificate] = []
-              
-              private init() {
-                  loadCertificates()
-              }
-              
-              func loadCertificates() {
-                  guard let data = UserDefaults.standard.data(forKey: certificatesKey),
-                        let certs = try? JSONDecoder().decode([Certificate].self, from: data) else {
-                      certificates = []
-                      return
-                  }
-                  certificates = certs
-              }
-              
-              func saveCertificates() {
-                  if let data = try? JSONEncoder().encode(certificates) {
-                      UserDefaults.standard.set(data, forKey: certificatesKey)
-                  }
-              }
-              
-              func addCertificate(name: String, filePath: String, password: String, expiryDate: Date?, teamID: String?, bundleID: String?, type: Certificate.CertType) {
-                  let cert = Certificate(
-                      name: name,
-                      filePath: filePath,
-                      password: password,
-                      expiryDate: expiryDate,
-                      teamID: teamID,
-                      bundleID: bundleID,
-                      isRevoked: false,
-                      createdAt: Date(),
-                      type: type
-                  )
-                  certificates.append(cert)
-                  saveCertificates()
-              }
-              
-              func removeCertificate(at index: Int) {
-                  guard index < certificates.count else { return }
-                  let cert = certificates[index]
-                  try? FileManager.default.removeItem(atPath: cert.filePath)
-                  certificates.remove(at: index)
-                  saveCertificates()
-              }
-              
-              func getCertificates() -> [Certificate] {
-                  return certificates
-              }
-              
-              func getValidCertificates() -> [Certificate] {
-                  return certificates.filter { $0.isValid }
-              }
-              
-              func importCertificate(from url: URL, password: String, type: Certificate.CertType) -> Bool {
-                  do {
-                      let fileName = "cert_\(Date().timeIntervalSince1970).p12"
-                      let destPath = (documentsPath as NSString).appendingPathComponent(fileName)
-                      try FileManager.default.copyItem(at: url, to: URL(fileURLWithPath: destPath))
-                      
-                      let certInfo = extractCertificateInfo(p12Path: destPath, password: password)
-                      
-                      addCertificate(
-                          name: certInfo.name ?? url.lastPathComponent,
-                          filePath: destPath,
-                          password: password,
-                          expiryDate: certInfo.expiryDate,
-                          teamID: certInfo.teamID,
-                          bundleID: certInfo.bundleID,
-                          type: type
-                      )
-                      return true
-                  } catch {
-                      print("Failed to import certificate: \(error)")
-                      return false
-                  }
-              }
-              
-              private func extractCertificateInfo(p12Path: String, password: String) -> (name: String?, expiryDate: Date?, teamID: String?, bundleID: String?) {
-                  return (name: "Imported Cert", expiryDate: Date().addingTimeInterval(365 * 24 * 3600), teamID: "TEAM123", bundleID: "com.example.app")
-              }
-              
-              func signApp(ipaPath: String, certificate: Certificate) -> Bool {
-                  let signer = SigningEngine.shared
-                  return signer.signIPA(at: ipaPath, with: certificate)
-              }
-              
-              func signAndInstall(ipaPath: String, certificate: Certificate, completion: @escaping (Bool, String) -> Void) {
-                  DispatchQueue.global(qos: .userInitiated).async {
-                      let success = self.signApp(ipaPath: ipaPath, certificate: certificate)
-                      DispatchQueue.main.async {
-                          if success {
-                              let installSuccess = self.installIPA(ipaPath)
-                              completion(installSuccess, installSuccess ? "تم التثبيت بنجاح ✅" : "فشل التثبيت ❌")
-                          } else {
-                              completion(false, "فشل التوقيع ❌")
-                          }
-                      }
-                  }
-              }
-              
-              private func installIPA(_ ipaPath: String) -> Bool {
-                  #if os(iOS)
-                  // On iOS, we use a simpler approach
-                  return true
-                  #else
-                  let task = Process()
-                  task.launchPath = "/usr/local/bin/ideviceinstaller"
-                  task.arguments = ["-i", ipaPath]
-                  
-                  let pipe = Pipe()
-                  task.standardOutput = pipe
-                  task.standardError = pipe
-                  
-                  do {
-                      try task.run()
-                      task.waitUntilExit()
-                      return task.terminationStatus == 0
-                  } catch {
-                      return false
-                  }
-                  #endif
-              }
-          }
-          CEOF
-
-      - name: Generate Source - Signing Engine
-        run: |
-          cd ${{ github.workspace }}
-          cat > SigningEngine.swift << 'SEOF'
-          import Foundation
-          import UIKit
-
-          class SigningEngine {
-              static let shared = SigningEngine()
-              private let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-              
-              private init() {}
-              
-              func signIPA(at path: String, with certificate: CertificateManager.Certificate) -> Bool {
-                  let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent("sign_\(Date().timeIntervalSince1970)")
-                  try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
-                  
-                  guard extractIPA(path, to: tempDir) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return false
-                  }
-                  
-                  let payloadPath = (tempDir as NSString).appendingPathComponent("Payload")
-                  guard let appBundles = try? FileManager.default.contentsOfDirectory(atPath: payloadPath),
-                        let appName = appBundles.first(where: { $0.hasSuffix(".app") }) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return false
-                  }
-                  
-                  let appPath = (payloadPath as NSString).appendingPathComponent(appName)
-                  
-                  let infoPlistPath = (appPath as NSString).appendingPathComponent("Info.plist")
-                  modifyInfoPlist(infoPlistPath, certificate: certificate)
-                  
-                  let binaryName = (appName as NSString).deletingPathExtension
-                  let binaryPath = (appPath as NSString).appendingPathComponent(binaryName)
-                  
-                  let signSuccess = signBinary(binaryPath, certificate: certificate)
-                  
-                  let frameworksPath = (appPath as NSString).appendingPathComponent("Frameworks")
-                  if FileManager.default.fileExists(atPath: frameworksPath) {
-                      if let frameworks = try? FileManager.default.contentsOfDirectory(atPath: frameworksPath) {
-                          for framework in frameworks where framework.hasSuffix(".framework") {
-                              let frameworkPath = (frameworksPath as NSString).appendingPathComponent(framework)
-                              let frameworkBinary = (framework as NSString).deletingPathExtension
-                              let frameworkBinaryPath = (frameworkPath as NSString).appendingPathComponent(frameworkBinary)
-                              _ = signBinary(frameworkBinaryPath, certificate: certificate)
-                          }
-                      }
-                  }
-                  
-                  let signedIPAPath = (documentsPath as NSString).appendingPathComponent("signed_\(Date().timeIntervalSince1970).ipa")
-                  let repackageSuccess = repackageIPA(tempDir, to: signedIPAPath)
-                  
-                  try? FileManager.default.removeItem(atPath: tempDir)
-                  
-                  return repackageSuccess && signSuccess
-              }
-              
-              private func extractIPA(_ path: String, to dest: String) -> Bool {
-                  #if os(iOS)
-                  return true
-                  #else
-                  let task = Process()
-                  task.launchPath = "/usr/bin/unzip"
-                  task.arguments = ["-q", path, "-d", dest]
-                  
-                  do {
-                      try task.run()
-                      task.waitUntilExit()
-                      return task.terminationStatus == 0
-                  } catch {
-                      return false
-                  }
-                  #endif
-              }
-              
-              private func repackageIPA(_ source: String, to dest: String) -> Bool {
-                  #if os(iOS)
-                  return true
-                  #else
-                  let task = Process()
-                  task.launchPath = "/usr/bin/zip"
-                  task.arguments = ["-r", dest, "."]
-                  task.currentDirectoryPath = source
-                  
-                  do {
-                      try task.run()
-                      task.waitUntilExit()
-                      return task.terminationStatus == 0
-                  } catch {
-                      return false
-                  }
-                  #endif
-              }
-              
-              private func modifyInfoPlist(_ path: String, certificate: CertificateManager.Certificate) {
-                  guard let data = FileManager.default.contents(atPath: path),
-                        var plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-                      return
-                  }
-                  
-                  if let bundleID = certificate.bundleID {
-                      plist["CFBundleIdentifier"] = bundleID
-                  }
-                  
-                  if let teamID = certificate.teamID {
-                      plist["TeamIdentifier"] = teamID
-                      plist["TeamID"] = teamID
-                      plist["ApplicationIdentifier"] = "\(teamID).\(plist["CFBundleIdentifier"] ?? "com.example.app")"
-                  }
-                  
-                  plist["SigningStatus"] = "Signed with Esign Clone"
-                  
-                  let updatedData = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-                  try? updatedData?.write(to: URL(fileURLWithPath: path))
-              }
-              
-              private func signBinary(_ path: String, certificate: CertificateManager.Certificate) -> Bool {
-                  guard FileManager.default.fileExists(atPath: path) else { return false }
-                  
-                  #if os(iOS)
-                  return true
-                  #else
-                  let task = Process()
-                  task.launchPath = "/usr/local/bin/ldid"
-                  task.arguments = ["-S", path]
-                  
-                  do {
-                      try task.run()
-                      task.waitUntilExit()
-                      return task.terminationStatus == 0
-                  } catch {
-                      return false
-                  }
-                  #endif
-              }
-              
-              func signWithCodesign(_ path: String, certificate: CertificateManager.Certificate) -> Bool {
-                  return true
-              }
-              
-              func extractProvisioningProfile(from ipa: String) -> String? {
-                  let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent("profile_extract")
-                  try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
-                  
-                  guard extractIPA(ipa, to: tempDir) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return nil
-                  }
-                  
-                  let payloadPath = (tempDir as NSString).appendingPathComponent("Payload")
-                  guard let appBundles = try? FileManager.default.contentsOfDirectory(atPath: payloadPath),
-                        let appName = appBundles.first(where: { $0.hasSuffix(".app") }) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return nil
-                  }
-                  
-                  let appPath = (payloadPath as NSString).appendingPathComponent(appName)
-                  let profilePath = (appPath as NSString).appendingPathComponent("embedded.mobileprovision")
-                  
-                  guard let profileData = FileManager.default.contents(atPath: profilePath) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return nil
-                  }
-                  
-                  let profileString = profileData.base64EncodedString()
-                  try? FileManager.default.removeItem(atPath: tempDir)
-                  return profileString
-              }
-          }
-          SEOF
-
-      - name: Generate Source - IPA Manager
-        run: |
-          cd ${{ github.workspace }}
-          cat > IPAManager.swift << 'IEOF'
+          cat > ESignCore.swift << 'WEOF'
           import Foundation
           import UIKit
           import UniformTypeIdentifiers
 
-          class IPAManager {
-              static let shared = IPAManager()
-              private let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+          class ESignCore {
+              static let shared = ESignCore()
+              let fileManager = FileManager.default
+              let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+              let tempPath = NSTemporaryDirectory()
               
-              struct AppInfo: Codable {
-                  let name: String
-                  let bundleID: String
-                  let version: String
-                  let iconPath: String?
-                  let ipaPath: String
-                  let isSigned: Bool
-                  let installed: Bool
-                  let createdAt: Date
-              }
-              
-              private var apps: [AppInfo] = []
-              private let appsKey = "installed_apps"
-              
-              private init() {
-                  loadApps()
-              }
-              
-              func loadApps() {
-                  guard let data = UserDefaults.standard.data(forKey: appsKey),
-                        let savedApps = try? JSONDecoder().decode([AppInfo].self, from: data) else {
-                      apps = []
-                      return
-                  }
-                  apps = savedApps
-              }
-              
-              func saveApps() {
-                  if let data = try? JSONEncoder().encode(apps) {
-                      UserDefaults.standard.set(data, forKey: appsKey)
-                  }
-              }
-              
-              func getApps() -> [AppInfo] {
-                  return apps
-              }
-              
-              func importIPA(from url: URL) -> Bool {
-                  let fileName = "app_\(Date().timeIntervalSince1970).ipa"
-                  let destPath = (documentsPath as NSString).appendingPathComponent(fileName)
+              // MARK: - استرداد التوقيع
+              func retrieveSignature(from ipaPath: String) -> [String: Any]? {
+                  let unzipPath = (tempPath as NSString).appendingPathComponent("retrieve_signature")
+                  try? fileManager.removeItem(atPath: unzipPath)
+                  try? fileManager.createDirectory(atPath: unzipPath, withIntermediateDirectories: true)
                   
-                  do {
-                      try FileManager.default.copyItem(at: url, to: URL(fileURLWithPath: destPath))
-                      
-                      let info = extractAppInfo(from: destPath)
-                      let app = AppInfo(
-                          name: info.name ?? url.lastPathComponent,
-                          bundleID: info.bundleID ?? "com.example.app",
-                          version: info.version ?? "1.0",
-                          iconPath: info.iconPath,
-                          ipaPath: destPath,
-                          isSigned: false,
-                          installed: false,
-                          createdAt: Date()
-                      )
-                      apps.append(app)
-                      saveApps()
-                      return true
-                  } catch {
-                      return false
-                  }
-              }
-              
-              private func extractAppInfo(from ipaPath: String) -> (name: String?, bundleID: String?, version: String?, iconPath: String?) {
-                  let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent("info_extract")
-                  try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+                  let unzipTask = Process()
+                  unzipTask.launchPath = "/usr/bin/unzip"
+                  unzipTask.arguments = ["-q", ipaPath, "-d", unzipPath]
+                  unzipTask.launch()
+                  unzipTask.waitUntilExit()
                   
-                  #if os(iOS)
-                  // On iOS, return default values
-                  try? FileManager.default.removeItem(atPath: tempDir)
-                  return ("App", "com.example.app", "1.0", nil)
-                  #else
-                  let extractTask = Process()
-                  extractTask.launchPath = "/usr/bin/unzip"
-                  extractTask.arguments = ["-q", ipaPath, "-d", tempDir]
+                  var signatureInfo: [String: Any] = [:]
                   
-                  do {
-                      try extractTask.run()
-                      extractTask.waitUntilExit()
-                  } catch {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return (nil, nil, nil, nil)
-                  }
-                  
-                  let payloadPath = (tempDir as NSString).appendingPathComponent("Payload")
-                  guard let appBundles = try? FileManager.default.contentsOfDirectory(atPath: payloadPath),
-                        let appName = appBundles.first(where: { $0.hasSuffix(".app") }) else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return (nil, nil, nil, nil)
-                  }
-                  
-                  let appPath = (payloadPath as NSString).appendingPathComponent(appName)
-                  let infoPlistPath = (appPath as NSString).appendingPathComponent("Info.plist")
-                  
-                  guard let data = FileManager.default.contents(atPath: infoPlistPath),
-                        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-                      try? FileManager.default.removeItem(atPath: tempDir)
-                      return (nil, nil, nil, nil)
-                  }
-                  
-                  let name = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String
-                  let bundleID = plist["CFBundleIdentifier"] as? String
-                  let version = plist["CFBundleShortVersionString"] as? String
-                  
-                  var iconPath: String? = nil
-                  let iconFiles = ["AppIcon", "Icon", "icon", "Icon-60", "AppIcon-60"]
-                  for icon in iconFiles {
-                      let paths = try? FileManager.default.contentsOfDirectory(atPath: appPath)
-                      if let found = paths?.first(where: { $0.hasPrefix(icon) && ($0.hasSuffix(".png") || $0.hasSuffix(".jpg")) }) {
-                          iconPath = (appPath as NSString).appendingPathComponent(found)
-                          break
+                  // البحث عن ملف التوقيع
+                  let payloadPath = (unzipPath as NSString).appendingPathComponent("Payload")
+                  if let appContents = try? fileManager.contentsOfDirectory(atPath: payloadPath) {
+                      for item in appContents {
+                          if item.hasSuffix(".app") {
+                              let appPath = (payloadPath as NSString).appendingPathComponent(item)
+                              let embeddedPath = (appPath as NSString).appendingPathComponent("embedded.mobileprovision")
+                              
+                              if fileManager.fileExists(atPath: embeddedPath) {
+                                  // استخراج معلومات الشهادة
+                                  let provisionTask = Process()
+                                  provisionTask.launchPath = "/usr/bin/security"
+                                  provisionTask.arguments = ["cms", "-D", "-i", embeddedPath]
+                                  
+                                  let outputPipe = Pipe()
+                                  provisionTask.standardOutput = outputPipe
+                                  provisionTask.launch()
+                                  provisionTask.waitUntilExit()
+                                  
+                                  let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                                  if let output = try? PropertyListSerialization.propertyList(from: outputData, options: [], format: nil) as? [String: Any] {
+                                      signatureInfo["provision"] = output
+                                  }
+                              }
+                              
+                              // استخراج معلومات Entitlements
+                              let entitlementsPath = (appPath as NSString).appendingPathComponent("archived-expanded-entitlements.xcent")
+                              if !fileManager.fileExists(atPath: entitlementsPath) {
+                                  let extractTask = Process()
+                                  extractTask.launchPath = "/usr/bin/codesign"
+                                  extractTask.arguments = ["-d", "--entitlements", entitlementsPath, appPath]
+                                  extractTask.launch()
+                                  extractTask.waitUntilExit()
+                              }
+                              
+                              if fileManager.fileExists(atPath: entitlementsPath),
+                                 let entitlementsData = try? Data(contentsOf: URL(fileURLWithPath: entitlementsPath)),
+                                 let entitlements = try? PropertyListSerialization.propertyList(from: entitlementsData, options: [], format: nil) as? [String: Any] {
+                                  signatureInfo["entitlements"] = entitlements
+                              }
+                          }
                       }
                   }
                   
-                  try? FileManager.default.removeItem(atPath: tempDir)
-                  return (name, bundleID, version, iconPath)
-                  #endif
+                  // تنظيف
+                  try? fileManager.removeItem(atPath: unzipPath)
+                  return signatureInfo.isEmpty ? nil : signatureInfo
               }
               
-              func removeApp(at index: Int) {
-                  guard index < apps.count else { return }
-                  let app = apps[index]
-                  try? FileManager.default.removeItem(atPath: app.ipaPath)
-                  apps.remove(at: index)
-                  saveApps()
-              }
-              
-              func signApp(at index: Int, with certificate: CertificateManager.Certificate) -> Bool {
-                  guard index < apps.count else { return false }
-                  let app = apps[index]
+              // MARK: - تعديل التوقيع
+              func modifySignature(ipaPath: String, certificatePath: String, password: String) -> Bool {
+                  let unzipPath = (tempPath as NSString).appendingPathComponent("modify_signature")
+                  try? fileManager.removeItem(atPath: unzipPath)
+                  try? fileManager.createDirectory(atPath: unzipPath, withIntermediateDirectories: true)
                   
-                  let success = CertificateManager.shared.signApp(ipaPath: app.ipaPath, certificate: certificate)
-                  if success {
-                      apps[index].isSigned = true
-                      saveApps()
+                  // فك الـ IPA
+                  let unzipTask = Process()
+                  unzipTask.launchPath = "/usr/bin/unzip"
+                  unzipTask.arguments = ["-q", ipaPath, "-d", unzipPath]
+                  unzipTask.launch()
+                  unzipTask.waitUntilExit()
+                  
+                  var success = false
+                  let payloadPath = (unzipPath as NSString).appendingPathComponent("Payload")
+                  if let appContents = try? fileManager.contentsOfDirectory(atPath: payloadPath) {
+                      for item in appContents where item.hasSuffix(".app") {
+                          let appPath = (payloadPath as NSString).appendingPathComponent(item)
+                          
+                          // إزالة التوقيع القديم
+                          let removeSign = Process()
+                          removeSign.launchPath = "/usr/bin/codesign"
+                          removeSign.arguments = ["--remove-signature", appPath]
+                          removeSign.launch()
+                          removeSign.waitUntilExit()
+                          
+                          // توقيع جديد
+                          let signTask = Process()
+                          signTask.launchPath = "/usr/bin/codesign"
+                          signTask.arguments = [
+                              "-s", certificatePath,
+                              "--keychain", "/Users/runner/Library/Keychains/login.keychain-db",
+                              "--force",
+                              "--preserve-metadata=entitlements",
+                              appPath
+                          ]
+                          
+                          let outputPipe = Pipe()
+                          signTask.standardOutput = outputPipe
+                          signTask.standardError = outputPipe
+                          signTask.launch()
+                          signTask.waitUntilExit()
+                          
+                          success = signTask.terminationStatus == 0
+                          if !success {
+                              let errorData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                              print("Sign error: \(String(data: errorData, encoding: .utf8) ?? "")")
+                          }
+                      }
                   }
+                  
+                  // إعادة ضغط الـ IPA
+                  if success {
+                      let newIPAPath = (documentsPath as NSString).appendingPathComponent("signed_app.ipa")
+                      try? fileManager.removeItem(atPath: newIPAPath)
+                      
+                      let zipTask = Process()
+                      zipTask.launchPath = "/usr/bin/zip"
+                      zipTask.currentDirectoryPath = unzipPath
+                      zipTask.arguments = ["-qr", newIPAPath, "Payload"]
+                      zipTask.launch()
+                      zipTask.waitUntilExit()
+                      
+                      try? fileManager.removeItem(atPath: unzipPath)
+                  }
+                  
                   return success
               }
               
-              func installApp(at index: Int, certificate: CertificateManager.Certificate, completion: @escaping (Bool, String) -> Void) {
-                  guard index < apps.count else {
-                      completion(false, "التطبيق غير موجود")
-                      return
-                  }
+              // MARK: - فك التوقيع
+              func removeSignature(from ipaPath: String) -> String? {
+                  let unzipPath = (tempPath as NSString).appendingPathComponent("remove_signature")
+                  try? fileManager.removeItem(atPath: unzipPath)
+                  try? fileManager.createDirectory(atPath: unzipPath, withIntermediateDirectories: true)
                   
-                  let app = apps[index]
-                  let signer = CertificateManager.shared
+                  let unzipTask = Process()
+                  unzipTask.launchPath = "/usr/bin/unzip"
+                  unzipTask.arguments = ["-q", ipaPath, "-d", unzipPath]
+                  unzipTask.launch()
+                  unzipTask.waitUntilExit()
                   
-                  signer.signAndInstall(ipaPath: app.ipaPath, certificate: certificate) { success, message in
-                      if success {
-                          self.apps[index].installed = true
-                          self.saveApps()
+                  let payloadPath = (unzipPath as NSString).appendingPathComponent("Payload")
+                  if let appContents = try? fileManager.contentsOfDirectory(atPath: payloadPath) {
+                      for item in appContents where item.hasSuffix(".app") {
+                          let appPath = (payloadPath as NSString).appendingPathComponent(item)
+                          
+                          let removeTask = Process()
+                          removeTask.launchPath = "/usr/bin/codesign"
+                          removeTask.arguments = ["--remove-signature", appPath]
+                          removeTask.launch()
+                          removeTask.waitUntilExit()
                       }
-                      completion(success, message)
                   }
+                  
+                  // إنشاء IPA جديد بدون توقيع
+                  let unsignedIPAPath = (documentsPath as NSString).appendingPathComponent("unsigned_app.ipa")
+                  try? fileManager.removeItem(atPath: unsignedIPAPath)
+                  
+                  let zipTask = Process()
+                  zipTask.launchPath = "/usr/bin/zip"
+                  zipTask.currentDirectoryPath = unzipPath
+                  zipTask.arguments = ["-qr", unsignedIPAPath, "Payload"]
+                  zipTask.launch()
+                  zipTask.waitUntilExit()
+                  
+                  try? fileManager.removeItem(atPath: unzipPath)
+                  return fileManager.fileExists(atPath: unsignedIPAPath) ? unsignedIPAPath : nil
               }
               
-              func exportIPA(at index: Int, to url: URL) -> Bool {
-                  guard index < apps.count else { return false }
-                  let app = apps[index]
+              // MARK: - ضغط الملفات
+              func compressFiles(_ paths: [String], outputName: String = "compressed.zip") -> String? {
+                  let outputPath = (documentsPath as NSString).appendingPathComponent(outputName)
+                  try? fileManager.removeItem(atPath: outputPath)
                   
-                  do {
-                      try FileManager.default.copyItem(at: URL(fileURLWithPath: app.ipaPath), to: url)
-                      return true
-                  } catch {
+                  let zipTask = Process()
+                  zipTask.launchPath = "/usr/bin/zip"
+                  zipTask.arguments = ["-jr", outputPath] + paths
+                  zipTask.launch()
+                  zipTask.waitUntilExit()
+                  
+                  return fileManager.fileExists(atPath: outputPath) ? outputPath : nil
+              }
+              
+              // MARK: - توقيع عبر شهادة
+              func signWithCertificate(ipaPath: String, certificateData: Data, password: String, provisionPath: String?) -> Bool {
+                  // حفظ الشهادة مؤقتاً
+                  let certPath = (tempPath as NSString).appendingPathComponent("signing_cert.p12")
+                  try? certificateData.write(to: URL(fileURLWithPath: certPath))
+                  
+                  // استيراد الشهادة
+                  let securityTask = Process()
+                  securityTask.launchPath = "/usr/bin/security"
+                  securityTask.arguments = [
+                      "import", certPath,
+                      "-k", "/Users/runner/Library/Keychains/login.keychain-db",
+                      "-P", password,
+                      "-A"
+                  ]
+                  securityTask.launch()
+                  securityTask.waitUntilExit()
+                  
+                  guard securityTask.terminationStatus == 0 else {
                       return false
                   }
+                  
+                  // نسخ ملف التوقيع إذا وجد
+                  if let provisionPath = provisionPath {
+                      let unzipPath = (tempPath as NSString).appendingPathComponent("provision_sign")
+                      try? fileManager.removeItem(atPath: unzipPath)
+                      try? fileManager.createDirectory(atPath: unzipPath, withIntermediateDirectories: true)
+                      
+                      let unzipTask = Process()
+                      unzipTask.launchPath = "/usr/bin/unzip"
+                      unzipTask.arguments = ["-q", ipaPath, "-d", unzipPath]
+                      unzipTask.launch()
+                      unzipTask.waitUntilExit()
+                      
+                      let payloadPath = (unzipPath as NSString).appendingPathComponent("Payload")
+                      if let appContents = try? fileManager.contentsOfDirectory(atPath: payloadPath) {
+                          for item in appContents where item.hasSuffix(".app") {
+                              let appPath = (payloadPath as NSString).appendingPathComponent(item)
+                              let destProvision = (appPath as NSString).appendingPathComponent("embedded.mobileprovision")
+                              try? fileManager.removeItem(atPath: destProvision)
+                              try? fileManager.copyItem(atPath: provisionPath, toPath: destProvision)
+                          }
+                      }
+                      
+                      // إعادة ضغط
+                      let newIPAPath = (documentsPath as NSString).appendingPathComponent("cert_signed.ipa")
+                      try? fileManager.removeItem(atPath: newIPAPath)
+                      
+                      let zipTask = Process()
+                      zipTask.launchPath = "/usr/bin/zip"
+                      zipTask.currentDirectoryPath = unzipPath
+                      zipTask.arguments = ["-qr", newIPAPath, "Payload"]
+                      zipTask.launch()
+                      zipTask.waitUntilExit()
+                      
+                      try? fileManager.removeItem(atPath: unzipPath)
+                  }
+                  
+                  try? fileManager.removeItem(atPath: certPath)
+                  return true
+              }
+              
+              // MARK: - تثبيت عبر مكاتب
+              func installViaEnterprise(url: String, appName: String) -> Bool {
+                  let manifest = """
+                  <?xml version="1.0" encoding="UTF-8"?>
+                  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                  <plist version="1.0">
+                  <dict>
+                      <key>items</key>
+                      <array>
+                          <dict>
+                              <key>assets</key>
+                              <array>
+                                  <dict>
+                                      <key>kind</key>
+                                      <string>software-package</string>
+                                      <key>url</key>
+                                      <string>\(url)</string>
+                                  </dict>
+                              </array>
+                              <key>metadata</key>
+                              <dict>
+                                  <key>bundle-identifier</key>
+                                  <string>com.example.\(appName)</string>
+                                  <key>bundle-version</key>
+                                  <string>1.0.0</string>
+                                  <key>kind</key>
+                                  <string>software</string>
+                                  <key>title</key>
+                                  <string>\(appName)</string>
+                              </dict>
+                          </dict>
+                      </array>
+                  </dict>
+                  </plist>
+                  """
+                  
+                  let manifestPath = (documentsPath as NSString).appendingPathComponent("manifest.plist")
+                  try? manifest.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+                  
+                  // فتح رابط التثبيت
+                  let installURL = "itms-services://?action=download-manifest&url=file://\(manifestPath)"
+                  if let url = URL(string: installURL) {
+                      DispatchQueue.main.async {
+                          UIApplication.shared.open(url)
+                      }
+                      return true
+                  }
+                  return false
               }
           }
-          IEOF
+          WEOF
 
-      - name: Generate Source - Main UI Components
+      - name: Generate UI Components
         run: |
           cd ${{ github.workspace }}
-          cat > MainUI.swift << 'UEOF'
+          cat > UIComponents.swift << 'WEOF'
           import UIKit
 
-          class MainTabBarController: UITabBarController {
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  
-                  let tabBarAppearance = UITabBarAppearance()
-                  tabBarAppearance.configureWithOpaqueBackground()
-                  tabBarAppearance.backgroundColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-                  tabBarAppearance.stackedLayoutAppearance.normal.iconColor = UIColor.white.withAlphaComponent(0.4)
-                  tabBarAppearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor.white.withAlphaComponent(0.4)]
-                  tabBarAppearance.stackedLayoutAppearance.selected.iconColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-                  tabBarAppearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)]
-                  
-                  tabBar.standardAppearance = tabBarAppearance
-                  tabBar.scrollEdgeAppearance = tabBarAppearance
-                  tabBar.isTranslucent = false
-                  
-                  viewControllers = [
-                      createNav("📱 Apps", AppsViewController(), "square.stack.3d.up"),
-                      createNav("🔐 Certificates", CertificatesViewController(), "shield.lefthalf.filled"),
-                      createNav("⚙️ Tools", ToolsViewController(), "wrench.and.screwdriver"),
-                      createNav("📊 Status", StatusViewController(), "chart.bar")
-                  ]
-              }
-              
-              private func createNav(_ title: String, _ vc: UIViewController, _ icon: String) -> UINavigationController {
-                  let nav = UINavigationController(rootViewController: vc)
-                  nav.tabBarItem.title = title
-                  nav.tabBarItem.image = UIImage(systemName: icon)
-                  nav.navigationBar.prefersLargeTitles = true
-                  nav.navigationBar.barTintColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-                  nav.navigationBar.tintColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-                  nav.navigationBar.titleTextAttributes = [.foregroundColor: UIColor.white]
-                  nav.navigationBar.largeTitleTextAttributes = [
-                      .foregroundColor: UIColor.white,
-                      .font: UIFont.systemFont(ofSize: 32, weight: .heavy)
-                  ]
-                  nav.navigationBar.isTranslucent = false
-                  return nav
-              }
-          }
-          UEOF
+          // MARK: - خلية مخصصة
+          final class ESignCell: UITableViewCell {
+              static let reuseID = "ESignCell"
 
-      - name: Generate Source - Apps View Controller
-        run: |
-          cd ${{ github.workspace }}
-          cat > AppsViewController.swift << 'AVEOF'
-          import UIKit
-          import UniformTypeIdentifiers
+              private let card = UIView()
+              private let iconLabel = UILabel()
+              private let titleLabel = UILabel()
+              private let subtitleLabel = UILabel()
+              
+              override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+                  super.init(style: .default, reuseIdentifier: reuseIdentifier)
+                  build()
+              }
+              
+              required init?(coder: NSCoder) {
+                  super.init(coder: coder)
+                  build()
+              }
+              
+              private func build() {
+                  backgroundColor = .clear
+                  selectionStyle = .none
 
-          class AppsViewController: UIViewController, UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate {
-              private let tableView = UITableView()
-              private let emptyLabel = UILabel()
-              private let accentColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-              private let bgColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let cardColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              
-              private var apps: [IPAManager.AppInfo] = []
-              
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = "التطبيقات"
-                  view.backgroundColor = bgColor
-                  
-                  setupTableView()
-                  setupToolbar()
-                  setupEmptyLabel()
-                  loadApps()
-              }
-              
-              override func viewWillAppear(_ animated: Bool) {
-                  super.viewWillAppear(animated)
-                  loadApps()
-              }
-              
-              private func setupTableView() {
-                  tableView.frame = view.bounds
-                  tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  tableView.backgroundColor = bgColor
-                  tableView.delegate = self
-                  tableView.dataSource = self
-                  tableView.separatorStyle = .none
-                  tableView.register(AppCell.self, forCellReuseIdentifier: "AppCell")
-                  tableView.rowHeight = 82
-                  view.addSubview(tableView)
-              }
-              
-              private func setupEmptyLabel() {
-                  emptyLabel.text = "📭 لا توجد تطبيقات\nاضغط زر + لإضافة تطبيق IPA"
-                  emptyLabel.numberOfLines = 0
-                  emptyLabel.textAlignment = .center
-                  emptyLabel.textColor = UIColor.white.withAlphaComponent(0.35)
-                  emptyLabel.font = .systemFont(ofSize: 16, weight: .medium)
-                  emptyLabel.isHidden = true
-                  emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(emptyLabel)
-                  
+                  card.backgroundColor = UIColor(red: 26/255, green: 26/255, blue: 42/255, alpha: 1)
+                  card.layer.cornerRadius = 16
+                  card.layer.borderWidth = 1
+                  card.layer.borderColor = UIColor.white.withAlphaComponent(0.05).cgColor
+                  card.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(card)
+
+                  iconLabel.textAlignment = .center
+                  iconLabel.font = .systemFont(ofSize: 24)
+                  iconLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(iconLabel)
+
+                  titleLabel.textColor = .white
+                  titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+                  titleLabel.numberOfLines = 2
+                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(titleLabel)
+
+                  subtitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+                  subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+                  subtitleLabel.numberOfLines = 2
+                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+                  card.addSubview(subtitleLabel)
+
                   NSLayoutConstraint.activate([
-                      emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                      emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-                      emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 40),
-                      emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -40)
+                      card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
+                      card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+                      card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                      card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+                      iconLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+                      iconLabel.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+                      iconLabel.widthAnchor.constraint(equalToConstant: 44),
+                      iconLabel.heightAnchor.constraint(equalToConstant: 44),
+
+                      titleLabel.leadingAnchor.constraint(equalTo: iconLabel.trailingAnchor, constant: 12),
+                      titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+                      titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+
+                      subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                      subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+                      subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+                      subtitleLabel.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -12),
                   ])
               }
+
+              func configure(icon: String, title: String, subtitle: String) {
+                  iconLabel.text = icon
+                  titleLabel.text = title
+                  subtitleLabel.text = subtitle
+              }
+          }
+
+          // MARK: - View Controller رئيسي
+          final class ESignViewController: UITableViewController {
+              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
+              let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
               
-              private func setupToolbar() {
-                  navigationController?.setToolbarHidden(false, animated: true)
-                  navigationController?.toolbar.barTintColor = bgColor
-                  navigationController?.toolbar.tintColor = accentColor
-                  navigationController?.toolbar.isTranslucent = false
+              enum Feature: CaseIterable {
+                  case retrieveSignature
+                  case modifySignature
+                  case removeSignature
+                  case compressFiles
+                  case signWithCertificate
+                  case installEnterprise
                   
-                  let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-                  let addBtn = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addAppTapped))
-                  addBtn.tintColor = accentColor
+                  var icon: String {
+                      switch self {
+                      case .retrieveSignature: return "🔍"
+                      case .modifySignature: return "✏️"
+                      case .removeSignature: return "🗑️"
+                      case .compressFiles: return "📦"
+                      case .signWithCertificate: return "📜"
+                      case .installEnterprise: return "📲"
+                      }
+                  }
                   
-                  let refreshBtn = UIBarButtonItem(barButtonSystemItem: .refresh, target: self, action: #selector(refreshApps))
-                  refreshBtn.tintColor = accentColor
+                  var title: String {
+                      switch self {
+                      case .retrieveSignature: return "استرداد التوقيع"
+                      case .modifySignature: return "تعديل التوقيع"
+                      case .removeSignature: return "فك التوقيع"
+                      case .compressFiles: return "ضغط الملفات"
+                      case .signWithCertificate: return "توقيع عبر شهادة"
+                      case .installEnterprise: return "تثبيت عبر المكاتب"
+                      }
+                  }
                   
-                  toolbarItems = [refreshBtn, flex, addBtn, flex]
+                  var subtitle: String {
+                      switch self {
+                      case .retrieveSignature: return "استخراج معلومات التوقيع من ملف IPA"
+                      case .modifySignature: return "تعديل التوقيع باستخدام شهادة جديدة"
+                      case .removeSignature: return "إزالة التوقيع من التطبيق"
+                      case .compressFiles: return "ضغط الملفات والمجلدات"
+                      case .signWithCertificate: return "توقيع التطبيق بشهادة P12"
+                      case .installEnterprise: return "تثبيت التطبيق عبر شهادة مؤسسية"
+                      }
+                  }
               }
               
-              @objc private func addAppTapped() {
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  title = "✍️ eSign"
+                  view.backgroundColor = bgDark
+                  tableView.backgroundColor = bgDark
+                  tableView.separatorStyle = .none
+                  tableView.rowHeight = 88
+                  tableView.register(ESignCell.self, forCellReuseIdentifier: ESignCell.reuseID)
+                  
+                  navigationController?.navigationBar.prefersLargeTitles = true
+                  navigationController?.navigationBar.tintColor = accentTeal
+                  navigationController?.navigationBar.titleTextAttributes = [
+                      .foregroundColor: UIColor.white,
+                      .font: UIFont.boldSystemFont(ofSize: 20)
+                  ]
+              }
+              
+              override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+              
+              override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+                  Feature.allCases.count
+              }
+              
+              override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+                  let cell = tableView.dequeueReusableCell(withIdentifier: ESignCell.reuseID, for: indexPath) as! ESignCell
+                  let feature = Feature.allCases[indexPath.row]
+                  cell.configure(icon: feature.icon, title: feature.title, subtitle: feature.subtitle)
+                  return cell
+              }
+              
+              override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+                  tableView.deselectRow(at: indexPath, animated: true)
+                  let feature = Feature.allCases[indexPath.row]
+                  handleFeature(feature)
+              }
+              
+              private func handleFeature(_ feature: Feature) {
+                  switch feature {
+                  case .retrieveSignature:
+                      handleRetrieveSignature()
+                  case .modifySignature:
+                      handleModifySignature()
+                  case .removeSignature:
+                      handleRemoveSignature()
+                  case .compressFiles:
+                      handleCompressFiles()
+                  case .signWithCertificate:
+                      handleSignWithCertificate()
+                  case .installEnterprise:
+                      handleInstallEnterprise()
+                  }
+              }
+              
+              // MARK: - معالجات الميزات
+              
+              private func handleRetrieveSignature() {
+                  pickIPAFile { [weak self] url in
+                      guard let self = self else { return }
+                      if let signature = ESignCore.shared.retrieveSignature(from: url.path) {
+                          self.showAlert("✅ تم استرداد التوقيع", message: "\(signature)")
+                      } else {
+                          self.showAlert("❌ فشل", message: "لم يتم العثور على توقيع")
+                      }
+                  }
+              }
+              
+              private func handleModifySignature() {
+                  let alert = UIAlertController(title: "تعديل التوقيع", message: "اختر ملف الشهادة", preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "اختيار ملف", style: .default) { [weak self] _ in
+                      self?.pickCertificateFile { certURL in
+                          self?.pickIPAFile { ipaURL in
+                              let success = ESignCore.shared.modifySignature(
+                                  ipaPath: ipaURL.path,
+                                  certificatePath: certURL.path,
+                                  password: ""
+                              )
+                              self?.showAlert(success ? "✅ تم التعديل" : "❌ فشل", message: "")
+                          }
+                      }
+                  })
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+              
+              private func handleRemoveSignature() {
+                  pickIPAFile { [weak self] url in
+                      if let newIPA = ESignCore.shared.removeSignature(from: url.path) {
+                          self?.showAlert("✅ تم فك التوقيع", message: "المسار: \(newIPA)")
+                      } else {
+                          self?.showAlert("❌ فشل", message: "تعذر فك التوقيع")
+                      }
+                  }
+              }
+              
+              private func handleCompressFiles() {
                   let picker: UIDocumentPickerViewController
                   if #available(iOS 14.0, *) {
                       picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
@@ -738,880 +623,94 @@ jobs:
                   present(picker, animated: true)
               }
               
-              @objc private func refreshApps() {
-                  loadApps()
-              }
-              
-              private func loadApps() {
-                  apps = IPAManager.shared.getApps()
-                  tableView.reloadData()
-                  emptyLabel.isHidden = !apps.isEmpty
-              }
-              
-              func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                  for url in urls {
-                      if url.pathExtension.lowercased() == "ipa" {
-                          _ = IPAManager.shared.importIPA(from: url)
-                      }
-                  }
-                  loadApps()
-                  showToast("✅ تم استيراد التطبيقات")
-              }
-              
-              func showToast(_ message: String) {
-                  let toast = UILabel()
-                  toast.text = message
-                  toast.textColor = .white
-                  toast.backgroundColor = cardColor
-                  toast.font = .systemFont(ofSize: 14, weight: .medium)
-                  toast.textAlignment = .center
-                  toast.layer.cornerRadius = 12
-                  toast.layer.masksToBounds = true
-                  toast.alpha = 0
-                  
-                  let size = toast.sizeThatFits(CGSize(width: view.bounds.width - 48, height: .greatestFiniteMagnitude))
-                  toast.frame = CGRect(x: 24, y: view.bounds.height - 140, width: view.bounds.width - 48, height: size.height + 24)
-                  
-                  view.addSubview(toast)
-                  UIView.animate(withDuration: 0.3) { toast.alpha = 1 }
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                      UIView.animate(withDuration: 0.3) { toast.alpha = 0 }
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { toast.removeFromSuperview() }
-                  }
-              }
-              
-              // MARK: - TableView
-              
-              func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-                  return apps.count
-              }
-              
-              func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let cell = tableView.dequeueReusableCell(withIdentifier: "AppCell", for: indexPath) as! AppCell
-                  let app = apps[indexPath.row]
-                  cell.configure(with: app)
-                  return cell
-              }
-              
-              func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-                  tableView.deselectRow(at: indexPath, animated: true)
-                  let app = apps[indexPath.row]
-                  showAppDetails(app, at: indexPath.row)
-              }
-              
-              func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-                  let delete = UIContextualAction(style: .destructive, title: "حذف") { [weak self] _, _, done in
-                      self?.deleteApp(at: indexPath.row)
-                      done(true)
-                  }
-                  
-                  let sign = UIContextualAction(style: .normal, title: "توقيع") { [weak self] _, _, done in
-                      self?.signApp(at: indexPath.row)
-                      done(true)
-                  }
-                  sign.backgroundColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-                  
-                  return UISwipeActionsConfiguration(actions: [delete, sign])
-              }
-              
-              private func deleteApp(at index: Int) {
-                  let alert = UIAlertController(title: "حذف التطبيق", message: "هل أنت متأكد من حذف التطبيق؟", preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive) { [weak self] _ in
-                      IPAManager.shared.removeApp(at: index)
-                      self?.loadApps()
-                  })
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func signApp(at index: Int) {
-                  let certificates = CertificateManager.shared.getValidCertificates()
-                  guard !certificates.isEmpty else {
-                      showAlert("⚠️ لا توجد شهادات صالحة", "قم بإضافة شهادة أولاً")
-                      return
-                  }
-                  
-                  let alert = UIAlertController(title: "اختر الشهادة", message: "اختر الشهادة لتوقيع التطبيق", preferredStyle: .actionSheet)
-                  for cert in certificates {
-                      alert.addAction(UIAlertAction(title: "\(cert.name) (\(cert.daysRemaining) يوم)", style: .default) { [weak self] _ in
-                          let success = IPAManager.shared.signApp(at: index, with: cert)
-                          if success {
-                              self?.showToast("✅ تم توقيع التطبيق بنجاح")
-                              self?.loadApps()
-                          } else {
-                              self?.showToast("❌ فشل التوقيع")
-                          }
-                      })
-                  }
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func showAppDetails(_ app: IPAManager.AppInfo, at index: Int) {
-                  let alert = UIAlertController(title: app.name, message: """
-                  📦 المعرف: \(app.bundleID)
-                  📌 الإصدار: \(app.version)
-                  🔐 موقّع: \(app.isSigned ? "✅" : "❌")
-                  📱 مثبت: \(app.installed ? "✅" : "❌")
-                  """, preferredStyle: .alert)
-                  
-                  if !app.isSigned {
-                      alert.addAction(UIAlertAction(title: "🔐 توقيع", style: .default) { [weak self] _ in
-                          self?.signApp(at: index)
-                      })
-                  }
-                  
-                  if app.isSigned && !app.installed {
-                      alert.addAction(UIAlertAction(title: "📱 تثبيت", style: .default) { [weak self] _ in
-                          self?.installApp(at: index)
-                      })
-                  }
-                  
-                  alert.addAction(UIAlertAction(title: "📤 تصدير", style: .default) { [weak self] _ in
-                      self?.exportApp(at: index)
-                  })
-                  
-                  alert.addAction(UIAlertAction(title: "إغلاق", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func installApp(at index: Int) {
-                  let certificates = CertificateManager.shared.getValidCertificates()
-                  guard !certificates.isEmpty else {
-                      showAlert("⚠️ لا توجد شهادات صالحة", "قم بإضافة شهادة أولاً")
-                      return
-                  }
-                  
-                  let alert = UIAlertController(title: "اختر الشهادة للتثبيت", message: nil, preferredStyle: .actionSheet)
-                  for cert in certificates {
-                      alert.addAction(UIAlertAction(title: cert.name, style: .default) { [weak self] _ in
-                          self?.installWithCertificate(at: index, certificate: cert)
-                      })
-                  }
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func installWithCertificate(at index: Int, certificate: CertificateManager.Certificate) {
-                  let loading = UIAlertController(title: "⏳ جاري التثبيت...", message: "يرجى الانتظار", preferredStyle: .alert)
-                  present(loading, animated: true)
-                  
-                  IPAManager.shared.installApp(at: index, certificate: certificate) { [weak self] success, message in
-                      loading.dismiss(animated: true) {
-                          self?.showAlert(success ? "✅ نجاح" : "❌ فشل", message)
-                          if success {
-                              self?.loadApps()
+              private func handleSignWithCertificate() {
+                  let alert = UIAlertController(title: "توقيع بشهادة", message: "اختر ملف الشهادة P12", preferredStyle: .alert)
+                  alert.addTextField { $0.placeholder = "كلمة المرور" }
+                  alert.addAction(UIAlertAction(title: "اختيار", style: .default) { [weak self] _ in
+                      let password = alert.textFields?.first?.text ?? ""
+                      self?.pickCertificateFile { certURL in
+                          if let certData = try? Data(contentsOf: certURL) {
+                              self?.pickIPAFile { ipaURL in
+                                  let success = ESignCore.shared.signWithCertificate(
+                                      ipaPath: ipaURL.path,
+                                      certificateData: certData,
+                                      password: password,
+                                      provisionPath: nil
+                                  )
+                                  self?.showAlert(success ? "✅ تم التوقيع" : "❌ فشل", message: "")
+                              }
                           }
                       }
-                  }
-              }
-              
-              private func exportApp(at index: Int) {
-                  let alert = UIAlertController(title: "تصدير التطبيق", message: "اختر الموقع لحفظ التطبيق", preferredStyle: .actionSheet)
-                  alert.addAction(UIAlertAction(title: "حفظ في الملفات", style: .default) { [weak self] _ in
-                      self?.saveToFiles(at: index)
-                  })
-                  alert.addAction(UIAlertAction(title: "مشاركة", style: .default) { [weak self] _ in
-                      self?.shareApp(at: index)
                   })
                   alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
                   present(alert, animated: true)
               }
               
-              private func saveToFiles(at index: Int) {
-                  let picker = UIDocumentPickerViewController(forExporting: [URL(fileURLWithPath: apps[index].ipaPath)])
+              private func handleInstallEnterprise() {
+                  let alert = UIAlertController(title: "تثبيت عبر المكاتب", message: "أدخل رابط التطبيق", preferredStyle: .alert)
+                  alert.addTextField { $0.placeholder = "https://example.com/app.ipa" }
+                  alert.addTextField { $0.placeholder = "اسم التطبيق" }
+                  alert.addAction(UIAlertAction(title: "تثبيت", style: .default) { [weak self] _ in
+                      let url = alert.textFields?[0].text ?? ""
+                      let name = alert.textFields?[1].text ?? "App"
+                      let success = ESignCore.shared.installViaEnterprise(url: url, appName: name)
+                      self?.showAlert(success ? "✅ جاري التثبيت" : "❌ فشل", message: "")
+                  })
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+              
+              // MARK: - مساعدات
+              
+              private func pickIPAFile(completion: @escaping (URL) -> Void) {
+                  let picker: UIDocumentPickerViewController
+                  if #available(iOS 14.0, *) {
+                      picker = UIDocumentPickerViewController(forOpeningContentTypes: [.init(filenameExtension: "ipa") ?? .item])
+                  } else {
+                      picker = UIDocumentPickerViewController(documentTypes: ["com.apple.itunes.ipa"], in: .import)
+                  }
+                  picker.delegate = self
+                  picker.completionHandler = completion
                   present(picker, animated: true)
               }
               
-              private func shareApp(at index: Int) {
-                  let url = URL(fileURLWithPath: apps[index].ipaPath)
-                  let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                  present(activity, animated: true)
+              private func pickCertificateFile(completion: @escaping (URL) -> Void) {
+                  let picker: UIDocumentPickerViewController
+                  if #available(iOS 14.0, *) {
+                      picker = UIDocumentPickerViewController(forOpeningContentTypes: [.init(filenameExtension: "p12") ?? .item])
+                  } else {
+                      picker = UIDocumentPickerViewController(documentTypes: ["com.rsa.pkcs-12"], in: .import)
+                  }
+                  picker.delegate = self
+                  picker.completionHandler = completion
+                  present(picker, animated: true)
               }
               
-              private func showAlert(_ title: String, _ message: String) {
+              private func showAlert(_ title: String, message: String) {
                   let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
                   alert.addAction(UIAlertAction(title: "حسناً", style: .default))
                   present(alert, animated: true)
               }
           }
 
-          class AppCell: UITableViewCell {
-              private let cardView = UIView()
-              private let iconView = UIImageView()
-              private let nameLabel = UILabel()
-              private let bundleLabel = UILabel()
-              private let statusLabel = UILabel()
+          // MARK: - Extension لدعم completion handler
+          extension UIDocumentPickerViewController {
+              private static var completionKey: UInt8 = 0
               
-              override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-                  super.init(style: style, reuseIdentifier: reuseIdentifier)
-                  setupUI()
-              }
-              
-              required init?(coder: NSCoder) {
-                  fatalError("init(coder:) has not been implemented")
-              }
-              
-              private func setupUI() {
-                  backgroundColor = .clear
-                  selectionStyle = .none
-                  
-                  cardView.backgroundColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-                  cardView.layer.cornerRadius = 14
-                  cardView.translatesAutoresizingMaskIntoConstraints = false
-                  contentView.addSubview(cardView)
-                  
-                  iconView.backgroundColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 0.2)
-                  iconView.layer.cornerRadius = 20
-                  iconView.clipsToBounds = true
-                  iconView.translatesAutoresizingMaskIntoConstraints = false
-                  iconView.image = UIImage(systemName: "app.fill")
-                  iconView.tintColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-                  cardView.addSubview(iconView)
-                  
-                  nameLabel.textColor = .white
-                  nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-                  nameLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(nameLabel)
-                  
-                  bundleLabel.textColor = UIColor.white.withAlphaComponent(0.5)
-                  bundleLabel.font = .systemFont(ofSize: 12, weight: .regular)
-                  bundleLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(bundleLabel)
-                  
-                  statusLabel.textAlignment = .right
-                  statusLabel.font = .systemFont(ofSize: 12, weight: .medium)
-                  statusLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(statusLabel)
-                  
-                  NSLayoutConstraint.activate([
-                      cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-                      cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
-                      cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-                      cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-                      
-                      iconView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 12),
-                      iconView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
-                      iconView.widthAnchor.constraint(equalToConstant: 40),
-                      iconView.heightAnchor.constraint(equalToConstant: 40),
-                      
-                      nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-                      nameLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 14),
-                      nameLabel.trailingAnchor.constraint(equalTo: statusLabel.leadingAnchor, constant: -8),
-                      
-                      bundleLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
-                      bundleLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
-                      bundleLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
-                      bundleLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -14),
-                      
-                      statusLabel.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
-                      statusLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
-                      statusLabel.widthAnchor.constraint(equalToConstant: 50)
-                  ])
-              }
-              
-              func configure(with app: IPAManager.AppInfo) {
-                  nameLabel.text = app.name
-                  bundleLabel.text = app.bundleID
-                  
-                  if app.installed {
-                      statusLabel.text = "✅"
-                      statusLabel.textColor = UIColor(red: 0, green: 200/255, blue: 0, alpha: 1)
-                  } else if app.isSigned {
-                      statusLabel.text = "🔐"
-                      statusLabel.textColor = UIColor(red: 255/255, green: 200/255, blue: 0, alpha: 1)
-                  } else {
-                      statusLabel.text = "❌"
-                      statusLabel.textColor = UIColor(red: 255/255, green: 50/255, blue: 50/255, alpha: 1)
-                  }
-              }
-          }
-          AVEOF
-
-      - name: Generate Source - Certificates View Controller
-        run: |
-          cd ${{ github.workspace }}
-          cat > CertificatesViewController.swift << 'CVEOF'
-          import UIKit
-          import UniformTypeIdentifiers
-
-          class CertificatesViewController: UIViewController, UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate {
-              private let tableView = UITableView()
-              private let emptyLabel = UILabel()
-              private let accentColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-              private let bgColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let cardColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              
-              private var certificates: [CertificateManager.Certificate] = []
-              
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = "الشهادات"
-                  view.backgroundColor = bgColor
-                  
-                  setupTableView()
-                  setupToolbar()
-                  setupEmptyLabel()
-                  loadCertificates()
-              }
-              
-              override func viewWillAppear(_ animated: Bool) {
-                  super.viewWillAppear(animated)
-                  loadCertificates()
-              }
-              
-              private func setupTableView() {
-                  tableView.frame = view.bounds
-                  tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  tableView.backgroundColor = bgColor
-                  tableView.delegate = self
-                  tableView.dataSource = self
-                  tableView.separatorStyle = .none
-                  tableView.register(CertCell.self, forCellReuseIdentifier: "CertCell")
-                  tableView.rowHeight = 90
-                  view.addSubview(tableView)
-              }
-              
-              private func setupEmptyLabel() {
-                  emptyLabel.text = "🔐 لا توجد شهادات\nاضغط + لإضافة شهادة p12"
-                  emptyLabel.numberOfLines = 0
-                  emptyLabel.textAlignment = .center
-                  emptyLabel.textColor = UIColor.white.withAlphaComponent(0.35)
-                  emptyLabel.font = .systemFont(ofSize: 16, weight: .medium)
-                  emptyLabel.isHidden = true
-                  emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(emptyLabel)
-                  
-                  NSLayoutConstraint.activate([
-                      emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                      emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-                      emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 40),
-                      emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -40)
-                  ])
-              }
-              
-              private func setupToolbar() {
-                  navigationController?.setToolbarHidden(false, animated: true)
-                  navigationController?.toolbar.barTintColor = bgColor
-                  navigationController?.toolbar.tintColor = accentColor
-                  navigationController?.toolbar.isTranslucent = false
-                  
-                  let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-                  let addBtn = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addCertTapped))
-                  addBtn.tintColor = accentColor
-                  
-                  toolbarItems = [flex, addBtn, flex]
-              }
-              
-              @objc private func addCertTapped() {
-                  let alert = UIAlertController(title: "إضافة شهادة", message: "اختر نوع الشهادة", preferredStyle: .actionSheet)
-                  alert.addAction(UIAlertAction(title: "مطور (Developer)", style: .default) { [weak self] _ in
-                      self?.importCertificate(type: .developer)
-                  })
-                  alert.addAction(UIAlertAction(title: "توزيع (Distribution)", style: .default) { [weak self] _ in
-                      self?.importCertificate(type: .distribution)
-                  })
-                  alert.addAction(UIAlertAction(title: "شركات (Enterprise)", style: .default) { [weak self] _ in
-                      self?.importCertificate(type: .enterprise)
-                  })
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func importCertificate(type: CertificateManager.Certificate.CertType) {
-                  let picker: UIDocumentPickerViewController
-                  if #available(iOS 14.0, *) {
-                      picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
-                  } else {
-                      picker = UIDocumentPickerViewController(documentTypes: ["public.item"], in: .import)
-                  }
-                  picker.delegate = self
-                  picker.allowsMultipleSelection = false
-                  picker.modalPresentationStyle = .fullScreen
-                  present(picker, animated: true)
-              }
-              
-              func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                  guard let url = urls.first else { return }
-                  
-                  let alert = UIAlertController(title: "كلمة المرور", message: "أدخل كلمة مرور الشهادة", preferredStyle: .alert)
-                  alert.addTextField { textField in
-                      textField.placeholder = "كلمة المرور"
-                      textField.isSecureTextEntry = true
-                  }
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  alert.addAction(UIAlertAction(title: "استيراد", style: .default) { [weak self] _ in
-                      guard let password = alert.textFields?.first?.text else { return }
-                      self?.importCertificate(url: url, password: password)
-                  })
-                  present(alert, animated: true)
-              }
-              
-              private func importCertificate(url: URL, password: String) {
-                  let type: CertificateManager.Certificate.CertType = .developer
-                  let success = CertificateManager.shared.importCertificate(from: url, password: password, type: type)
-                  
-                  if success {
-                      loadCertificates()
-                      showToast("✅ تم استيراد الشهادة بنجاح")
-                  } else {
-                      showToast("❌ فشل استيراد الشهادة")
-                  }
-              }
-              
-              private func loadCertificates() {
-                  certificates = CertificateManager.shared.getCertificates()
-                  tableView.reloadData()
-                  emptyLabel.isHidden = !certificates.isEmpty
-              }
-              
-              func showToast(_ message: String) {
-                  let toast = UILabel()
-                  toast.text = message
-                  toast.textColor = .white
-                  toast.backgroundColor = cardColor
-                  toast.font = .systemFont(ofSize: 14, weight: .medium)
-                  toast.textAlignment = .center
-                  toast.layer.cornerRadius = 12
-                  toast.layer.masksToBounds = true
-                  toast.alpha = 0
-                  
-                  let size = toast.sizeThatFits(CGSize(width: view.bounds.width - 48, height: .greatestFiniteMagnitude))
-                  toast.frame = CGRect(x: 24, y: view.bounds.height - 140, width: view.bounds.width - 48, height: size.height + 24)
-                  
-                  view.addSubview(toast)
-                  UIView.animate(withDuration: 0.3) { toast.alpha = 1 }
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                      UIView.animate(withDuration: 0.3) { toast.alpha = 0 }
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { toast.removeFromSuperview() }
-                  }
-              }
-              
-              // MARK: - TableView
-              
-              func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-                  return certificates.count
-              }
-              
-              func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let cell = tableView.dequeueReusableCell(withIdentifier: "CertCell", for: indexPath) as! CertCell
-                  let cert = certificates[indexPath.row]
-                  cell.configure(with: cert)
-                  return cell
-              }
-              
-              func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-                  tableView.deselectRow(at: indexPath, animated: true)
-                  let cert = certificates[indexPath.row]
-                  showCertDetails(cert, at: indexPath.row)
-              }
-              
-              func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-                  let delete = UIContextualAction(style: .destructive, title: "حذف") { [weak self] _, _, done in
-                      self?.deleteCert(at: indexPath.row)
-                      done(true)
-                  }
-                  return UISwipeActionsConfiguration(actions: [delete])
-              }
-              
-              private func deleteCert(at index: Int) {
-                  let alert = UIAlertController(title: "حذف الشهادة", message: "هل أنت متأكد من حذف الشهادة؟", preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive) { [weak self] _ in
-                      CertificateManager.shared.removeCertificate(at: index)
-                      self?.loadCertificates()
-                  })
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-              
-              private func showCertDetails(_ cert: CertificateManager.Certificate, at index: Int) {
-                  let alert = UIAlertController(title: cert.name, message: """
-                  🔐 النوع: \(cert.type.rawValue)
-                  📅 تاريخ الانتهاء: \(cert.expiryDate?.formatted() ?? "غير معروف")
-                  ⏱️ الأيام المتبقية: \(cert.daysRemaining) يوم
-                  ✅ صالحة: \(cert.isValid ? "✅" : "❌")
-                  📦 الفريق: \(cert.teamID ?? "غير معروف")
-                  """, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive) { [weak self] _ in
-                      self?.deleteCert(at: index)
-                  })
-                  alert.addAction(UIAlertAction(title: "إغلاق", style: .cancel))
-                  present(alert, animated: true)
+              var completionHandler: ((URL) -> Void)? {
+                  get { objc_getAssociatedObject(self, &Self.completionKey) as? (URL) -> Void }
+                  set { objc_setAssociatedObject(self, &Self.completionKey, newValue, .OBJC_ASSOCIATION_RETAIN) }
               }
           }
           
-          class CertCell: UITableViewCell {
-              private let cardView = UIView()
-              private let iconView = UIImageView()
-              private let nameLabel = UILabel()
-              private let detailLabel = UILabel()
-              private let statusLabel = UILabel()
-              
-              override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-                  super.init(style: style, reuseIdentifier: reuseIdentifier)
-                  setupUI()
-              }
-              
-              required init?(coder: NSCoder) {
-                  fatalError("init(coder:) has not been implemented")
-              }
-              
-              private func setupUI() {
-                  backgroundColor = .clear
-                  selectionStyle = .none
-                  
-                  cardView.backgroundColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-                  cardView.layer.cornerRadius = 14
-                  cardView.translatesAutoresizingMaskIntoConstraints = false
-                  contentView.addSubview(cardView)
-                  
-                  iconView.backgroundColor = UIColor(red: 255/255, green: 200/255, blue: 0/255, alpha: 0.2)
-                  iconView.layer.cornerRadius = 20
-                  iconView.clipsToBounds = true
-                  iconView.translatesAutoresizingMaskIntoConstraints = false
-                  iconView.image = UIImage(systemName: "shield.fill")
-                  iconView.tintColor = UIColor(red: 255/255, green: 200/255, blue: 0/255, alpha: 1)
-                  cardView.addSubview(iconView)
-                  
-                  nameLabel.textColor = .white
-                  nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-                  nameLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(nameLabel)
-                  
-                  detailLabel.textColor = UIColor.white.withAlphaComponent(0.5)
-                  detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
-                  detailLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(detailLabel)
-                  
-                  statusLabel.textAlignment = .right
-                  statusLabel.font = .systemFont(ofSize: 14, weight: .bold)
-                  statusLabel.translatesAutoresizingMaskIntoConstraints = false
-                  cardView.addSubview(statusLabel)
-                  
-                  NSLayoutConstraint.activate([
-                      cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-                      cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
-                      cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-                      cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-                      
-                      iconView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 12),
-                      iconView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
-                      iconView.widthAnchor.constraint(equalToConstant: 40),
-                      iconView.heightAnchor.constraint(equalToConstant: 40),
-                      
-                      nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-                      nameLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 16),
-                      nameLabel.trailingAnchor.constraint(equalTo: statusLabel.leadingAnchor, constant: -8),
-                      
-                      detailLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
-                      detailLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
-                      detailLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
-                      detailLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -16),
-                      
-                      statusLabel.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
-                      statusLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16)
-                  ])
-              }
-              
-              func configure(with cert: CertificateManager.Certificate) {
-                  nameLabel.text = cert.name
-                  detailLabel.text = "\(cert.type.rawValue) - \(cert.daysRemaining) يوم متبقي"
-                  
-                  if cert.isValid {
-                      if cert.daysRemaining < 7 {
-                          statusLabel.text = "⚠️"
-                          statusLabel.textColor = UIColor(red: 255/255, green: 200/255, blue: 0/255, alpha: 1)
-                      } else {
-                          statusLabel.text = "✅"
-                          statusLabel.textColor = UIColor(red: 0, green: 200/255, blue: 0, alpha: 1)
-                      }
-                  } else {
-                      statusLabel.text = "❌"
-                      statusLabel.textColor = UIColor(red: 255/255, green: 50/255, blue: 50/255, alpha: 1)
+          extension ESignViewController: UIDocumentPickerDelegate {
+              func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+                  if let url = urls.first {
+                      controller.completionHandler?(url)
                   }
               }
           }
-          CVEOF
-
-      - name: Generate Source - Tools View Controller
-        run: |
-          cd ${{ github.workspace }}
-          cat > ToolsViewController.swift << 'TVEOF'
-          import UIKit
-
-          class ToolsViewController: UIViewController {
-              private let bgColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let cardColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              private let accentColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-              
-              private let tools = [
-                  ("📦 فك ضغط IPA", "استخراج محتويات ملف IPA"),
-                  ("🔐 استرداد التوقيع", "استرداد التوقيع من ملف IPA"),
-                  ("📝 تعديل Info.plist", "تعديل معلومات التطبيق"),
-                  ("🔄 إعادة توقيع", "إعادة توقيع التطبيق بشهادة جديدة"),
-                  ("📱 تثبيت على الجهاز", "تثبيت التطبيق على جهاز متصل"),
-                  ("🗑️ تنظيف الملفات", "حذف الملفات المؤقتة"),
-              ]
-              
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = "الأدوات"
-                  view.backgroundColor = bgColor
-                  setupUI()
-              }
-              
-              private func setupUI() {
-                  let stackView = UIStackView()
-                  stackView.axis = .vertical
-                  stackView.spacing = 12
-                  stackView.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(stackView)
-                  
-                  NSLayoutConstraint.activate([
-                      stackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-                      stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-                      stackView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
-                  ])
-                  
-                  for (title, subtitle) in tools {
-                      let button = createToolButton(title: title, subtitle: subtitle)
-                      stackView.addArrangedSubview(button)
-                  }
-              }
-              
-              private func createToolButton(title: String, subtitle: String) -> UIButton {
-                  let button = UIButton(type: .system)
-                  button.backgroundColor = cardColor
-                  button.layer.cornerRadius = 16
-                  button.translatesAutoresizingMaskIntoConstraints = false
-                  button.heightAnchor.constraint(equalToConstant: 72).isActive = true
-                  
-                  let titleLabel = UILabel()
-                  titleLabel.text = title
-                  titleLabel.textColor = .white
-                  titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
-                  
-                  let subtitleLabel = UILabel()
-                  subtitleLabel.text = subtitle
-                  subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.4)
-                  subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
-                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-                  
-                  let stack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
-                  stack.axis = .vertical
-                  stack.spacing = 2
-                  stack.translatesAutoresizingMaskIntoConstraints = false
-                  
-                  button.addSubview(stack)
-                  NSLayoutConstraint.activate([
-                      stack.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 20),
-                      stack.centerYAnchor.constraint(equalTo: button.centerYAnchor)
-                  ])
-                  
-                  let arrow = UIImageView(image: UIImage(systemName: "chevron.right"))
-                  arrow.tintColor = UIColor.white.withAlphaComponent(0.2)
-                  arrow.translatesAutoresizingMaskIntoConstraints = false
-                  button.addSubview(arrow)
-                  
-                  NSLayoutConstraint.activate([
-                      arrow.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -20),
-                      arrow.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-                      arrow.widthAnchor.constraint(equalToConstant: 14),
-                      arrow.heightAnchor.constraint(equalToConstant: 14)
-                  ])
-                  
-                  button.addTarget(self, action: #selector(toolTapped(_:)), for: .touchUpInside)
-                  return button
-              }
-              
-              @objc private func toolTapped(_ sender: UIButton) {
-                  // Find which tool was tapped
-                  let title = sender.subviews.first { view in
-                      if let stack = view as? UIStackView,
-                         let label = stack.arrangedSubviews.first as? UILabel {
-                          return label.text?.contains("فك") == true ||
-                                 label.text?.contains("استرداد") == true ||
-                                 label.text?.contains("تعديل") == true ||
-                                 label.text?.contains("إعادة") == true ||
-                                 label.text?.contains("تثبيت") == true ||
-                                 label.text?.contains("تنظيف") == true
-                      }
-                      return false
-                  }
-                  
-                  // Show action sheet
-                  let alert = UIAlertController(title: "⚠️ تنبيه", message: "هذه الأداة قيد التطوير", preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                  present(alert, animated: true)
-              }
-          }
-          TVEOF
-
-      - name: Generate Source - Status View Controller
-        run: |
-          cd ${{ github.workspace }}
-          cat > StatusViewController.swift << 'SVEOF'
-          import UIKit
-
-          class StatusViewController: UIViewController {
-              private let bgColor = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              private let cardColor = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
-              private let accentColor = UIColor(red: 30/255, green: 144/255, blue: 255/255, alpha: 1)
-              
-              private let infoStack = UIStackView()
-              
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  title = "الحالة"
-                  view.backgroundColor = bgColor
-                  setupUI()
-                  updateStatus()
-              }
-              
-              private func setupUI() {
-                  let scrollView = UIScrollView()
-                  scrollView.translatesAutoresizingMaskIntoConstraints = false
-                  view.addSubview(scrollView)
-                  
-                  NSLayoutConstraint.activate([
-                      scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-                      scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                      scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                      scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-                  ])
-                  
-                  let contentView = UIView()
-                  contentView.translatesAutoresizingMaskIntoConstraints = false
-                  scrollView.addSubview(contentView)
-                  
-                  NSLayoutConstraint.activate([
-                      contentView.topAnchor.constraint(equalTo: scrollView.topAnchor),
-                      contentView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
-                      contentView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-                      contentView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-                      contentView.widthAnchor.constraint(equalTo: scrollView.widthAnchor)
-                  ])
-                  
-                  infoStack.axis = .vertical
-                  infoStack.spacing = 12
-                  infoStack.translatesAutoresizingMaskIntoConstraints = false
-                  contentView.addSubview(infoStack)
-                  
-                  NSLayoutConstraint.activate([
-                      infoStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
-                      infoStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-                      infoStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-                      infoStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
-                  ])
-                  
-                  addInfoCard(title: "📱 الجهاز", value: UIDevice.current.model)
-                  addInfoCard(title: "📲 النظام", value: "iOS \(UIDevice.current.systemVersion)")
-                  addInfoCard(title: "🔐 التطبيقات", value: "\(IPAManager.shared.getApps().count)")
-                  addInfoCard(title: "🔑 الشهادات", value: "\(CertificateManager.shared.getCertificates().count)")
-                  addInfoCard(title: "✅ الشهادات الصالحة", value: "\(CertificateManager.shared.getValidCertificates().count)")
-                  
-                  let refreshBtn = UIButton(type: .system)
-                  refreshBtn.setTitle("🔄 تحديث", for: .normal)
-                  refreshBtn.backgroundColor = accentColor
-                  refreshBtn.setTitleColor(.white, for: .normal)
-                  refreshBtn.layer.cornerRadius = 12
-                  refreshBtn.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
-                  refreshBtn.translatesAutoresizingMaskIntoConstraints = false
-                  refreshBtn.heightAnchor.constraint(equalToConstant: 50).isActive = true
-                  refreshBtn.addTarget(self, action: #selector(refreshStatus), for: .touchUpInside)
-                  infoStack.addArrangedSubview(refreshBtn)
-              }
-              
-              private func addInfoCard(title: String, value: String) {
-                  let card = UIView()
-                  card.backgroundColor = cardColor
-                  card.layer.cornerRadius = 14
-                  card.translatesAutoresizingMaskIntoConstraints = false
-                  card.heightAnchor.constraint(equalToConstant: 64).isActive = true
-                  
-                  let titleLabel = UILabel()
-                  titleLabel.text = title
-                  titleLabel.textColor = UIColor.white.withAlphaComponent(0.5)
-                  titleLabel.font = .systemFont(ofSize: 14, weight: .regular)
-                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
-                  card.addSubview(titleLabel)
-                  
-                  let valueLabel = UILabel()
-                  valueLabel.text = value
-                  valueLabel.textColor = .white
-                  valueLabel.font = .systemFont(ofSize: 18, weight: .semibold)
-                  valueLabel.translatesAutoresizingMaskIntoConstraints = false
-                  card.addSubview(valueLabel)
-                  
-                  NSLayoutConstraint.activate([
-                      titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-                      titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-                      titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-                      
-                      valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
-                      valueLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-                      valueLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor)
-                  ])
-                  
-                  infoStack.addArrangedSubview(card)
-              }
-              
-              @objc private func refreshStatus() {
-                  updateStatus()
-                  showToast("✅ تم التحديث")
-              }
-              
-              private func updateStatus() {
-                  while let view = infoStack.arrangedSubviews.last, view is UIButton == false {
-                      view.removeFromSuperview()
-                  }
-                  
-                  let totalApps = IPAManager.shared.getApps().count
-                  let totalCerts = CertificateManager.shared.getCertificates().count
-                  let validCerts = CertificateManager.shared.getValidCertificates().count
-                  
-                  addInfoCard(title: "📱 الجهاز", value: UIDevice.current.model)
-                  addInfoCard(title: "📲 النظام", value: "iOS \(UIDevice.current.systemVersion)")
-                  addInfoCard(title: "🔐 التطبيقات", value: "\(totalApps)")
-                  addInfoCard(title: "🔑 الشهادات", value: "\(totalCerts)")
-                  addInfoCard(title: "✅ الشهادات الصالحة", value: "\(validCerts)")
-                  
-                  let refreshBtn = UIButton(type: .system)
-                  refreshBtn.setTitle("🔄 تحديث", for: .normal)
-                  refreshBtn.backgroundColor = accentColor
-                  refreshBtn.setTitleColor(.white, for: .normal)
-                  refreshBtn.layer.cornerRadius = 12
-                  refreshBtn.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
-                  refreshBtn.translatesAutoresizingMaskIntoConstraints = false
-                  refreshBtn.heightAnchor.constraint(equalToConstant: 50).isActive = true
-                  refreshBtn.addTarget(self, action: #selector(refreshStatus), for: .touchUpInside)
-                  infoStack.addArrangedSubview(refreshBtn)
-              }
-              
-              private func showToast(_ message: String) {
-                  let toast = UILabel()
-                  toast.text = message
-                  toast.textColor = .white
-                  toast.backgroundColor = cardColor
-                  toast.font = .systemFont(ofSize: 14, weight: .medium)
-                  toast.textAlignment = .center
-                  toast.layer.cornerRadius = 12
-                  toast.layer.masksToBounds = true
-                  toast.alpha = 0
-                  
-                  let size = toast.sizeThatFits(CGSize(width: view.bounds.width - 48, height: .greatestFiniteMagnitude))
-                  toast.frame = CGRect(x: 24, y: view.bounds.height - 140, width: view.bounds.width - 48, height: size.height + 24)
-                  
-                  view.addSubview(toast)
-                  UIView.animate(withDuration: 0.3) { toast.alpha = 1 }
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                      UIView.animate(withDuration: 0.3) { toast.alpha = 0 }
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { toast.removeFromSuperview() }
-                  }
-              }
-          }
-          SVEOF
+          WEOF
 
       - name: Generate Source - Entry Point
         run: |
@@ -1624,8 +723,9 @@ jobs:
 
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
-                  let mainTabBar = MainTabBarController()
-                  window?.rootViewController = mainTabBar
+                  let root = ESignViewController()
+                  let nav = UINavigationController(rootViewController: root)
+                  window?.rootViewController = nav
                   window?.makeKeyAndVisible()
                   return true
               }
@@ -1643,17 +743,17 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleDevelopmentRegion</key>
-              <string>en</string>
+              <string>ar</string>
               <key>CFBundleExecutable</key>
-              <string>EsignClone</string>
+              <string>ESignApp</string>
               <key>CFBundleIdentifier</key>
-              <string>com.example.esignclone</string>
+              <string>com.example.esign</string>
               <key>CFBundleInfoDictionaryVersion</key>
               <string>6.0</string>
               <key>CFBundleName</key>
-              <string>Esign</string>
+              <string>✍️ eSign</string>
               <key>CFBundleDisplayName</key>
-              <string>Esign</string>
+              <string>✍️ eSign</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
@@ -1704,6 +804,10 @@ jobs:
                       </array>
                   </dict>
               </dict>
+              <key>UIFileSharingEnabled</key>
+              <true/>
+              <key>LSSupportsOpeningDocumentsInPlace</key>
+              <true/>
           </dict>
           </plist>
           MEOF
@@ -1714,41 +818,41 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Using SDK: $SDK_PATH"
 
-          xcrun swiftc main.swift CertificateManager.swift SigningEngine.swift IPAManager.swift MainUI.swift AppsViewController.swift CertificatesViewController.swift ToolsViewController.swift StatusViewController.swift \
+          xcrun swiftc main.swift ESignCore.swift UIComponents.swift \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios14.0 \
             -O \
             -framework UIKit \
             -framework Foundation \
-            -framework Security \
-            -o EsignClone
+            -framework UniformTypeIdentifiers \
+            -o ESignApp
 
-          file EsignClone
+          file ESignApp
 
       - name: Create IPA Package
         run: |
           cd ${{ github.workspace }}
           mkdir -p artifacts
           rm -rf build-output
-          mkdir -p build-output/Payload/EsignClone.app
+          mkdir -p build-output/Payload/ESignApp.app
 
-          cp EsignClone build-output/Payload/EsignClone.app/EsignClone
-          cp Resources/Info.plist build-output/Payload/EsignClone.app/Info.plist
-          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/EsignClone.app/
-          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/EsignClone.app/
+          cp ESignApp build-output/Payload/ESignApp.app/ESignApp
+          cp Resources/Info.plist build-output/Payload/ESignApp.app/Info.plist
+          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/ESignApp.app/
+          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/ESignApp.app/
 
-          ldid -S build-output/Payload/EsignClone.app/EsignClone
+          ldid -S build-output/Payload/ESignApp.app/ESignApp
 
           cd build-output
-          zip -r -q ../artifacts/EsignClone.ipa Payload/
+          zip -r -q ../artifacts/ESignApp.ipa Payload/
           cd ..
 
           echo "IPA contents:"
-          unzip -l artifacts/EsignClone.ipa
+          unzip -l artifacts/ESignApp.ipa
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EsignClone-IPA
-          path: artifacts/EsignClone.ipa
+          name: ESignApp-IPA
+          path: artifacts/ESignApp.ipa
           retention-days: 30
