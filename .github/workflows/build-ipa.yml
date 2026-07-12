@@ -1,137 +1,40 @@
-name: Build iOS IPA Complete
+name: Build_SmartButtons
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Setup Xcode
-      run: |
-        sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-        xcode-select -p
+      - name: Setup Dependencies
+        run: |
+          brew install ldid
 
-    - name: Install Dependencies
-      run: |
-        brew install ldid dpkg xz wget curl git make
+      - name: Setup Theos & SDKs
+        run: |
+          # تنظيف شامل للمسارات قبل البدء
+          rm -rf ~/theos
+          # تحميل Theos الأساسي
+          git clone --recursive https://github.com/theos/theos.git ~/theos
+          # مسح مجلد sdks الفارغ الذي ينشئه Theos تلقائياً لتجنب الخطأ 128
+          rm -rf ~/theos/sdks
+          # تحميل الـ SDKs في المجلد المخصص لها
+          git clone --depth 1 https://github.com/theos/sdks.git ~/theos/sdks
+          echo "THEOS=~/theos" >> $GITHUB_ENV
 
-    - name: Install Theos (Official Script)
-      continue-on-error: true
-      run: |
-        export THEOS=$HOME/theos
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-        NONINTERACTIVE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+      - name: Build Tweak
+        run: |
+          export THEOS=~/theos
+          make package FINALPACKAGE=1
 
-    - name: Ensure Theos Core Exists
-      run: |
-        export THEOS=$HOME/theos
-        if [ ! -d "$THEOS/makefiles" ]; then
-          echo "Theos core missing, cloning manually..."
-          rm -rf "$THEOS"
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-        else
-          echo "Theos core already present."
-        fi
-
-    - name: Download iOS SDK (Manual, Reliable)
-      run: |
-        export THEOS=$HOME/theos
-        mkdir -p "$THEOS/sdks"
-        cd "$THEOS/sdks"
-        if ! ls | grep -q "\.sdk$"; then
-          echo "No SDK found, downloading manually..."
-          curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o iPhoneOS16.5.sdk.tar.xz
-          tar -xJf iPhoneOS16.5.sdk.tar.xz
-          rm iPhoneOS16.5.sdk.tar.xz
-        else
-          echo "SDK already present, skipping download."
-        fi
-        ls -la "$THEOS/sdks"
-
-    - name: Verify Theos Installation
-      run: |
-        export THEOS=$HOME/theos
-        echo "Contents of THEOS/vendor/lib:"
-        ls -la "$THEOS/vendor/lib" 2>/dev/null || echo "vendor/lib missing"
-        echo "Contents of THEOS/lib:"
-        ls -la "$THEOS/lib" 2>/dev/null || echo "lib missing"
-        echo "Contents of THEOS/sdks:"
-        ls -la "$THEOS/sdks" 2>/dev/null || echo "sdks missing"
-
-    - name: Create Build Directories
-      run: |
-        mkdir -p artifacts
-
-    - name: Build Application
-      run: |
-        export THEOS=$HOME/theos
-        export PATH=$THEOS/bin:$PATH
-        cd ${{ github.workspace }}
-        make clean
-        make
-
-    - name: Verify Build Output
-      run: |
-        cd ${{ github.workspace }}
-        echo "Looking for built .app bundle..."
-        find .theos -type d -name "*.app"
-        echo "----"
-        find .theos -type d -name "*.app" -exec ls -la {} \;
-
-    - name: Create IPA Package
-      run: |
-        cd ${{ github.workspace }}
-        APP_PATH=$(find .theos -type d -name "*.app" | head -n 1)
-
-        if [ -z "$APP_PATH" ]; then
-          echo "ERROR: No .app bundle found. Build failed silently."
-          exit 1
-        fi
-
-        echo "Found app bundle at: $APP_PATH"
-
-        rm -rf build-output
-        mkdir -p build-output/Payload
-        cp -r "$APP_PATH" build-output/Payload/TestApp.app
-
-        cp Resources/Info.plist build-output/Payload/TestApp.app/Info.plist
-
-        ldid -S build-output/Payload/TestApp.app/TestApp
-
-        echo "Final bundle contents:"
-        ls -la build-output/Payload/TestApp.app/
-
-        cd build-output
-        zip -r -q ../artifacts/TestApp.ipa Payload/
-        cd ..
-
-        echo "IPA created:"
-        unzip -l artifacts/TestApp.ipa
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: iOS-App-Build
-        path: artifacts/
-        retention-days: 30
-
-    - name: Build Summary
-      if: always()
-      run: |
-        echo "=========================================="
-        echo "Build Complete"
-        echo "=========================================="
-        echo "Status: ${{ job.status }}"
-        echo ""
-        echo "Artifacts:"
-        ls -lh artifacts/ 2>/dev/null || echo "No artifacts"
-        echo "=========================================="
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartButtons-Package
+          path: packages/*.deb
