@@ -157,6 +157,16 @@ jobs:
               var favoriteItems: [AppItem] {
                   MockData.items.filter { ids.contains($0.id) }
               }
+
+              var count: Int {
+                  ids.count
+              }
+
+              func clearAll() {
+                  ids.removeAll()
+                  UserDefaults.standard.set(Array(ids), forKey: storageKey)
+                  NotificationCenter.default.post(name: .favoritesChanged, object: nil)
+              }
           }
 
           extension Notification.Name {
@@ -283,22 +293,47 @@ jobs:
               UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
               UISearchBarDelegate {
 
+              private enum SortOption: String {
+                  case ratingDesc = "الأعلى تقييمًا"
+                  case nameAsc = "الاسم (أ-ي)"
+                  case sizeAsc = "الأصغر حجمًا"
+              }
+
               private let segmented = UISegmentedControl(items: StoreCategory.allCases.map { $0.rawValue })
               private let searchBar = UISearchBar()
               private var collectionView: UICollectionView!
+              private let refreshControl = UIRefreshControl()
 
               private var allItems: [AppItem] = MockData.items
               private var filtered: [AppItem] = MockData.items
+              private var currentSort: SortOption = .ratingDesc
 
               override func viewDidLoad() {
                   super.viewDidLoad()
                   title = "سوق"
                   view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
                   navigationController?.navigationBar.prefersLargeTitles = true
+                  setupSortMenu()
                   setupSearchBar()
                   setupSegmented()
                   setupCollectionView()
                   applyFilter()
+              }
+
+              private func setupSortMenu() {
+                  let options: [SortOption] = [.ratingDesc, .nameAsc, .sizeAsc]
+                  let actions = options.map { option in
+                      UIAction(title: option.rawValue, state: option == currentSort ? .on : .off) { [weak self] _ in
+                          self?.currentSort = option
+                          self?.setupSortMenu()
+                          self?.applyFilter()
+                      }
+                  }
+                  let menu = UIMenu(title: "ترتيب حسب", children: actions)
+                  navigationItem.rightBarButtonItem = UIBarButtonItem(
+                      image: UIImage(systemName: "arrow.up.arrow.down.circle"),
+                      menu: menu
+                  )
               }
 
               private func setupSearchBar() {
@@ -340,12 +375,23 @@ jobs:
                   collectionView.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(collectionView)
 
+                  refreshControl.tintColor = UIColor(hex: "7C3AED")
+                  refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
+                  collectionView.refreshControl = refreshControl
+
                   NSLayoutConstraint.activate([
                       collectionView.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 8),
                       collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                       collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                       collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
                   ])
+              }
+
+              @objc private func handleRefresh() {
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                      self?.applyFilter()
+                      self?.refreshControl.endRefreshing()
+                  }
               }
 
               @objc private func categoryChanged() {
@@ -363,6 +409,16 @@ jobs:
                           || item.developer.localizedCaseInsensitiveContains(query)
                       return matchesCategory && matchesQuery
                   }
+
+                  switch currentSort {
+                  case .ratingDesc:
+                      filtered.sort { $0.rating > $1.rating }
+                  case .nameAsc:
+                      filtered.sort { $0.name.localizedCompare($1.name) == .orderedAscending }
+                  case .sizeAsc:
+                      filtered.sort { $0.sizeMB < $1.sizeMB }
+                  }
+
                   collectionView.reloadData()
               }
 
@@ -450,14 +506,32 @@ jobs:
               private func updateFavoriteIcon() {
                   let isFav = FavoritesManager.shared.isFavorite(item.id)
                   let iconName = isFav ? "heart.fill" : "heart"
-                  let button = UIBarButtonItem(
+                  let favoriteButton = UIBarButtonItem(
                       image: UIImage(systemName: iconName),
                       style: .plain,
                       target: self,
                       action: #selector(favoriteTapped)
                   )
-                  button.tintColor = UIColor(hex: "F59E0B")
-                  navigationItem.rightBarButtonItem = button
+                  favoriteButton.tintColor = UIColor(hex: "F59E0B")
+
+                  let shareButton = UIBarButtonItem(
+                      image: UIImage(systemName: "square.and.arrow.up"),
+                      style: .plain,
+                      target: self,
+                      action: #selector(shareTapped)
+                  )
+                  shareButton.tintColor = .white
+
+                  navigationItem.rightBarButtonItems = [favoriteButton, shareButton]
+              }
+
+              @objc private func shareTapped() {
+                  let text = "\(item.name) - \(item.developer)\n\(item.description)"
+                  let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                  if let popover = activity.popoverPresentationController {
+                      popover.barButtonItem = navigationItem.rightBarButtonItems?.last
+                  }
+                  present(activity, animated: true)
               }
 
               @objc private func favoriteTapped() {
@@ -644,6 +718,8 @@ jobs:
                   ])
               }
 
+              private let refreshControl = UIRefreshControl()
+
               private func setupCollectionView() {
                   let layout = UICollectionViewFlowLayout()
                   layout.minimumInteritemSpacing = 12
@@ -658,12 +734,23 @@ jobs:
                   collectionView.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(collectionView)
 
+                  refreshControl.tintColor = UIColor(hex: "7C3AED")
+                  refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
+                  collectionView.refreshControl = refreshControl
+
                   NSLayoutConstraint.activate([
                       collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
                       collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                       collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                       collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
                   ])
+              }
+
+              @objc private func handleRefresh() {
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                      self?.reload()
+                      self?.refreshControl.endRefreshing()
+                  }
               }
 
               @objc private func reload() {
@@ -707,11 +794,15 @@ jobs:
 
               private enum Row: Int, CaseIterable {
                   case privacy
+                  case clearFavorites
+                  case version
                   case about
 
                   var title: String {
                       switch self {
                       case .privacy: return "سياسة الخصوصية"
+                      case .clearFavorites: return "مسح المفضلة"
+                      case .version: return "رقم الإصدار"
                       case .about: return "عن التطبيق"
                       }
                   }
@@ -719,6 +810,8 @@ jobs:
                   var icon: String {
                       switch self {
                       case .privacy: return "hand.raised.fill"
+                      case .clearFavorites: return "trash.fill"
+                      case .version: return "number.circle.fill"
                       case .about: return "info.circle.fill"
                       }
                   }
@@ -755,13 +848,23 @@ jobs:
 
               func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
                   let row = Row.allCases[indexPath.row]
-                  let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+                  let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
                   cell.backgroundColor = UIColor(red: 26/255, green: 26/255, blue: 42/255, alpha: 1)
                   cell.textLabel?.textColor = .white
                   cell.textLabel?.text = row.title
                   cell.imageView?.image = UIImage(systemName: row.icon)
                   cell.imageView?.tintColor = UIColor(hex: "7C3AED")
-                  cell.accessoryType = .disclosureIndicator
+
+                  if row == .version {
+                      cell.detailTextLabel?.text = "1.0.0"
+                      cell.detailTextLabel?.textColor = UIColor.white.withAlphaComponent(0.5)
+                      cell.selectionStyle = .none
+                  } else if row == .clearFavorites {
+                      cell.textLabel?.textColor = UIColor(hex: "EF4444")
+                      cell.accessoryType = .none
+                  } else {
+                      cell.accessoryType = .disclosureIndicator
+                  }
                   return cell
               }
 
@@ -770,6 +873,19 @@ jobs:
                   switch Row.allCases[indexPath.row] {
                   case .privacy:
                       navigationController?.pushViewController(PrivacyPolicyViewController(), animated: true)
+                  case .clearFavorites:
+                      let confirm = UIAlertController(
+                          title: "مسح المفضلة",
+                          message: "هل تريد إزالة جميع التطبيقات من قائمة المفضلة؟",
+                          preferredStyle: .alert
+                      )
+                      confirm.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                      confirm.addAction(UIAlertAction(title: "مسح", style: .destructive) { _ in
+                          FavoritesManager.shared.clearAll()
+                      })
+                      present(confirm, animated: true)
+                  case .version:
+                      break
                   case .about:
                       let alert = UIAlertController(
                           title: "سوق",
@@ -846,6 +962,85 @@ jobs:
           }
           HEOF
 
+      - name: Generate Source - Onboarding Screen
+        run: |
+          cd ${{ github.workspace }}
+          cat > OnboardingViewController.swift << 'OEOF'
+          import UIKit
+
+          final class OnboardingViewController: UIViewController {
+
+              var onFinish: (() -> Void)?
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  build()
+              }
+
+              private func build() {
+                  let emoji = UILabel()
+                  emoji.text = "🛍️"
+                  emoji.font = .systemFont(ofSize: 64)
+                  emoji.textAlignment = .center
+                  emoji.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(emoji)
+
+                  let title = UILabel()
+                  title.text = "أهلًا بك في سوق"
+                  title.font = .systemFont(ofSize: 24, weight: .bold)
+                  title.textColor = .white
+                  title.textAlignment = .center
+                  title.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(title)
+
+                  let subtitle = UILabel()
+                  subtitle.text = "هذا تطبيق عرض تجريبي فقط: كل التطبيقات والبيانات المعروضة وهمية، ولا يتم تنزيل أو تثبيت أي شيء حقيقي. يمكنك إضافة تطبيقات للمفضلة، ومراجعة سياسة الخصوصية من تبويب الإعدادات في أي وقت."
+                  subtitle.font = .systemFont(ofSize: 15)
+                  subtitle.textColor = UIColor.white.withAlphaComponent(0.7)
+                  subtitle.numberOfLines = 0
+                  subtitle.textAlignment = .center
+                  subtitle.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(subtitle)
+
+                  let button = UIButton(type: .system)
+                  button.setTitle("ابدأ التصفح", for: .normal)
+                  button.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
+                  button.backgroundColor = UIColor(hex: "7C3AED")
+                  button.setTitleColor(.white, for: .normal)
+                  button.layer.cornerRadius = 12
+                  button.addTarget(self, action: #selector(startTapped), for: .touchUpInside)
+                  button.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(button)
+
+                  NSLayoutConstraint.activate([
+                      emoji.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      emoji.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor, constant: -140),
+
+                      title.topAnchor.constraint(equalTo: emoji.bottomAnchor, constant: 16),
+                      title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+                      title.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+
+                      subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
+                      subtitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+                      subtitle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+
+                      button.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 28),
+                      button.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
+                      button.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
+                      button.heightAnchor.constraint(equalToConstant: 48),
+                  ])
+              }
+
+              @objc private func startTapped() {
+                  UserDefaults.standard.set(true, forKey: "souq.onboarding.seen")
+                  dismiss(animated: true) { [weak self] in
+                      self?.onFinish?()
+                  }
+              }
+          }
+          OEOF
+
       - name: Generate Source - Entry Point
         run: |
           cd ${{ github.workspace }}
@@ -854,12 +1049,32 @@ jobs:
 
           final class AppDelegate: UIResponder, UIApplicationDelegate {
               var window: UIWindow?
+              private var favoritesNav: UINavigationController!
 
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
-                  window?.rootViewController = makeTabBarController()
+                  let tabBar = makeTabBarController()
+                  window?.rootViewController = tabBar
                   window?.makeKeyAndVisible()
+
+                  NotificationCenter.default.addObserver(
+                      self, selector: #selector(updateBadge),
+                      name: .favoritesChanged, object: nil
+                  )
+                  updateBadge()
+
+                  if !UserDefaults.standard.bool(forKey: "souq.onboarding.seen") {
+                      let onboarding = OnboardingViewController()
+                      onboarding.modalPresentationStyle = .fullScreen
+                      tabBar.present(onboarding, animated: false)
+                  }
+
                   return true
+              }
+
+              @objc private func updateBadge() {
+                  let count = FavoritesManager.shared.count
+                  favoritesNav.tabBarItem.badgeValue = count > 0 ? "\(count)" : nil
               }
 
               private func makeTabBarController() -> UITabBarController {
@@ -869,7 +1084,7 @@ jobs:
                   storeNav.tabBarItem = UITabBarItem(title: "المتجر", image: UIImage(systemName: "bag.fill"), tag: 0)
 
                   // تبويب المفضلة: التطبيقات التي أضافها المستخدم محليًا
-                  let favoritesNav = UINavigationController(rootViewController: FavoritesViewController())
+                  favoritesNav = UINavigationController(rootViewController: FavoritesViewController())
                   favoritesNav.navigationBar.barStyle = .black
                   favoritesNav.tabBarItem = UITabBarItem(title: "المفضلة", image: UIImage(systemName: "heart.fill"), tag: 1)
 
@@ -969,6 +1184,7 @@ jobs:
 
           xcrun swiftc main.swift AppModel.swift AppCell.swift StoreViewController.swift DetailViewController.swift \
             FavoritesViewController.swift SettingsViewController.swift PrivacyPolicyViewController.swift \
+            OnboardingViewController.swift \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios14.0 \
             -O \
