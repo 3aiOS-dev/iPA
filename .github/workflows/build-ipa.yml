@@ -187,21 +187,51 @@ jobs:
               }
           }
 
-          // MARK: - File Manager View Controller
+          // MARK: - File Browser (متصفح ملفات هرمي بالكامل)
 
-          final class FileManagerViewController: UITableViewController, UIDocumentPickerDelegate {
+          final class FileBrowserViewController: UITableViewController, UIDocumentPickerDelegate, UISearchResultsUpdating {
 
-              var files: [String] = []
+              // المسار النسبي داخل مجلد Documents، فارغ يعني الجذر
+              let relativePath: String
               let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+
+              var allItems: [FileItem] = []
+              var filteredItems: [FileItem] = []
+              var sortByDate = false
+
+              let searchController = UISearchController(searchResultsController: nil)
 
               let accentPurple = UIColor(red: 124/255, green: 58/255, blue: 237/255, alpha: 1)
               let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
               let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
               let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
 
+              init(relativePath: String) {
+                  self.relativePath = relativePath
+                  super.init(style: .plain)
+              }
+
+              required init?(coder: NSCoder) {
+                  self.relativePath = ""
+                  super.init(coder: coder)
+              }
+
+              var fullPath: String {
+                  relativePath.isEmpty ? documentsPath : (documentsPath as NSString).appendingPathComponent(relativePath)
+              }
+
+              var isRoot: Bool { relativePath.isEmpty }
+
+              struct FileItem {
+                  let name: String
+                  let relPath: String
+                  let isDirectory: Bool
+                  let size: Int64
+                  let modified: Date
+              }
+
               let emptyLabel: UILabel = {
                   let label = UILabel()
-                  label.text = "📭  لا توجد ملفات بعد\nاضغط \"استيراد من الملفات\" لإضافة ملف"
                   label.numberOfLines = 0
                   label.textAlignment = .center
                   label.textColor = UIColor.white.withAlphaComponent(0.35)
@@ -211,7 +241,7 @@ jobs:
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  title = "21s"
+                  title = isRoot ? "21s" : (relativePath as NSString).lastPathComponent
                   view.backgroundColor = bgDark
                   tableView.backgroundColor = bgDark
                   tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
@@ -231,43 +261,96 @@ jobs:
                   navigationController?.toolbar.tintColor = accentTeal
                   navigationController?.toolbar.isTranslucent = false
 
-                  let importBtn = UIBarButtonItem(title: "📂  استيراد من الملفات", style: .plain, target: self, action: #selector(importFilesTapped))
-                  importBtn.tintColor = accentTeal
-                  let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-                  toolbarItems = [flex, importBtn, flex]
+                  searchController.searchResultsUpdater = self
+                  searchController.obscuresBackgroundDuringPresentation = false
+                  searchController.searchBar.placeholder = "بحث في الملفات"
+                  searchController.searchBar.tintColor = accentTeal
+                  navigationItem.searchController = searchController
+                  definesPresentationContext = true
+
+                  setupToolbar()
 
                   let refresh = UIRefreshControl()
                   refresh.tintColor = accentTeal
                   refresh.addTarget(self, action: #selector(pullToRefresh), for: .valueChanged)
                   tableView.refreshControl = refresh
 
-                  reloadFiles()
+                  reload()
               }
 
               override func viewWillAppear(_ animated: Bool) {
                   super.viewWillAppear(animated)
                   navigationController?.setToolbarHidden(false, animated: animated)
+                  reload()
               }
 
-              func reloadFiles() {
-                  let fm = FileManager.default
-                  var found: [String] = []
-                  if let enumerator = fm.enumerator(atPath: documentsPath) {
-                      for case let file as String in enumerator {
-                          found.append(file)
-                      }
+              func setupToolbar() {
+                  let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
+                  if isRoot {
+                      let importBtn = UIBarButtonItem(title: "📂  استيراد", style: .plain, target: self, action: #selector(importFilesTapped))
+                      importBtn.tintColor = accentTeal
+                      toolbarItems = [flex, importBtn, flex]
+                  } else {
+                      let newFolderBtn = UIBarButtonItem(title: "📁  مجلد جديد", style: .plain, target: self, action: #selector(newFolderTapped))
+                      newFolderBtn.tintColor = accentTeal
+                      toolbarItems = [flex, newFolderBtn, flex]
                   }
-                  files = found.sorted()
-                  tableView.backgroundView = files.isEmpty ? emptyLabel : nil
-                  tableView.reloadData()
+
+                  let sortBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.up.arrow.down"), style: .plain, target: self, action: #selector(toggleSort))
+                  sortBtn.tintColor = accentTeal
+                  navigationItem.rightBarButtonItem = sortBtn
+              }
+
+              @objc func toggleSort() {
+                  sortByDate.toggle()
+                  reload()
+                  showToast(sortByDate ? "🕒 الترتيب حسب الأحدث" : "🔤 الترتيب أبجدياً")
               }
 
               @objc func pullToRefresh() {
-                  reloadFiles()
+                  reload()
                   tableView.refreshControl?.endRefreshing()
               }
 
-              // MARK: - استيراد الملفات من جهازك (تطبيق الملفات)
+              func reload() {
+                  let fm = FileManager.default
+                  var items: [FileItem] = []
+                  if let names = try? fm.contentsOfDirectory(atPath: fullPath) {
+                      for name in names {
+                          let itemFull = (fullPath as NSString).appendingPathComponent(name)
+                          var isDir: ObjCBool = false
+                          fm.fileExists(atPath: itemFull, isDirectory: &isDir)
+                          let attrs = try? fm.attributesOfItem(atPath: itemFull)
+                          let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                          let modified = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+                          let relPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
+                          items.append(FileItem(name: name, relPath: relPath, isDirectory: isDir.boolValue, size: size, modified: modified))
+                      }
+                  }
+                  if sortByDate {
+                      items.sort { $0.modified > $1.modified }
+                  } else {
+                      items.sort {
+                          if $0.isDirectory != $1.isDirectory { return $0.isDirectory && !$1.isDirectory }
+                          return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                      }
+                  }
+                  allItems = items
+                  filteredItems = items
+                  emptyLabel.text = isRoot
+                      ? "📭  لا توجد ملفات بعد\nاضغط \"استيراد\" لإضافة ملف من جهازك"
+                      : "📭  المجلد فارغ"
+                  tableView.backgroundView = items.isEmpty ? emptyLabel : nil
+                  tableView.reloadData()
+              }
+
+              func updateSearchResults(for searchController: UISearchController) {
+                  let query = searchController.searchBar.text?.lowercased() ?? ""
+                  filteredItems = query.isEmpty ? allItems : allItems.filter { $0.name.lowercased().contains(query) }
+                  tableView.reloadData()
+              }
+
+              // MARK: - استيراد من تطبيق الملفات
 
               @objc func importFilesTapped() {
                   let picker: UIDocumentPickerViewController
@@ -283,33 +366,38 @@ jobs:
 
               func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
                   let fm = FileManager.default
-                  var importedCount = 0
+                  var count = 0
                   for url in urls {
-                      let destURL = URL(fileURLWithPath: (documentsPath as NSString).appendingPathComponent(url.lastPathComponent))
-                      try? fm.removeItem(at: destURL)
-                      if (try? fm.copyItem(at: url, to: destURL)) != nil {
-                          importedCount += 1
-                      }
+                      let dest = (fullPath as NSString).appendingPathComponent(url.lastPathComponent)
+                      try? fm.removeItem(atPath: dest)
+                      if (try? fm.copyItem(atPath: url.path, toPath: dest)) != nil { count += 1 }
                   }
-                  reloadFiles()
+                  reload()
+                  showToast("✅ تم استيراد \(count) ملف — اضغط على أي أرشيف لاستخراجه تلقائياً")
+              }
 
-                  let alert = UIAlertController(
-                      title: "✅ تم الاسترداد",
-                      message: "تم استيراد \(importedCount) ملف من جهازك.\nاضغط على أي ملف مضغوط لاستخراجه تلقائياً.",
-                      preferredStyle: .alert
-                  )
-                  alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+              @objc func newFolderTapped() {
+                  let alert = UIAlertController(title: "📁 مجلد جديد", message: nil, preferredStyle: .alert)
+                  alert.addTextField { $0.placeholder = "اسم المجلد" }
+                  alert.addAction(UIAlertAction(title: "إنشاء", style: .default, handler: { [weak self, weak alert] _ in
+                      guard let self = self, let name = alert?.textFields?.first?.text, !name.isEmpty else { return }
+                      let dest = (self.fullPath as NSString).appendingPathComponent(name)
+                      try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
+                      self.reload()
+                  }))
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
                   present(alert, animated: true)
               }
 
-              // MARK: - الاستخراج التلقائي عند الضغط على الملف
+              // MARK: - الاستخراج التلقائي ثم الانتقال مباشرة للمشروع المفكوك
 
-              func extractArchive(named name: String) {
-                  let zipPath = (documentsPath as NSString).appendingPathComponent(name)
-                  let destName = (name as NSString).deletingPathExtension + "_extracted"
-                  let destDir = (documentsPath as NSString).appendingPathComponent(destName)
+              func extractArchive(_ item: FileItem) {
+                  let zipPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let destName = (item.name as NSString).deletingPathExtension + "_extracted"
+                  let destRelPath = relativePath.isEmpty ? destName : "\(relativePath)/\(destName)"
+                  let destDir = (documentsPath as NSString).appendingPathComponent(destRelPath)
 
-                  let progress = UIAlertController(title: "📦 جارِ الاستخراج...", message: name, preferredStyle: .alert)
+                  let progress = UIAlertController(title: "📦 جارِ الاستخراج...", message: item.name, preferredStyle: .alert)
                   present(progress, animated: true)
 
                   DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -318,26 +406,48 @@ jobs:
                           try SimpleUnzip.extract(zipPath: zipPath, to: destDir)
                           DispatchQueue.main.async {
                               progress.dismiss(animated: true) {
-                                  self.reloadFiles()
-                                  let result = UIAlertController(title: "✅ نجح الاستخراج", message: "تم استخراج المحتوى إلى:\n\(destName)", preferredStyle: .alert)
-                                  result.addAction(UIAlertAction(title: "حسناً", style: .default))
-                                  self.present(result, animated: true)
+                                  self.reload()
+                                  let browser = FileBrowserViewController(relativePath: destRelPath)
+                                  self.navigationController?.pushViewController(browser, animated: true)
                               }
                           }
                       } catch {
                           DispatchQueue.main.async {
                               progress.dismiss(animated: true) {
-                                  let result = UIAlertController(title: "❌ فشل الاستخراج", message: "تعذر استخراج \(name)", preferredStyle: .alert)
-                                  result.addAction(UIAlertAction(title: "حسناً", style: .default))
-                                  self.present(result, animated: true)
+                                  self.showAlert(title: "❌ فشل الاستخراج", message: "تعذر استخراج \(item.name)")
                               }
                           }
                       }
                   }
               }
 
-              func shareFile(at path: String) {
-                  let url = URL(fileURLWithPath: path)
+              // MARK: - عارض Info.plist (اطّلاع فقط، بدون تعديل)
+
+              func showPlistInspector(for item: FileItem) {
+                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  guard let data = FileManager.default.contents(atPath: fullItemPath),
+                        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
+                      showAlert(title: "⚠️ تعذرت القراءة", message: "الملف ليس Property List صالح")
+                      return
+                  }
+                  let inspector = PlistInspectorViewController(fileName: item.name, values: plist)
+                  navigationController?.pushViewController(inspector, animated: true)
+              }
+
+              // MARK: - عارض نصوص بسيط
+
+              func showTextPreview(for item: FileItem) {
+                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let text = (try? String(contentsOfFile: fullItemPath, encoding: .utf8)) ?? "تعذّرت قراءة الملف كنص"
+                  let viewer = TextPreviewViewController(fileName: item.name, text: text)
+                  navigationController?.pushViewController(viewer, animated: true)
+              }
+
+              // MARK: - مشاركة / إعادة تسمية / حذف
+
+              func shareFile(_ item: FileItem) {
+                  let fullItemPath = (documentsPath as NSString).appendingPathComponent(item.relPath)
+                  let url = URL(fileURLWithPath: fullItemPath)
                   let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
                   if let popover = activityVC.popoverPresentationController {
                       popover.sourceView = view
@@ -346,30 +456,106 @@ jobs:
                   present(activityVC, animated: true)
               }
 
-              // MARK: - أيقونة ولون لكل نوع ملف
+              func renameItem(_ item: FileItem) {
+                  let alert = UIAlertController(title: "✏️ إعادة تسمية", message: nil, preferredStyle: .alert)
+                  alert.addTextField { $0.text = item.name }
+                  alert.addAction(UIAlertAction(title: "حفظ", style: .default, handler: { [weak self, weak alert] _ in
+                      guard let self = self, let newName = alert?.textFields?.first?.text, !newName.isEmpty else { return }
+                      let oldFull = (self.documentsPath as NSString).appendingPathComponent(item.relPath)
+                      let newFull = (self.fullPath as NSString).appendingPathComponent(newName)
+                      try? FileManager.default.moveItem(atPath: oldFull, toPath: newFull)
+                      self.reload()
+                  }))
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
 
-              func icon(for name: String) -> String {
-                  let lower = name.lowercased()
+              func deleteItem(_ item: FileItem) {
+                  let alert = UIAlertController(title: "🗑️ حذف \"\(item.name)\"؟", message: "لا يمكن التراجع عن هذا الإجراء", preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "حذف", style: .destructive, handler: { [weak self] _ in
+                      guard let self = self else { return }
+                      let fullItemPath = (self.documentsPath as NSString).appendingPathComponent(item.relPath)
+                      try? FileManager.default.removeItem(atPath: fullItemPath)
+                      self.reload()
+                  }))
+                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                  present(alert, animated: true)
+              }
+
+              // MARK: - أدوات مساعدة (تنبيهات وتوست)
+
+              func showAlert(title: String, message: String) {
+                  let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                  present(alert, animated: true)
+              }
+
+              func showToast(_ text: String) {
+                  let toast = UILabel()
+                  toast.text = text
+                  toast.textColor = .white
+                  toast.backgroundColor = cardDark
+                  toast.font = .systemFont(ofSize: 13, weight: .medium)
+                  toast.textAlignment = .center
+                  toast.numberOfLines = 0
+                  toast.layer.cornerRadius = 12
+                  toast.layer.masksToBounds = true
+                  toast.alpha = 0
+                  let maxWidth = view.bounds.width - 48
+                  let size = toast.sizeThatFits(CGSize(width: maxWidth, height: .greatestFiniteMagnitude))
+                  toast.frame = CGRect(x: 24, y: view.bounds.height - 140, width: maxWidth, height: size.height + 24)
+                  view.addSubview(toast)
+                  UIView.animate(withDuration: 0.25, animations: {
+                      toast.alpha = 1
+                  }, completion: { _ in
+                      UIView.animate(withDuration: 0.25, delay: 1.6, options: [], animations: {
+                          toast.alpha = 0
+                      }, completion: { _ in toast.removeFromSuperview() })
+                  })
+              }
+
+              // MARK: - أيقونة ولون لكل نوع
+
+              func icon(for item: FileItem) -> String {
+                  if item.isDirectory { return item.name.hasSuffix("_extracted") ? "📱" : "🗂️" }
+                  let lower = item.name.lowercased()
                   if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return "📦" }
                   if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return "🖼️" }
                   if lower.hasSuffix(".txt") || lower.hasSuffix(".md") { return "📄" }
-                  if lower.hasSuffix(".plist") || lower.hasSuffix(".json") { return "🧩" }
+                  if lower.hasSuffix(".plist") { return "🧩" }
+                  if lower.hasSuffix(".json") { return "🧾" }
                   return "📁"
               }
 
-              func isArchive(_ name: String) -> Bool {
-                  let lower = name.lowercased()
-                  return lower.hasSuffix(".zip") || lower.hasSuffix(".ipa")
+              func isArchive(_ item: FileItem) -> Bool {
+                  let lower = item.name.lowercased()
+                  return !item.isDirectory && (lower.hasSuffix(".zip") || lower.hasSuffix(".ipa"))
               }
 
+              func isPlist(_ item: FileItem) -> Bool {
+                  !item.isDirectory && item.name.lowercased().hasSuffix(".plist")
+              }
+
+              func isText(_ item: FileItem) -> Bool {
+                  let lower = item.name.lowercased()
+                  return !item.isDirectory && (lower.hasSuffix(".txt") || lower.hasSuffix(".md") || lower.hasSuffix(".json"))
+              }
+
+              // MARK: - UITableView
+
+              override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+
               override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-                  files.count
+                  filteredItems.count
+              }
+
+              override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+                  filteredItems.isEmpty ? nil : (isRoot ? "الملفات (\(filteredItems.count))" : "المحتوى (\(filteredItems.count))")
               }
 
               override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
                   let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "cell")
-                  let relPath = files[indexPath.row]
-                  let fullPath = (documentsPath as NSString).appendingPathComponent(relPath)
+                  let item = filteredItems[indexPath.row]
 
                   cell.backgroundColor = cardDark
                   let bg = UIView()
@@ -378,36 +564,147 @@ jobs:
 
                   cell.textLabel?.textColor = .white
                   cell.textLabel?.font = .systemFont(ofSize: 16, weight: .medium)
-                  cell.textLabel?.text = "\(icon(for: relPath))  \(relPath)"
+                  cell.textLabel?.text = "\(icon(for: item))  \(item.name)"
 
-                  let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
-                  let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-                  let sizeText = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-                  let hint = isArchive(relPath) ? "  •  اضغط للاستخراج التلقائي" : ""
+                  let sizeText = item.isDirectory ? "مجلد" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
+                  var hint = ""
+                  if isArchive(item) { hint = "  •  اضغط للاستخراج التلقائي" }
+                  else if item.isDirectory { hint = "  •  اضغط للتصفح" }
+                  else if isPlist(item) { hint = "  •  اضغط للمعاينة" }
                   cell.detailTextLabel?.text = "\(sizeText)\(hint)"
-                  cell.detailTextLabel?.textColor = isArchive(relPath) ? accentTeal : UIColor.white.withAlphaComponent(0.4)
-                  cell.detailTextLabel?.font = .systemFont(ofSize: 12, weight: isArchive(relPath) ? .semibold : .regular)
+                  cell.detailTextLabel?.textColor = (isArchive(item) || item.isDirectory) ? accentTeal : UIColor.white.withAlphaComponent(0.4)
+                  cell.detailTextLabel?.font = .systemFont(ofSize: 12, weight: .regular)
 
-                  cell.accessoryType = isArchive(relPath) ? .disclosureIndicator : .detailButton
+                  cell.accessoryType = (item.isDirectory || isArchive(item)) ? .disclosureIndicator : .detailButton
                   return cell
               }
 
               override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
                   tableView.deselectRow(at: indexPath, animated: true)
-                  let relPath = files[indexPath.row]
-                  let fullPath = (documentsPath as NSString).appendingPathComponent(relPath)
+                  let item = filteredItems[indexPath.row]
 
-                  if isArchive(relPath) {
-                      extractArchive(named: relPath)
+                  if item.isDirectory {
+                      let browser = FileBrowserViewController(relativePath: item.relPath)
+                      navigationController?.pushViewController(browser, animated: true)
+                  } else if isArchive(item) {
+                      extractArchive(item)
+                  } else if isPlist(item) {
+                      showPlistInspector(for: item)
+                  } else if isText(item) {
+                      showTextPreview(for: item)
                   } else {
-                      shareFile(at: fullPath)
+                      shareFile(item)
                   }
               }
 
               override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
-                  let relPath = files[indexPath.row]
-                  let fullPath = (documentsPath as NSString).appendingPathComponent(relPath)
-                  shareFile(at: fullPath)
+                  shareFile(filteredItems[indexPath.row])
+              }
+
+              override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+                  let item = filteredItems[indexPath.row]
+                  let delete = UIContextualAction(style: .destructive, title: "حذف") { [weak self] _, _, done in
+                      self?.deleteItem(item)
+                      done(true)
+                  }
+                  let rename = UIContextualAction(style: .normal, title: "إعادة تسمية") { [weak self] _, _, done in
+                      self?.renameItem(item)
+                      done(true)
+                  }
+                  rename.backgroundColor = accentPurple
+                  let share = UIContextualAction(style: .normal, title: "مشاركة") { [weak self] _, _, done in
+                      self?.shareFile(item)
+                      done(true)
+                  }
+                  share.backgroundColor = accentTeal
+                  return UISwipeActionsConfiguration(actions: [delete, rename, share])
+              }
+          }
+
+          // MARK: - عارض قيم Info.plist (اطّلاع فقط)
+
+          final class PlistInspectorViewController: UITableViewController {
+              let fileName: String
+              let rows: [(String, String)]
+
+              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
+              let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
+              let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
+
+              init(fileName: String, values: [String: Any]) {
+                  self.fileName = fileName
+                  self.rows = values
+                      .map { (String(describing: $0.key), String(describing: $0.value)) }
+                      .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+                  super.init(style: .plain)
+              }
+
+              required init?(coder: NSCoder) {
+                  self.fileName = ""
+                  self.rows = []
+                  super.init(coder: coder)
+              }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  title = "🧩 \(fileName)"
+                  view.backgroundColor = bgDark
+                  tableView.backgroundColor = bgDark
+                  tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
+                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
+              }
+
+              override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
+
+              override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+                  let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "plistCell")
+                  let (key, value) = rows[indexPath.row]
+                  cell.backgroundColor = cardDark
+                  cell.textLabel?.text = key
+                  cell.textLabel?.textColor = accentTeal
+                  cell.textLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+                  cell.detailTextLabel?.text = value
+                  cell.detailTextLabel?.textColor = .white
+                  cell.detailTextLabel?.numberOfLines = 3
+                  cell.selectionStyle = .none
+                  return cell
+              }
+          }
+
+          // MARK: - عارض نصوص بسيط
+
+          final class TextPreviewViewController: UIViewController {
+              let fileName: String
+              let text: String
+              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
+
+              init(fileName: String, text: String) {
+                  self.fileName = fileName
+                  self.text = text
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) {
+                  self.fileName = ""
+                  self.text = ""
+                  super.init(coder: coder)
+              }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  title = fileName
+                  view.backgroundColor = bgDark
+                  if #available(iOS 13.0, *) { overrideUserInterfaceStyle = .dark }
+
+                  let textView = UITextView(frame: view.bounds)
+                  textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                  textView.backgroundColor = bgDark
+                  textView.textColor = .white
+                  textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+                  textView.text = text
+                  textView.isEditable = false
+                  textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
+                  view.addSubview(textView)
               }
           }
 
@@ -418,7 +715,7 @@ jobs:
 
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
-                  let root = FileManagerViewController()
+                  let root = FileBrowserViewController(relativePath: "")
                   let nav = UINavigationController(rootViewController: root)
                   window?.rootViewController = nav
                   window?.makeKeyAndVisible()
