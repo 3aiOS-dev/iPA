@@ -25,10 +25,37 @@ jobs:
         brew install ldid dpkg xz wget curl git make
 
     - name: Install Theos (Official Script)
+      continue-on-error: true
       run: |
         export THEOS=$HOME/theos
         echo "THEOS=$HOME/theos" >> $GITHUB_ENV
         NONINTERACTIVE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+
+    - name: Ensure Theos Core Exists
+      run: |
+        export THEOS=$HOME/theos
+        if [ ! -d "$THEOS/makefiles" ]; then
+          echo "Theos core missing, cloning manually..."
+          rm -rf "$THEOS"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+        else
+          echo "Theos core already present."
+        fi
+
+    - name: Download iOS SDK (Manual, Reliable)
+      run: |
+        export THEOS=$HOME/theos
+        mkdir -p "$THEOS/sdks"
+        cd "$THEOS/sdks"
+        if ! ls | grep -q "\.sdk$"; then
+          echo "No SDK found, downloading manually..."
+          curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o iPhoneOS16.5.sdk.tar.xz
+          tar -xJf iPhoneOS16.5.sdk.tar.xz
+          rm iPhoneOS16.5.sdk.tar.xz
+        else
+          echo "SDK already present, skipping download."
+        fi
+        ls -la "$THEOS/sdks"
 
     - name: Verify Theos Installation
       run: |
@@ -76,10 +103,8 @@ jobs:
         mkdir -p build-output/Payload
         cp -r "$APP_PATH" build-output/Payload/TestApp.app
 
-        # Ensure Info.plist is present and correct
         cp Resources/Info.plist build-output/Payload/TestApp.app/Info.plist
 
-        # Fakesign the binary (required for the .app to be recognized as valid)
         ldid -S build-output/Payload/TestApp.app/TestApp
 
         echo "Final bundle contents:"
