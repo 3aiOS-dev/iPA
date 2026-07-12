@@ -20,7 +20,7 @@ jobs:
 
       - name: Setup Dependencies
         run: |
-          brew install ldid
+          brew install ldid zip unzip
 
       - name: Generate App Icons
         run: |
@@ -31,11 +31,12 @@ jobs:
           from PIL import Image, ImageDraw, ImageFont
 
           def make_icon(size, filename):
+              # Gradient background: deep purple to vibrant blue
               img = Image.new("RGB", (size, size), (18, 18, 30))
               draw = ImageDraw.Draw(img)
 
-              top = (124, 58, 237)      # purple
-              bottom = (6, 182, 212)    # teal
+              top = (88, 0, 160)       # deep purple
+              bottom = (0, 120, 200)   # vibrant blue
               for y in range(size):
                   t = y / size
                   r = int(top[0] * (1 - t) + bottom[0] * t)
@@ -43,15 +44,27 @@ jobs:
                   b = int(top[2] * (1 - t) + bottom[2] * t)
                   draw.line([(0, y), (size, y)], fill=(r, g, b))
 
-              draw.ellipse(
-                  [size * 0.18, size * 0.18, size * 0.82, size * 0.82],
-                  outline=(255, 255, 255),
-                  width=max(2, size // 40),
+              # Rounded square background
+              radius = size * 0.15
+              draw.rounded_rectangle(
+                  [size * 0.05, size * 0.05, size * 0.95, size * 0.95],
+                  radius=radius,
+                  fill=None,
+                  outline=(255, 255, 255, 180),
+                  width=max(2, size // 60)
               )
 
-              text = "21s"
+              # Circular icon element
+              draw.ellipse(
+                  [size * 0.12, size * 0.12, size * 0.88, size * 0.88],
+                  outline=(255, 255, 255, 120),
+                  width=max(1, size // 50),
+              )
+
+              # Text: "IPA"
+              text = "IPA"
               try:
-                  font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.30))
+                  font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.35))
               except Exception:
                   font = ImageFont.load_default()
 
@@ -60,15 +73,33 @@ jobs:
               draw.text(
                   ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]),
                   text,
-                  fill=(255, 255, 255),
+                  fill=(255, 255, 255, 230),
                   font=font,
               )
+
+              # Small text: "21s"
+              try:
+                  font_small = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size * 0.12))
+              except Exception:
+                  font_small = ImageFont.load_default()
+
+              small_text = "21s"
+              bbox_small = draw.textbbox((0, 0), small_text, font=font_small)
+              stw, sth = bbox_small[2] - bbox_small[0], bbox_small[3] - bbox_small[1]
+              draw.text(
+                  ((size - stw) / 2 - bbox_small[0], size * 0.80 - bbox_small[1]),
+                  small_text,
+                  fill=(255, 255, 255, 150),
+                  font=font_small,
+              )
+
               img.save(filename)
 
-          # 60pt @2x = 120x120 (iPhone)
+          # Generate icons for various sizes
           make_icon(120, "Resources/AppIcon60x60@2x.png")
-          # 76pt @2x = 152x152 (iPad)
           make_icon(152, "Resources/AppIcon76x76@2x~ipad.png")
+          make_icon(167, "Resources/AppIcon83.5x83.5@2x~ipad.png")
+          make_icon(180, "Resources/AppIcon60x60@3x.png")
           PYEOF
           ls -la Resources
 
@@ -80,15 +111,17 @@ jobs:
           cat > main.swift << 'SEOF'
           import UIKit
           import Compression
+          import UniformTypeIdentifiers
 
-          // MARK: - Simple ZIP / IPA Extractor
+          // MARK: - ZIP Extraction with Compression Framework
 
           enum UnzipError: Error {
               case readFailed
               case invalidArchive
+              case extractionFailed
           }
 
-          final class SimpleUnzip {
+          final class ZipExtractor {
 
               static func extract(zipPath: String, to destDir: String) throws {
                   guard let data = FileManager.default.contents(atPath: zipPath) else {
@@ -97,6 +130,7 @@ jobs:
                   let bytes = [UInt8](data)
                   let length = bytes.count
 
+                  // Find End of Central Directory
                   var eocdOffset = -1
                   var i = length - 22
                   while i >= 0 {
@@ -186,28 +220,109 @@ jobs:
               }
           }
 
-          // MARK: - File Manager View Controller
+          // MARK: - IPA Info Editor
 
-          final class FileManagerViewController: UITableViewController {
+          struct IPAInfo {
+              var bundleIdentifier: String
+              var bundleName: String
+              var bundleDisplayName: String
+              var shortVersion: String
+              var bundleVersion: String
+              var minimumOSVersion: String
+          }
+
+          class IPAEditor {
+
+              static func readInfoPlist(from ipaPath: String) -> (info: IPAInfo?, plistPath: String?) {
+                  let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                  do {
+                      try ZipExtractor.extract(zipPath: ipaPath, to: tempDir.path)
+
+                      // Find the .app bundle
+                      let payloadDir = tempDir.appendingPathComponent("Payload")
+                      guard let appBundle = try? FileManager.default.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
+                          .first(where: { $0.pathExtension == "app" }) else {
+                          return (nil, nil)
+                      }
+
+                      let plistPath = appBundle.appendingPathComponent("Info.plist")
+                      guard let plistData = try? Data(contentsOf: plistPath),
+                            let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                          return (nil, nil)
+                      }
+
+                      let info = IPAInfo(
+                          bundleIdentifier: plist["CFBundleIdentifier"] as? String ?? "",
+                          bundleName: plist["CFBundleName"] as? String ?? "",
+                          bundleDisplayName: plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String ?? "",
+                          shortVersion: plist["CFBundleShortVersionString"] as? String ?? "",
+                          bundleVersion: plist["CFBundleVersion"] as? String ?? "",
+                          minimumOSVersion: plist["MinimumOSVersion"] as? String ?? ""
+                      )
+
+                      return (info, plistPath.path)
+                  } catch {
+                      return (nil, nil)
+                  }
+              }
+
+              static func updateInfoPlist(at plistPath: String, newInfo: IPAInfo) throws {
+                  guard let plistData = try? Data(contentsOf: URL(fileURLWithPath: plistPath)),
+                        var plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                      throw UnzipError.invalidArchive
+                  }
+
+                  plist["CFBundleIdentifier"] = newInfo.bundleIdentifier
+                  plist["CFBundleName"] = newInfo.bundleName
+                  plist["CFBundleDisplayName"] = newInfo.bundleDisplayName
+                  plist["CFBundleShortVersionString"] = newInfo.shortVersion
+                  plist["CFBundleVersion"] = newInfo.bundleVersion
+                  plist["MinimumOSVersion"] = newInfo.minimumOSVersion
+
+                  let newData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+                  try newData.write(to: URL(fileURLWithPath: plistPath))
+              }
+
+              static func repackIPA(from extractedPath: String, to outputPath: String) throws {
+                  let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                  defer { try? FileManager.default.removeItem(at: tempDir) }
+
+                  try FileManager.default.copyItem(at: URL(fileURLWithPath: extractedPath), to: tempDir)
+
+                  let zipPath = tempDir.appendingPathComponent("Payload.zip")
+                  let process = Process()
+                  process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                  process.arguments = ["-r", zipPath.path, "Payload"]
+                  process.currentDirectoryURL = tempDir
+                  try process.run()
+                  process.waitUntilExit()
+
+                  try FileManager.default.moveItem(at: zipPath, to: URL(fileURLWithPath: outputPath))
+              }
+          }
+
+          // MARK: - Main View Controller
+
+          final class MainViewController: UITableViewController {
 
               var files: [String] = []
               let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
 
-              let accentPurple = UIColor(red: 124/255, green: 58/255, blue: 237/255, alpha: 1)
-              let accentTeal = UIColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1)
-              let bgDark = UIColor(red: 18/255, green: 18/255, blue: 30/255, alpha: 1)
-              let cardDark = UIColor(red: 28/255, green: 28/255, blue: 44/255, alpha: 1)
+              let accentPurple = UIColor(red: 88/255, green: 0/255, blue: 160/255, alpha: 1)
+              let accentBlue = UIColor(red: 0/255, green: 120/255, blue: 200/255, alpha: 1)
+              let bgDark = UIColor(red: 12/255, green: 12/255, blue: 24/255, alpha: 1)
+              let cardDark = UIColor(red: 24/255, green: 24/255, blue: 44/255, alpha: 1)
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  title = "21s"
+                  title = "IPA Editor"
                   view.backgroundColor = bgDark
                   tableView.backgroundColor = bgDark
                   tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
-                  tableView.rowHeight = 64
+                  tableView.rowHeight = 72
 
                   navigationController?.navigationBar.barTintColor = bgDark
-                  navigationController?.navigationBar.tintColor = accentTeal
+                  navigationController?.navigationBar.tintColor = accentBlue
                   navigationController?.navigationBar.titleTextAttributes = [
                       .foregroundColor: UIColor.white,
                       .font: UIFont.boldSystemFont(ofSize: 20)
@@ -217,16 +332,15 @@ jobs:
                       overrideUserInterfaceStyle = .dark
                   }
                   navigationController?.toolbar.barTintColor = bgDark
-                  navigationController?.toolbar.tintColor = accentTeal
+                  navigationController?.toolbar.tintColor = accentBlue
                   navigationController?.toolbar.isTranslucent = false
 
-                  let createBtn = UIBarButtonItem(title: "➕ صنع ملف", style: .plain, target: self, action: #selector(createFileTapped))
-                  let extractBtn = UIBarButtonItem(title: "📦 استخراج", style: .plain, target: self, action: #selector(extractZipTapped))
-                  let recoverBtn = UIBarButtonItem(title: "🔄 استرداد", style: .plain, target: self, action: #selector(recoverFilesTapped))
+                  let importBtn = UIBarButtonItem(title: "📥 استيراد", style: .plain, target: self, action: #selector(importIPATapped))
+                  let refreshBtn = UIBarButtonItem(barButtonSystemItem: .refresh, target: self, action: #selector(refreshFiles))
                   let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-                  toolbarItems = [createBtn, flex, extractBtn, flex, recoverBtn]
+                  toolbarItems = [importBtn, flex, refreshBtn]
 
-                  reloadFiles()
+                  refreshFiles()
               }
 
               override func viewWillAppear(_ animated: Bool) {
@@ -234,97 +348,28 @@ jobs:
                   navigationController?.setToolbarHidden(false, animated: animated)
               }
 
-              func reloadFiles() {
+              @objc func refreshFiles() {
                   let fm = FileManager.default
                   var found: [String] = []
                   if let enumerator = fm.enumerator(atPath: documentsPath) {
                       for case let file as String in enumerator {
-                          found.append(file)
+                          if file.lowercased().hasSuffix(".ipa") {
+                              found.append(file)
+                          }
                       }
                   }
                   files = found.sorted()
                   tableView.reloadData()
               }
 
-              @objc func recoverFilesTapped() {
-                  reloadFiles()
-                  let alert = UIAlertController(title: "تم الاسترداد", message: "تم العثور على \(files.count) ملف", preferredStyle: .alert)
+              @objc func importIPATapped() {
+                  let alert = UIAlertController(title: "استيراد IPA", message: "ضع ملف IPA في مجلد المستندات ثم اضغط تحديث", preferredStyle: .alert)
                   alert.addAction(UIAlertAction(title: "حسناً", style: .default))
                   present(alert, animated: true)
               }
 
-              @objc func createFileTapped() {
-                  let alert = UIAlertController(title: "صنع ملف جديد", message: "أدخل اسم الملف والمحتوى", preferredStyle: .alert)
-                  alert.addTextField { $0.placeholder = "اسم الملف مثل test.txt" }
-                  alert.addTextField { $0.placeholder = "محتوى الملف" }
-                  alert.addAction(UIAlertAction(title: "إنشاء", style: .default, handler: { [weak self, weak alert] _ in
-                      guard let self = self else { return }
-                      guard let name = alert?.textFields?[0].text, !name.isEmpty else { return }
-                      let content = alert?.textFields?[1].text ?? ""
-                      let path = (self.documentsPath as NSString).appendingPathComponent(name)
-                      try? content.write(toFile: path, atomically: true, encoding: .utf8)
-                      self.reloadFiles()
-                  }))
-                  alert.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  present(alert, animated: true)
-              }
-
-              @objc func extractZipTapped() {
-                  let archiveFiles = files.filter {
-                      $0.lowercased().hasSuffix(".zip") || $0.lowercased().hasSuffix(".ipa")
-                  }
-                  guard !archiveFiles.isEmpty else {
-                      let alert = UIAlertController(title: "لا يوجد ملف مضغوط", message: "ضع ملف ZIP أو IPA داخل مجلد المستندات ثم اضغط استرداد", preferredStyle: .alert)
-                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
-                      present(alert, animated: true)
-                      return
-                  }
-
-                  let sheet = UIAlertController(title: "اختر ملف لاستخراجه", message: nil, preferredStyle: .actionSheet)
-                  for name in archiveFiles {
-                      sheet.addAction(UIAlertAction(title: name, style: .default, handler: { [weak self] _ in
-                          guard let self = self else { return }
-                          let zipPath = (self.documentsPath as NSString).appendingPathComponent(name)
-                          let destName = (name as NSString).deletingPathExtension + "_extracted"
-                          let destDir = (self.documentsPath as NSString).appendingPathComponent(destName)
-                          do {
-                              try SimpleUnzip.extract(zipPath: zipPath, to: destDir)
-                              let result = UIAlertController(title: "نجاح", message: "تم الاستخراج بنجاح", preferredStyle: .alert)
-                              result.addAction(UIAlertAction(title: "حسناً", style: .default))
-                              self.present(result, animated: true)
-                          } catch {
-                              let result = UIAlertController(title: "خطأ", message: "فشل الاستخراج", preferredStyle: .alert)
-                              result.addAction(UIAlertAction(title: "حسناً", style: .default))
-                              self.present(result, animated: true)
-                          }
-                          self.reloadFiles()
-                      }))
-                  }
-                  sheet.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                  if let popover = sheet.popoverPresentationController {
-                      popover.sourceView = view
-                      popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.maxY, width: 1, height: 1)
-                  }
-                  present(sheet, animated: true)
-              }
-
-              func shareFile(at path: String) {
-                  let url = URL(fileURLWithPath: path)
-                  let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                  if let popover = activityVC.popoverPresentationController {
-                      popover.sourceView = view
-                      popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-                  }
-                  present(activityVC, animated: true)
-              }
-
               func emoji(for name: String) -> String {
-                  let lower = name.lowercased()
-                  if lower.hasSuffix(".zip") || lower.hasSuffix(".ipa") { return "📦" }
-                  if lower.hasSuffix(".png") || lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return "🖼️" }
-                  if lower.hasSuffix(".txt") || lower.hasSuffix(".md") { return "📄" }
-                  if lower.hasSuffix(".plist") || lower.hasSuffix(".json") { return "🧩" }
-                  return "📁"
+                  return "📦"
               }
 
               override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -347,11 +392,11 @@ jobs:
 
                   let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
                   let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-                  cell.detailTextLabel?.textColor = accentTeal
+                  cell.detailTextLabel?.textColor = accentBlue
                   cell.detailTextLabel?.font = .systemFont(ofSize: 12)
                   cell.detailTextLabel?.text = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
 
-                  cell.accessoryType = .detailButton
+                  cell.accessoryType = .disclosureIndicator
                   return cell
               }
 
@@ -359,7 +404,169 @@ jobs:
                   tableView.deselectRow(at: indexPath, animated: true)
                   let relPath = files[indexPath.row]
                   let fullPath = (documentsPath as NSString).appendingPathComponent(relPath)
-                  shareFile(at: fullPath)
+                  showEditor(for: fullPath)
+              }
+
+              func showEditor(for ipaPath: String) {
+                  let (info, plistPath) = IPAEditor.readInfoPlist(from: ipaPath)
+                  guard let info = info, let plistPath = plistPath else {
+                      let alert = UIAlertController(title: "خطأ", message: "لا يمكن قراءة معلومات IPA", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                      present(alert, animated: true)
+                      return
+                  }
+
+                  let editorVC = EditorViewController()
+                  editorVC.ipaPath = ipaPath
+                  editorVC.plistPath = plistPath
+                  editorVC.currentInfo = info
+                  navigationController?.pushViewController(editorVC, animated: true)
+              }
+          }
+
+          // MARK: - Editor View Controller
+
+          final class EditorViewController: UIViewController {
+
+              var ipaPath: String = ""
+              var plistPath: String = ""
+              var currentInfo: IPAInfo = IPAInfo(bundleIdentifier: "", bundleName: "", bundleDisplayName: "", shortVersion: "", bundleVersion: "", minimumOSVersion: "")
+
+              let accentPurple = UIColor(red: 88/255, green: 0/255, blue: 160/255, alpha: 1)
+              let accentBlue = UIColor(red: 0/255, green: 120/255, blue: 200/255, alpha: 1)
+              let bgDark = UIColor(red: 12/255, green: 12/255, blue: 24/255, alpha: 1)
+              let cardDark = UIColor(red: 24/255, green: 24/255, blue: 44/255, alpha: 1)
+
+              var textFields: [UITextField] = []
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = bgDark
+                  title = "تعديل IPA"
+
+                  navigationItem.rightBarButtonItem = UIBarButtonItem(
+                      title: "💾 حفظ",
+                      style: .done,
+                      target: self,
+                      action: #selector(saveChanges)
+                  )
+
+                  setupUI()
+              }
+
+              func setupUI() {
+                  let scrollView = UIScrollView()
+                  scrollView.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(scrollView)
+
+                  let contentView = UIView()
+                  contentView.translatesAutoresizingMaskIntoConstraints = false
+                  scrollView.addSubview(contentView)
+
+                  NSLayoutConstraint.activate([
+                      scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                      scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+                      scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                      scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+                      contentView.topAnchor.constraint(equalTo: scrollView.topAnchor),
+                      contentView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+                      contentView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+                      contentView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+                      contentView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+                  ])
+
+                  let fields = [
+                      ("معرف البندل (Bundle ID)", currentInfo.bundleIdentifier),
+                      ("اسم البندل", currentInfo.bundleName),
+                      ("اسم العرض", currentInfo.bundleDisplayName),
+                      ("الإصدار القصير", currentInfo.shortVersion),
+                      ("رقم الإصدار", currentInfo.bundleVersion),
+                      ("الحد الأدنى لنظام iOS", currentInfo.minimumOSVersion),
+                  ]
+
+                  var previousField: UITextField?
+
+                  for (index, (labelText, value)) in fields.enumerated() {
+                      let label = UILabel()
+                      label.text = labelText
+                      label.textColor = .white
+                      label.font = .systemFont(ofSize: 14, weight: .medium)
+                      label.translatesAutoresizingMaskIntoConstraints = false
+                      contentView.addSubview(label)
+
+                      let textField = UITextField()
+                      textField.text = value
+                      textField.textColor = .white
+                      textField.backgroundColor = cardDark
+                      textField.layer.cornerRadius = 8
+                      textField.layer.borderWidth = 1
+                      textField.layer.borderColor = accentPurple.withAlphaComponent(0.3).cgColor
+                      textField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 0))
+                      textField.leftViewMode = .always
+                      textField.translatesAutoresizingMaskIntoConstraints = false
+                      textField.heightAnchor.constraint(equalToConstant: 44).isActive = true
+                      contentView.addSubview(textField)
+
+                      textFields.append(textField)
+
+                      NSLayoutConstraint.activate([
+                          label.topAnchor.constraint(equalTo: previousField?.bottomAnchor ?? contentView.topAnchor, constant: previousField == nil ? 20 : 16),
+                          label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+                          label.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+                          textField.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
+                          textField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+                          textField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+                      ])
+
+                      previousField = textField
+                  }
+
+                  let bottomSpacer = UIView()
+                  bottomSpacer.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(bottomSpacer)
+
+                  NSLayoutConstraint.activate([
+                      bottomSpacer.topAnchor.constraint(equalTo: previousField?.bottomAnchor ?? contentView.topAnchor, constant: 30),
+                      bottomSpacer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -30),
+                      bottomSpacer.heightAnchor.constraint(equalToConstant: 1),
+                  ])
+              }
+
+              @objc func saveChanges() {
+                  guard textFields.count == 6 else { return }
+
+                  let newInfo = IPAInfo(
+                      bundleIdentifier: textFields[0].text ?? currentInfo.bundleIdentifier,
+                      bundleName: textFields[1].text ?? currentInfo.bundleName,
+                      bundleDisplayName: textFields[2].text ?? currentInfo.bundleDisplayName,
+                      shortVersion: textFields[3].text ?? currentInfo.shortVersion,
+                      bundleVersion: textFields[4].text ?? currentInfo.bundleVersion,
+                      minimumOSVersion: textFields[5].text ?? currentInfo.minimumOSVersion
+                  )
+
+                  do {
+                      try IPAEditor.updateInfoPlist(at: plistPath, newInfo: newInfo)
+
+                      // Repack IPA
+                      let extractedPath = (plistPath as NSString).deletingLastPathComponent
+                      let originalName = (ipaPath as NSString).lastPathComponent
+                      let outputDir = (ipaPath as NSString).deletingLastPathComponent
+                      let outputPath = (outputDir as NSString).appendingPathComponent("modified_" + originalName)
+
+                      try IPAEditor.repackIPA(from: extractedPath, to: outputPath)
+
+                      let alert = UIAlertController(title: "نجاح", message: "تم حفظ التغييرات وإعادة تعبئة IPA", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default) { _ in
+                          self.navigationController?.popViewController(animated: true)
+                      })
+                      present(alert, animated: true)
+                  } catch {
+                      let alert = UIAlertController(title: "خطأ", message: "فشل حفظ التغييرات: \(error.localizedDescription)", preferredStyle: .alert)
+                      alert.addAction(UIAlertAction(title: "حسناً", style: .default))
+                      present(alert, animated: true)
+                  }
               }
           }
 
@@ -370,7 +577,7 @@ jobs:
 
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
-                  let root = FileManagerViewController()
+                  let root = MainViewController()
                   let nav = UINavigationController(rootViewController: root)
                   window?.rootViewController = nav
                   window?.makeKeyAndVisible()
@@ -378,7 +585,7 @@ jobs:
               }
           }
 
-          // MARK: - Entry point (this file must be named main.swift)
+          // MARK: - Entry Point
 
           UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))
           SEOF
@@ -391,15 +598,15 @@ jobs:
               <key>CFBundleDevelopmentRegion</key>
               <string>en</string>
               <key>CFBundleExecutable</key>
-              <string>TwentyOneS</string>
+              <string>IPAEditor</string>
               <key>CFBundleIdentifier</key>
-              <string>com.example.s21</string>
+              <string>com.ipa.editor</string>
               <key>CFBundleInfoDictionaryVersion</key>
               <string>6.0</string>
               <key>CFBundleName</key>
-              <string>21s</string>
+              <string>IPA Editor</string>
               <key>CFBundleDisplayName</key>
-              <string>21s</string>
+              <string>IPA Editor</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
@@ -436,6 +643,7 @@ jobs:
                       <key>CFBundleIconFiles</key>
                       <array>
                           <string>AppIcon60x60@2x.png</string>
+                          <string>AppIcon60x60@3x.png</string>
                       </array>
                   </dict>
               </dict>
@@ -447,6 +655,7 @@ jobs:
                       <array>
                           <string>AppIcon60x60@2x.png</string>
                           <string>AppIcon76x76@2x~ipad.png</string>
+                          <string>AppIcon83.5x83.5@2x~ipad.png</string>
                       </array>
                   </dict>
               </dict>
@@ -466,34 +675,33 @@ jobs:
             -O \
             -framework UIKit \
             -framework Foundation \
-            -o TwentyOneS
+            -o IPAEditor
 
-          file TwentyOneS
+          file IPAEditor
 
       - name: Create IPA Package
         run: |
           cd ${{ github.workspace }}
           mkdir -p artifacts
           rm -rf build-output
-          mkdir -p build-output/Payload/TwentyOneS.app
+          mkdir -p build-output/Payload/IPAEditor.app
 
-          cp TwentyOneS build-output/Payload/TwentyOneS.app/TwentyOneS
-          cp Resources/Info.plist build-output/Payload/TwentyOneS.app/Info.plist
-          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/TwentyOneS.app/
-          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/TwentyOneS.app/
+          cp IPAEditor build-output/Payload/IPAEditor.app/IPAEditor
+          cp Resources/Info.plist build-output/Payload/IPAEditor.app/Info.plist
+          cp Resources/AppIcon*.png build-output/Payload/IPAEditor.app/ 2>/dev/null || true
 
-          ldid -S build-output/Payload/TwentyOneS.app/TwentyOneS
+          ldid -S build-output/Payload/IPAEditor.app/IPAEditor
 
           cd build-output
-          zip -r -q ../artifacts/TwentyOneS.ipa Payload/
+          zip -r -q ../artifacts/IPAEditor.ipa Payload/
           cd ..
 
           echo "IPA contents:"
-          unzip -l artifacts/TwentyOneS.ipa
+          unzip -l artifacts/IPAEditor.ipa
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TwentyOneS-IPA
-          path: artifacts/TwentyOneS.ipa
+          name: IPAEditor-IPA
+          path: artifacts/IPAEditor.ipa
           retention-days: 30
