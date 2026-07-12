@@ -38,6 +38,34 @@ jobs:
           rm iPhoneOS16.5.sdk.tar.xz
           ls -la "$THEOS/sdks"
 
+      - name: Generate App Icons
+        run: |
+          cd ${{ github.workspace }}
+          mkdir -p Resources
+          python3 -m pip install --quiet Pillow
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw
+
+          def make_icon(size, filename):
+              img = Image.new("RGB", (size, size), (33, 150, 243))
+              draw = ImageDraw.Draw(img)
+              draw.ellipse(
+                  [size * 0.12, size * 0.12, size * 0.88, size * 0.88],
+                  fill=(255, 255, 255),
+              )
+              draw.ellipse(
+                  [size * 0.30, size * 0.30, size * 0.70, size * 0.70],
+                  fill=(33, 150, 243),
+              )
+              img.save(filename)
+
+          # 60pt @2x = 120x120 (iPhone)
+          make_icon(120, "Resources/AppIcon60x60@2x.png")
+          # 76pt @2x = 152x152 (iPad)
+          make_icon(152, "Resources/AppIcon76x76@2x~ipad.png")
+          PYEOF
+          ls -la Resources
+
       - name: Generate App Source Files
         run: |
           cd ${{ github.workspace }}
@@ -56,6 +84,7 @@ jobs:
 
           SmartButtons_FILES = main.m
           SmartButtons_FRAMEWORKS = UIKit Foundation
+          SmartButtons_LIBRARIES = z
           SmartButtons_CFLAGS = -fobjc-arc
 
           include $(THEOS_MAKE_PATH)/application.mk
@@ -64,6 +93,247 @@ jobs:
           cat > main.m << 'MEOF'
           @import UIKit;
           @import Foundation;
+          #import <zlib.h>
+
+          #pragma mark - Simple Zip Extractor
+
+          @interface SimpleUnzip : NSObject
+          + (BOOL)extractZipAtPath:(NSString *)zipPath toDirectory:(NSString *)destDir error:(NSError **)error;
+          @end
+
+          @implementation SimpleUnzip
+
+          + (BOOL)extractZipAtPath:(NSString *)zipPath toDirectory:(NSString *)destDir error:(NSError **)error {
+              NSData *zipData = [NSData dataWithContentsOfFile:zipPath];
+              if (!zipData) {
+                  if (error) *error = [NSError errorWithDomain:@"SimpleUnzip" code:1 userInfo:@{NSLocalizedDescriptionKey:@"تعذر قراءة الملف"}];
+                  return NO;
+              }
+              const uint8_t *bytes = zipData.bytes;
+              NSUInteger length = zipData.length;
+
+              NSInteger eocdOffset = -1;
+              for (NSInteger i = (NSInteger)length - 22; i >= 0; i--) {
+                  if (bytes[i]==0x50 && bytes[i+1]==0x4b && bytes[i+2]==0x05 && bytes[i+3]==0x06) {
+                      eocdOffset = i;
+                      break;
+                  }
+              }
+              if (eocdOffset < 0) {
+                  if (error) *error = [NSError errorWithDomain:@"SimpleUnzip" code:2 userInfo:@{NSLocalizedDescriptionKey:@"ملف ZIP غير صالح"}];
+                  return NO;
+              }
+
+              uint16_t entryCount = *(uint16_t *)(bytes + eocdOffset + 10);
+              uint32_t centralDirOffset = *(uint32_t *)(bytes + eocdOffset + 16);
+
+              NSFileManager *fm = [NSFileManager defaultManager];
+              [fm createDirectoryAtPath:destDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+              NSUInteger pos = centralDirOffset;
+              for (int i = 0; i < entryCount; i++) {
+                  if (pos + 46 > length) break;
+                  uint32_t sig = *(uint32_t *)(bytes + pos);
+                  if (sig != 0x02014b50) break;
+
+                  uint16_t method = *(uint16_t *)(bytes + pos + 10);
+                  uint32_t compSize = *(uint32_t *)(bytes + pos + 20);
+                  uint16_t nameLen = *(uint16_t *)(bytes + pos + 28);
+                  uint16_t extraLen = *(uint16_t *)(bytes + pos + 30);
+                  uint16_t commentLen = *(uint16_t *)(bytes + pos + 32);
+                  uint32_t localHeaderOffset = *(uint32_t *)(bytes + pos + 42);
+
+                  NSString *fileName = [[NSString alloc] initWithBytes:(bytes + pos + 46) length:nameLen encoding:NSUTF8StringEncoding];
+
+                  pos += 46 + nameLen + extraLen + commentLen;
+
+                  if ([fileName hasSuffix:@"/"]) {
+                      NSString *dirPath = [destDir stringByAppendingPathComponent:fileName];
+                      [fm createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:nil];
+                      continue;
+                  }
+
+                  if (localHeaderOffset + 30 > length) continue;
+                  uint16_t localNameLen = *(uint16_t *)(bytes + localHeaderOffset + 26);
+                  uint16_t localExtraLen = *(uint16_t *)(bytes + localHeaderOffset + 28);
+                  NSUInteger dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+                  if (dataStart + compSize > length) continue;
+
+                  NSData *compData = [NSData dataWithBytes:(bytes + dataStart) length:compSize];
+                  NSMutableData *outData = [NSMutableData data];
+
+                  if (method == 0) {
+                      outData = [compData mutableCopy];
+                  } else if (method == 8) {
+                      z_stream strm;
+                      memset(&strm, 0, sizeof(strm));
+                      if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) continue;
+
+                      strm.next_in = (Bytef *)compData.bytes;
+                      strm.avail_in = (uInt)compData.length;
+
+                      uint8_t outBuffer[4096];
+                      int ret;
+                      do {
+                          strm.next_out = outBuffer;
+                          strm.avail_out = sizeof(outBuffer);
+                          ret = inflate(&strm, Z_NO_FLUSH);
+                          if (ret != Z_OK && ret != Z_STREAM_END) break;
+                          NSUInteger produced = sizeof(outBuffer) - strm.avail_out;
+                          [outData appendBytes:outBuffer length:produced];
+                      } while (ret != Z_STREAM_END && strm.avail_in > 0);
+
+                      inflateEnd(&strm);
+                  } else {
+                      continue;
+                  }
+
+                  NSString *outPath = [destDir stringByAppendingPathComponent:fileName];
+                  NSString *outParent = [outPath stringByDeletingLastPathComponent];
+                  [fm createDirectoryAtPath:outParent withIntermediateDirectories:YES attributes:nil error:nil];
+                  [outData writeToFile:outPath atomically:YES];
+              }
+
+              return YES;
+          }
+
+          @end
+
+          #pragma mark - File Manager View Controller
+
+          @interface FileManagerViewController : UITableViewController
+          @property (strong, nonatomic) NSMutableArray<NSString *> *files;
+          @property (strong, nonatomic) NSString *documentsPath;
+          @end
+
+          @implementation FileManagerViewController
+
+          - (void)viewDidLoad {
+              [super viewDidLoad];
+              self.title = @"مدير الملفات";
+              self.documentsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+              self.files = [NSMutableArray array];
+
+              UIBarButtonItem *createBtn = [[UIBarButtonItem alloc] initWithTitle:@"صنع ملف" style:UIBarButtonItemStylePlain target:self action:@selector(createFileTapped)];
+              UIBarButtonItem *extractBtn = [[UIBarButtonItem alloc] initWithTitle:@"فك ضغط" style:UIBarButtonItemStylePlain target:self action:@selector(extractZipTapped)];
+              UIBarButtonItem *recoverBtn = [[UIBarButtonItem alloc] initWithTitle:@"استرداد" style:UIBarButtonItemStylePlain target:self action:@selector(recoverFilesTapped)];
+              UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+
+              self.toolbarItems = @[createBtn, flex, extractBtn, flex, recoverBtn];
+
+              [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"cell"];
+
+              [self reloadFiles];
+          }
+
+          - (void)viewWillAppear:(BOOL)animated {
+              [super viewWillAppear:animated];
+              [self.navigationController setToolbarHidden:NO animated:animated];
+          }
+
+          - (void)reloadFiles {
+              NSFileManager *fm = [NSFileManager defaultManager];
+              NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:self.documentsPath];
+              NSMutableArray *found = [NSMutableArray array];
+              NSString *file;
+              while ((file = [enumerator nextObject])) {
+                  [found addObject:file];
+              }
+              self.files = found;
+              [self.tableView reloadData];
+          }
+
+          - (void)recoverFilesTapped {
+              [self reloadFiles];
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تم الاسترداد" message:[NSString stringWithFormat:@"تم العثور على %lu ملف", (unsigned long)self.files.count] preferredStyle:UIAlertControllerStyleAlert];
+              [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+              [self presentViewController:alert animated:YES completion:nil];
+          }
+
+          - (void)createFileTapped {
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"صنع ملف جديد" message:@"أدخل اسم الملف والمحتوى" preferredStyle:UIAlertControllerStyleAlert];
+              [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) { tf.placeholder = @"اسم الملف مثل test.txt"; }];
+              [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) { tf.placeholder = @"محتوى الملف"; }];
+
+              __weak typeof(self) weakSelf = self;
+              [alert addAction:[UIAlertAction actionWithTitle:@"إنشاء" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  NSString *name = alert.textFields[0].text;
+                  NSString *content = alert.textFields[1].text ?: @"";
+                  if (name.length == 0) return;
+                  NSString *path = [weakSelf.documentsPath stringByAppendingPathComponent:name];
+                  [content writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                  [weakSelf reloadFiles];
+              }]];
+              [alert addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+              [self presentViewController:alert animated:YES completion:nil];
+          }
+
+          - (void)extractZipTapped {
+              NSArray<NSString *> *zipFiles = [self.files filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF ENDSWITH[c] '.zip'"]];
+              if (zipFiles.count == 0) {
+                  UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"لا يوجد ملف مضغوط" message:@"ضع ملف ZIP داخل مجلد المستندات ثم اضغط استرداد" preferredStyle:UIAlertControllerStyleAlert];
+                  [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+                  [self presentViewController:alert animated:YES completion:nil];
+                  return;
+              }
+
+              UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"اختر ملف لفك ضغطه" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+              __weak typeof(self) weakSelf = self;
+              for (NSString *zipName in zipFiles) {
+                  [sheet addAction:[UIAlertAction actionWithTitle:zipName style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                      NSString *zipPath = [weakSelf.documentsPath stringByAppendingPathComponent:zipName];
+                      NSString *destDir = [weakSelf.documentsPath stringByAppendingPathComponent:[[zipName stringByDeletingPathExtension] stringByAppendingString:@"_extracted"]];
+                      NSError *unzipError;
+                      BOOL success = [SimpleUnzip extractZipAtPath:zipPath toDirectory:destDir error:&unzipError];
+                      NSString *msg = success ? @"تم فك الضغط بنجاح" : (unzipError.localizedDescription ?: @"فشل فك الضغط");
+                      UIAlertController *result = [UIAlertController alertControllerWithTitle:success ? @"نجاح" : @"خطأ" message:msg preferredStyle:UIAlertControllerStyleAlert];
+                      [result addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+                      [weakSelf presentViewController:result animated:YES completion:nil];
+                      [weakSelf reloadFiles];
+                  }]];
+              }
+              [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+
+              if (sheet.popoverPresentationController) {
+                  sheet.popoverPresentationController.sourceView = self.view;
+                  sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height, 1, 1);
+              }
+              [self presentViewController:sheet animated:YES completion:nil];
+          }
+
+          - (void)shareFileAtPath:(NSString *)path {
+              NSURL *url = [NSURL fileURLWithPath:path];
+              UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+              if (activityVC.popoverPresentationController) {
+                  activityVC.popoverPresentationController.sourceView = self.view;
+                  activityVC.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+              }
+              [self presentViewController:activityVC animated:YES completion:nil];
+          }
+
+          #pragma mark - UITableViewDataSource
+
+          - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+              return self.files.count;
+          }
+
+          - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+              UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell" forIndexPath:indexPath];
+              cell.textLabel.text = self.files[indexPath.row];
+              cell.accessoryType = UITableViewCellAccessoryDetailButton;
+              return cell;
+          }
+
+          - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+              [tableView deselectRowAtIndexPath:indexPath animated:YES];
+              NSString *relPath = self.files[indexPath.row];
+              NSString *fullPath = [self.documentsPath stringByAppendingPathComponent:relPath];
+              [self shareFileAtPath:fullPath];
+          }
+
+          @end
+
+          #pragma mark - App Delegate
 
           @interface SmartButtonsAppDelegate : UIResponder <UIApplicationDelegate>
           @property (strong, nonatomic) UIWindow *window;
@@ -73,31 +343,10 @@ jobs:
 
           - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
               self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-              self.window.backgroundColor = [UIColor whiteColor];
-
-              UIViewController *viewController = [[UIViewController alloc] init];
-              viewController.view.backgroundColor = [UIColor whiteColor];
-
-              UILabel *titleLabel = [[UILabel alloc] init];
-              titleLabel.text = @"أهلاً بيك";
-              titleLabel.font = [UIFont boldSystemFontOfSize:36];
-              titleLabel.textAlignment = NSTextAlignmentCenter;
-              titleLabel.textColor = [UIColor blackColor];
-              titleLabel.frame = CGRectMake(0, 250, self.window.frame.size.width, 100);
-
-              UILabel *subtitleLabel = [[UILabel alloc] init];
-              subtitleLabel.text = @"التطبيق شغال بنجاح";
-              subtitleLabel.font = [UIFont systemFontOfSize:18];
-              subtitleLabel.textAlignment = NSTextAlignmentCenter;
-              subtitleLabel.textColor = [UIColor grayColor];
-              subtitleLabel.frame = CGRectMake(0, 350, self.window.frame.size.width, 50);
-
-              [viewController.view addSubview:titleLabel];
-              [viewController.view addSubview:subtitleLabel];
-
-              self.window.rootViewController = viewController;
+              FileManagerViewController *rootVC = [[FileManagerViewController alloc] init];
+              UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:rootVC];
+              self.window.rootViewController = nav;
               [self.window makeKeyAndVisible];
-
               return YES;
           }
 
@@ -160,6 +409,29 @@ jobs:
                   <string>UIInterfaceOrientationLandscapeLeft</string>
                   <string>UIInterfaceOrientationLandscapeRight</string>
               </array>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60@2x.png</string>
+                      </array>
+                  </dict>
+              </dict>
+              <key>CFBundleIcons~ipad</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60@2x.png</string>
+                          <string>AppIcon76x76@2x~ipad.png</string>
+                      </array>
+                  </dict>
+              </dict>
           </dict>
           </plist>
           MEOF
@@ -188,6 +460,8 @@ jobs:
           cp -r "$APP_PATH" build-output/Payload/SmartButtons.app
 
           cp Resources/Info.plist build-output/Payload/SmartButtons.app/Info.plist
+          cp "Resources/AppIcon60x60@2x.png" build-output/Payload/SmartButtons.app/
+          cp "Resources/AppIcon76x76@2x~ipad.png" build-output/Payload/SmartButtons.app/
           ldid -S build-output/Payload/SmartButtons.app/SmartButtons
 
           cd build-output
