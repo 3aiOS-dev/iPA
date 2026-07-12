@@ -1,0 +1,113 @@
+name: Build iOS App IPA
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+      
+    - name: Setup Xcode
+      run: |
+        sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+        
+    - name: Install Theos dependencies
+      run: |
+        brew install ldib xz gettext lz4
+        brew install dpkg
+        
+    - name: Clone Theos
+      run: |
+        git clone --recursive https://github.com/theos/theos.git ~/theos
+        echo "THEOS=~/theos" >> $GITHUB_ENV
+        
+    - name: Setup iOS SDK
+      run: |
+        mkdir -p ~/theos/sdks
+        cd ~/theos/sdks
+        if [ ! -d "iPhoneOS.sdk" ]; then
+          echo "Downloading iOS SDK..."
+          curl -L https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -o iPhoneOS.sdk.tar.gz
+          tar -xzf iPhoneOS.sdk.tar.gz
+          rm iPhoneOS.sdk.tar.gz
+        fi
+        ls -la
+        
+    - name: Build iOS App
+      run: |
+        export THEOS=~/theos
+        cd ${{ github.workspace }}
+        ls -la
+        make -j$(nproc)
+        
+    - name: Create artifacts directory
+      run: |
+        mkdir -p artifacts
+        
+    - name: Collect build artifacts
+      run: |
+        cd ${{ github.workspace }}
+        find .theos/obj/debug -type f \( -name "*.deb" -o -name "*.ipa" \) -exec cp {} artifacts/ \;
+        find .theos/obj/debug -type d -name "*.app" -exec cp -r {} artifacts/ \;
+        ls -la artifacts/ || echo "No artifacts found"
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ios-build-artifacts
+        path: artifacts/
+        retention-days: 30
+        
+    - name: Create Release Notes
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        cat > release_notes.txt << 'EOF'
+        # Test App v1.0.0
+        
+        ## Features
+        - Simple iOS Test Application
+        - Shows welcome message in Arabic
+        - Built with Theos
+        - Supports iOS 7.0+
+        
+        ## Installation
+        1. Download the .deb file
+        2. Transfer to your iOS device
+        3. Install using dpkg or Cydia
+        4. Respring or reboot
+        
+        ## Requirements
+        - iOS 7.0 or later
+        - arm64 or arm64e architecture
+        EOF
+        
+    - name: Publish Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/**
+          release_notes.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Build Status
+      if: always()
+      run: |
+        echo "==================================="
+        echo "Build Summary"
+        echo "==================================="
+        echo "Status: ${{ job.status }}"
+        echo "Artifacts:"
+        ls -lh artifacts/ || echo "No artifacts"
+        echo "==================================="
