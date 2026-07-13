@@ -223,6 +223,105 @@ jobs:
           }
           JEOF
           python3 -c "import json; json.load(open('Resources/apps_data.json')); print('apps_data.json OK')"
+      - name: Generate Source - Theme (Dark/Light Mode + Colors)
+        run: |
+          cd ${{ github.workspace }}
+          cat > Theme.swift << 'TMEOF'
+          import UIKit
+
+          // إدارة وضع العرض (داكن/فاتح) - يتم حفظ التفضيل محليًا فقط.
+          enum ThemeManager {
+              private static let key = "souq.darkMode"
+
+              static var isDarkMode: Bool {
+                  get {
+                      if UserDefaults.standard.object(forKey: key) == nil { return true }
+                      return UserDefaults.standard.bool(forKey: key)
+                  }
+                  set { UserDefaults.standard.set(newValue, forKey: key) }
+              }
+
+              static func apply(to window: UIWindow?) {
+                  window?.overrideUserInterfaceStyle = isDarkMode ? .dark : .light
+              }
+          }
+
+          extension UIColor {
+              convenience init(hex: String) {
+                  var sanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+                  sanitized = sanitized.replacingOccurrences(of: "#", with: "")
+                  var rgb: UInt64 = 0
+                  Scanner(string: sanitized).scanHexInt64(&rgb)
+                  let r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+                  let g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+                  let b = CGFloat(rgb & 0x0000FF) / 255.0
+                  self.init(red: r, green: g, blue: b, alpha: 1.0)
+              }
+
+              // ألوان ديناميكية تتكيف تلقائيًا مع الوضع الداكن/الفاتح
+              static let souqBackground = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor(red: 10/255, green: 10/255, blue: 18/255, alpha: 1)
+                      : UIColor(red: 244/255, green: 245/255, blue: 250/255, alpha: 1)
+              }
+
+              static let souqCard = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor(red: 24/255, green: 24/255, blue: 38/255, alpha: 1)
+                      : UIColor.white
+              }
+
+              static let souqCardAlt = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor(red: 30/255, green: 30/255, blue: 48/255, alpha: 1)
+                      : UIColor(red: 236/255, green: 238/255, blue: 245/255, alpha: 1)
+              }
+
+              static let souqPrimaryText = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor.white
+                      : UIColor(red: 17/255, green: 17/255, blue: 27/255, alpha: 1)
+              }
+
+              static let souqSecondaryText = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor.white.withAlphaComponent(0.55)
+                      : UIColor(red: 17/255, green: 17/255, blue: 27/255, alpha: 0.55)
+              }
+
+              static let souqBorder = UIColor { traits in
+                  traits.userInterfaceStyle == .dark
+                      ? UIColor.white.withAlphaComponent(0.07)
+                      : UIColor.black.withAlphaComponent(0.07)
+              }
+
+              // ألوان الهوية البصرية الثابتة
+              static let souqPurple = UIColor(hex: "7C3AED")
+              static let souqAmber = UIColor(hex: "F59E0B")
+              static let souqCyan = UIColor(hex: "06B6D4")
+              static let souqPink = UIColor(hex: "EC4899")
+              static let souqGreen = UIColor(hex: "10B981")
+              static let souqRed = UIColor(hex: "EF4444")
+          }
+
+          // ليبل بحشو داخلي، يُستخدم للشارات الصغيرة (Badges/Tags)
+          final class PaddingLabel: UILabel {
+              var horizontalPadding: CGFloat = 8
+              override func drawText(in rect: CGRect) {
+                  super.drawText(in: rect.inset(by: UIEdgeInsets(top: 0, left: horizontalPadding, bottom: 0, right: horizontalPadding)))
+              }
+              override var intrinsicContentSize: CGSize {
+                  let s = super.intrinsicContentSize
+                  return CGSize(width: s.width + horizontalPadding * 2, height: s.height)
+              }
+          }
+
+          // بروتوكول يسمح لأي شاشة بالتنقل بين التبويبات الرئيسية
+          protocol TabSwitching: AnyObject {
+              func switchToSettings()
+              func switchToApps(category: StoreCategory)
+          }
+          TMEOF
 
       - name: Generate Source - Models and Mock Data
         run: |
@@ -250,17 +349,22 @@ jobs:
               let price: String
           }
 
-          extension UIColor {
-              convenience init(hex: String) {
-                  var sanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-                  sanitized = sanitized.replacingOccurrences(of: "#", with: "")
-                  var rgb: UInt64 = 0
-                  Scanner(string: sanitized).scanHexInt64(&rgb)
-                  let r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
-                  let g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
-                  let b = CGFloat(rgb & 0x0000FF) / 255.0
-                  self.init(red: r, green: g, blue: b, alpha: 1.0)
-              }
+          // بيانات بنرات العرض الترويجية في الصفحة الرئيسية (وهمية بالكامل لأغراض العرض).
+          struct Banner {
+              let title: String
+              let subtitle: String
+              let emoji: String
+              let colorHex: String
+              let colorHex2: String
+          }
+
+          enum BannerDataLoader {
+              static let banners: [Banner] = [
+                  Banner(title: "عروض الأسبوع", subtitle: "خصومات وعروض على أفضل التطبيقات والألعاب", emoji: "🎁", colorHex: "7C3AED", colorHex2: "EC4899"),
+                  Banner(title: "الأكثر تحميلًا", subtitle: "اكتشف التطبيقات التي يحبها الجميع هذا الأسبوع", emoji: "🔥", colorHex: "F59E0B", colorHex2: "EF4444"),
+                  Banner(title: "ألعاب جديدة", subtitle: "لا تفوّت أحدث إصدارات الألعاب المضافة حديثًا", emoji: "🎮", colorHex: "06B6D4", colorHex2: "7C3AED"),
+                  Banner(title: "أدوات يومية", subtitle: "تطبيقات عملية تساعدك على تنظيم حياتك", emoji: "🧰", colorHex: "10B981", colorHex2: "06B6D4"),
+              ]
           }
 
           enum MockData {
@@ -408,10 +512,10 @@ jobs:
               }
 
               private func build() {
-                  contentView.backgroundColor = UIColor(red: 26/255, green: 26/255, blue: 42/255, alpha: 1)
+                  contentView.backgroundColor = .souqCard
                   contentView.layer.cornerRadius = 16
                   contentView.layer.borderWidth = 1
-                  contentView.layer.borderColor = UIColor.white.withAlphaComponent(0.06).cgColor
+                  contentView.layer.borderColor = UIColor.souqBorder.cgColor
 
                   iconView.layer.cornerRadius = 14
                   iconView.translatesAutoresizingMaskIntoConstraints = false
@@ -423,28 +527,28 @@ jobs:
                   iconView.addSubview(emojiLabel)
 
                   nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-                  nameLabel.textColor = .white
+                  nameLabel.textColor = .souqPrimaryText
                   nameLabel.numberOfLines = 1
                   nameLabel.textAlignment = .center
                   nameLabel.translatesAutoresizingMaskIntoConstraints = false
                   contentView.addSubview(nameLabel)
 
                   devLabel.font = .systemFont(ofSize: 10.5)
-                  devLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+                  devLabel.textColor = .souqSecondaryText
                   devLabel.numberOfLines = 1
                   devLabel.textAlignment = .center
                   devLabel.translatesAutoresizingMaskIntoConstraints = false
                   contentView.addSubview(devLabel)
 
                   ratingLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
-                  ratingLabel.textColor = UIColor(hex: "F59E0B")
+                  ratingLabel.textColor = .souqAmber
                   ratingLabel.textAlignment = .center
                   ratingLabel.translatesAutoresizingMaskIntoConstraints = false
                   contentView.addSubview(ratingLabel)
 
                   installButton.setTitle("تثبيت", for: .normal)
                   installButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
-                  installButton.backgroundColor = UIColor(hex: "7C3AED")
+                  installButton.backgroundColor = .souqPurple
                   installButton.setTitleColor(.white, for: .normal)
                   installButton.layer.cornerRadius = 14
                   installButton.isUserInteractionEnabled = false // زر شكلي للعرض فقط، بدون تنزيل فعلي
@@ -490,13 +594,584 @@ jobs:
           }
           CEOF
 
-      - name: Generate Source - Store View Controller
+      - name: Generate Source - Banner Cell (Home carousel)
         run: |
           cd ${{ github.workspace }}
-          cat > StoreViewController.swift << 'SEOF'
+          cat > BannerCell.swift << 'BCEOF'
           import UIKit
 
-          final class StoreViewController: UIViewController,
+          final class BannerCell: UICollectionViewCell {
+              static let reuseID = "BannerCell"
+
+              private let gradientLayer = CAGradientLayer()
+              private let emojiLabel = UILabel()
+              private let titleLabel = UILabel()
+              private let subtitleLabel = UILabel()
+
+              override init(frame: CGRect) {
+                  super.init(frame: frame)
+                  build()
+              }
+
+              required init?(coder: NSCoder) {
+                  super.init(coder: coder)
+                  build()
+              }
+
+              private func build() {
+                  contentView.layer.cornerRadius = 20
+                  contentView.layer.masksToBounds = true
+
+                  gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+                  gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+                  contentView.layer.insertSublayer(gradientLayer, at: 0)
+
+                  emojiLabel.font = .systemFont(ofSize: 44)
+                  emojiLabel.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(emojiLabel)
+
+                  titleLabel.font = .systemFont(ofSize: 19, weight: .bold)
+                  titleLabel.textColor = .white
+                  titleLabel.numberOfLines = 1
+                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(titleLabel)
+
+                  subtitleLabel.font = .systemFont(ofSize: 13)
+                  subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.85)
+                  subtitleLabel.numberOfLines = 2
+                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+                  contentView.addSubview(subtitleLabel)
+
+                  NSLayoutConstraint.activate([
+                      emojiLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+                      emojiLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
+
+                      titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+                      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -18),
+                      titleLabel.bottomAnchor.constraint(equalTo: subtitleLabel.topAnchor, constant: -6),
+
+                      subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                      subtitleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+                      subtitleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -18),
+                  ])
+              }
+
+              override func layoutSubviews() {
+                  super.layoutSubviews()
+                  gradientLayer.frame = contentView.bounds
+              }
+
+              func configure(with banner: Banner) {
+                  gradientLayer.colors = [UIColor(hex: banner.colorHex).cgColor, UIColor(hex: banner.colorHex2).cgColor]
+                  emojiLabel.text = banner.emoji
+                  titleLabel.text = banner.title
+                  subtitleLabel.text = banner.subtitle
+              }
+          }
+          BCEOF
+
+      - name: Generate Source - Horizontal Apps Row
+        run: |
+          cd ${{ github.workspace }}
+          cat > AppsRowView.swift << 'ARWEOF'
+          import UIKit
+
+          // صف أفقي قابل لإعادة الاستخدام لعرض قائمة تطبيقات (يُستخدم في الرئيسية).
+          final class AppsRowView: UIView, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout {
+
+              var items: [AppItem] = [] {
+                  didSet { collectionView.reloadData() }
+              }
+              var onSelect: ((AppItem) -> Void)?
+
+              private var collectionView: UICollectionView!
+
+              override init(frame: CGRect) {
+                  super.init(frame: frame)
+                  let layout = UICollectionViewFlowLayout()
+                  layout.scrollDirection = .horizontal
+                  layout.minimumInteritemSpacing = 12
+                  layout.minimumLineSpacing = 12
+                  layout.itemSize = CGSize(width: 132, height: 190)
+                  layout.sectionInset = UIEdgeInsets(top: 0, left: 20, bottom: 0, right: 20)
+
+                  collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+                  collectionView.backgroundColor = .clear
+                  collectionView.showsHorizontalScrollIndicator = false
+                  collectionView.dataSource = self
+                  collectionView.delegate = self
+                  collectionView.register(AppCell.self, forCellWithReuseIdentifier: AppCell.reuseID)
+                  collectionView.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(collectionView)
+
+                  NSLayoutConstraint.activate([
+                      collectionView.topAnchor.constraint(equalTo: topAnchor),
+                      collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                      collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
+                      collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+                      heightAnchor.constraint(equalToConstant: 190),
+                  ])
+              }
+
+              required init?(coder: NSCoder) {
+                  fatalError("init(coder:) has not been implemented")
+              }
+
+              func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+                  items.count
+              }
+
+              func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+                  let cell = collectionView.dequeueReusableCell(withReuseIdentifier: AppCell.reuseID, for: indexPath) as! AppCell
+                  cell.configure(with: items[indexPath.item])
+                  return cell
+              }
+
+              func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+                  onSelect?(items[indexPath.item])
+              }
+          }
+          ARWEOF
+
+      - name: Generate Source - Ad Banner Placeholder
+        run: |
+          cd ${{ github.workspace }}
+          cat > AdBannerView.swift << 'ADBEOF'
+          import UIKit
+
+          // بنر إعلاني شكلي (Placeholder) فقط لأغراض العرض، بدون أي شبكة إعلانات حقيقية.
+          final class AdBannerView: UIView {
+
+              init(text: String) {
+                  super.init(frame: .zero)
+                  backgroundColor = .souqCardAlt
+                  layer.cornerRadius = 16
+                  layer.borderWidth = 1
+                  layer.borderColor = UIColor.souqBorder.cgColor
+                  translatesAutoresizingMaskIntoConstraints = false
+                  heightAnchor.constraint(equalToConstant: 64).isActive = true
+
+                  let icon = UILabel()
+                  icon.text = "📢"
+                  icon.font = .systemFont(ofSize: 22)
+                  icon.translatesAutoresizingMaskIntoConstraints = false
+
+                  let label = UILabel()
+                  label.text = text
+                  label.font = .systemFont(ofSize: 13, weight: .medium)
+                  label.textColor = .souqSecondaryText
+                  label.numberOfLines = 2
+                  label.translatesAutoresizingMaskIntoConstraints = false
+
+                  let tag = PaddingLabel()
+                  tag.text = "إعلان"
+                  tag.font = .systemFont(ofSize: 10, weight: .bold)
+                  tag.textColor = .souqSecondaryText
+                  tag.backgroundColor = .souqBorder
+                  tag.layer.cornerRadius = 6
+                  tag.clipsToBounds = true
+                  tag.translatesAutoresizingMaskIntoConstraints = false
+
+                  addSubview(icon)
+                  addSubview(label)
+                  addSubview(tag)
+
+                  NSLayoutConstraint.activate([
+                      icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+                      icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+                      label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+                      label.centerYAnchor.constraint(equalTo: centerYAnchor),
+                      label.trailingAnchor.constraint(lessThanOrEqualTo: tag.leadingAnchor, constant: -10),
+
+                      tag.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                      tag.centerYAnchor.constraint(equalTo: centerYAnchor),
+                      tag.heightAnchor.constraint(equalToConstant: 20),
+                  ])
+              }
+
+              required init?(coder: NSCoder) {
+                  fatalError("init(coder:) has not been implemented")
+              }
+          }
+          ADBEOF
+
+      - name: Generate Source - Category Chip
+        run: |
+          cd ${{ github.workspace }}
+          cat > CategoryChip.swift << 'CTCEOF'
+          import UIKit
+
+          // بطاقة تصنيف صغيرة قابلة للنقر (ألعاب / تطبيقات / أدوات) في الصفحة الرئيسية.
+          final class CategoryChip: UIView {
+              var onTap: (() -> Void)?
+
+              init(emoji: String, title: String) {
+                  super.init(frame: .zero)
+                  backgroundColor = .souqCard
+                  layer.cornerRadius = 14
+                  layer.borderWidth = 1
+                  layer.borderColor = UIColor.souqBorder.cgColor
+                  translatesAutoresizingMaskIntoConstraints = false
+                  heightAnchor.constraint(equalToConstant: 72).isActive = true
+
+                  let emojiLabel = UILabel()
+                  emojiLabel.text = emoji
+                  emojiLabel.font = .systemFont(ofSize: 22)
+                  emojiLabel.textAlignment = .center
+
+                  let titleLabel = UILabel()
+                  titleLabel.text = title
+                  titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+                  titleLabel.textColor = .souqPrimaryText
+                  titleLabel.textAlignment = .center
+
+                  let stack = UIStackView(arrangedSubviews: [emojiLabel, titleLabel])
+                  stack.axis = .vertical
+                  stack.spacing = 4
+                  stack.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(stack)
+
+                  NSLayoutConstraint.activate([
+                      stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+                  ])
+
+                  isUserInteractionEnabled = true
+                  addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+              }
+
+              required init?(coder: NSCoder) {
+                  fatalError("init(coder:) has not been implemented")
+              }
+
+              @objc private func tapped() {
+                  UIView.animate(withDuration: 0.08, animations: {
+                      self.alpha = 0.6
+                  }, completion: { _ in
+                      UIView.animate(withDuration: 0.12) { self.alpha = 1.0 }
+                  })
+                  onTap?()
+              }
+          }
+          CTCEOF
+
+      - name: Generate Source - Top Bar (Icon + Name + Badge + Settings)
+        run: |
+          cd ${{ github.workspace }}
+          cat > TopBarView.swift << 'TPBEOF'
+          import UIKit
+
+          // شريط علوي يظهر في أعلى الصفحة الرئيسية: أيقونة التطبيق، الاسم، شارة الباقة،
+          // وزر سريع للوصول إلى الإعدادات.
+          final class TopBarView: UIView {
+              var onSettingsTap: (() -> Void)?
+
+              private let iconView = UIView()
+              private let iconLabel = UILabel()
+              private let nameLabel = UILabel()
+              private let badgeLabel = PaddingLabel()
+              private let settingsButton = UIButton(type: .system)
+
+              override init(frame: CGRect) {
+                  super.init(frame: frame)
+                  build()
+              }
+
+              required init?(coder: NSCoder) {
+                  super.init(coder: coder)
+                  build()
+              }
+
+              private func build() {
+                  iconView.backgroundColor = UIColor.souqPurple.withAlphaComponent(0.18)
+                  iconView.layer.cornerRadius = 11
+                  iconView.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(iconView)
+
+                  iconLabel.text = "🛍️"
+                  iconLabel.font = .systemFont(ofSize: 19)
+                  iconLabel.textAlignment = .center
+                  iconLabel.translatesAutoresizingMaskIntoConstraints = false
+                  iconView.addSubview(iconLabel)
+
+                  nameLabel.text = "سوق"
+                  nameLabel.font = .systemFont(ofSize: 19, weight: .bold)
+                  nameLabel.textColor = .souqPrimaryText
+                  nameLabel.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(nameLabel)
+
+                  badgeLabel.text = "مجاني"
+                  badgeLabel.horizontalPadding = 7
+                  badgeLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+                  badgeLabel.textColor = .souqAmber
+                  badgeLabel.backgroundColor = UIColor.souqAmber.withAlphaComponent(0.15)
+                  badgeLabel.layer.cornerRadius = 8
+                  badgeLabel.clipsToBounds = true
+                  badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(badgeLabel)
+
+                  settingsButton.setImage(UIImage(systemName: "gearshape.fill"), for: .normal)
+                  settingsButton.tintColor = .souqSecondaryText
+                  settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
+                  settingsButton.translatesAutoresizingMaskIntoConstraints = false
+                  addSubview(settingsButton)
+
+                  NSLayoutConstraint.activate([
+                      iconView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                      iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                      iconView.widthAnchor.constraint(equalToConstant: 38),
+                      iconView.heightAnchor.constraint(equalToConstant: 38),
+
+                      iconLabel.centerXAnchor.constraint(equalTo: iconView.centerXAnchor),
+                      iconLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
+
+                      nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+                      nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -9),
+
+                      badgeLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+                      badgeLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3),
+                      badgeLabel.heightAnchor.constraint(equalToConstant: 17),
+
+                      settingsButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+                      settingsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+                      settingsButton.widthAnchor.constraint(equalToConstant: 32),
+                      settingsButton.heightAnchor.constraint(equalToConstant: 32),
+                  ])
+              }
+
+              @objc private func settingsTapped() {
+                  onSettingsTap?()
+              }
+          }
+          TPBEOF
+
+      - name: Generate Source - Home Tab (Banner + Top Apps + Ads)
+        run: |
+          cd ${{ github.workspace }}
+          cat > HomeViewController.swift << 'HMVEOF'
+          import UIKit
+
+          final class HomeViewController: UIViewController,
+              UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout {
+
+              weak var tabSwitcher: TabSwitching?
+
+              private let topBar = TopBarView()
+              private let scrollView = UIScrollView()
+              private let contentStack = UIStackView()
+
+              private var bannerCollectionView: UICollectionView!
+              private let pageControl = UIPageControl()
+              private var bannerTimer: Timer?
+              private let banners = BannerDataLoader.banners
+
+              private let topApps: [AppItem] = Array(AppDataLoader.items.sorted { $0.rating > $1.rating }.prefix(10))
+              private let newApps: [AppItem] = Array(AppDataLoader.items.reversed().prefix(10))
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = .souqBackground
+                  navigationController?.setNavigationBarHidden(true, animated: false)
+                  setupTopBar()
+                  setupScrollView()
+                  buildContent()
+              }
+
+              override func viewDidAppear(_ animated: Bool) {
+                  super.viewDidAppear(animated)
+                  navigationController?.setNavigationBarHidden(true, animated: animated)
+                  startBannerTimer()
+              }
+
+              override func viewWillDisappear(_ animated: Bool) {
+                  super.viewWillDisappear(animated)
+                  bannerTimer?.invalidate()
+              }
+
+              private func setupTopBar() {
+                  topBar.onSettingsTap = { [weak self] in
+                      self?.tabSwitcher?.switchToSettings()
+                  }
+                  topBar.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(topBar)
+                  NSLayoutConstraint.activate([
+                      topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+                      topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                      topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+                      topBar.heightAnchor.constraint(equalToConstant: 46),
+                  ])
+              }
+
+              private func setupScrollView() {
+                  scrollView.showsVerticalScrollIndicator = false
+                  scrollView.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(scrollView)
+
+                  contentStack.axis = .vertical
+                  contentStack.spacing = 22
+                  contentStack.translatesAutoresizingMaskIntoConstraints = false
+                  scrollView.addSubview(contentStack)
+
+                  NSLayoutConstraint.activate([
+                      scrollView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
+                      scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                      scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                      scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+                      contentStack.topAnchor.constraint(equalTo: scrollView.topAnchor),
+                      contentStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+                      contentStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+                      contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -28),
+                      contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+                  ])
+              }
+
+              private func buildContent() {
+                  contentStack.addArrangedSubview(makeBannerSection())
+                  contentStack.addArrangedSubview(sectionHeader("⭐️ الأعلى تقييمًا"))
+                  contentStack.addArrangedSubview(makeRow(items: topApps))
+                  contentStack.addArrangedSubview(padded(AdBannerView(text: "اكتشف تطبيقات مميزة يوميًا في سوق")))
+                  contentStack.addArrangedSubview(padded(makeCategoryChips()))
+                  contentStack.addArrangedSubview(sectionHeader("🆕 أحدث الإضافات"))
+                  contentStack.addArrangedSubview(makeRow(items: newApps))
+                  contentStack.addArrangedSubview(padded(AdBannerView(text: "أعلن عن تطبيقك في سوق وصل لآلاف المستخدمين")))
+              }
+
+              private func padded(_ v: UIView) -> UIView {
+                  let container = UIView()
+                  v.translatesAutoresizingMaskIntoConstraints = false
+                  container.addSubview(v)
+                  NSLayoutConstraint.activate([
+                      v.topAnchor.constraint(equalTo: container.topAnchor),
+                      v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                      v.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+                      v.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+                  ])
+                  return container
+              }
+
+              private func sectionHeader(_ text: String) -> UIView {
+                  let label = UILabel()
+                  label.text = text
+                  label.font = .systemFont(ofSize: 17, weight: .bold)
+                  label.textColor = .souqPrimaryText
+                  return padded(label)
+              }
+
+              private func makeRow(items: [AppItem]) -> AppsRowView {
+                  let row = AppsRowView()
+                  row.items = items
+                  row.onSelect = { [weak self] item in
+                      let detail = DetailViewController(item: item)
+                      self?.navigationController?.setNavigationBarHidden(false, animated: false)
+                      self?.navigationController?.pushViewController(detail, animated: true)
+                  }
+                  return row
+              }
+
+              private func makeCategoryChips() -> UIView {
+                  let stack = UIStackView()
+                  stack.axis = .horizontal
+                  stack.distribution = .fillEqually
+                  stack.spacing = 10
+
+                  let cats: [(String, String, StoreCategory)] = [
+                      ("🎮", "ألعاب", .games), ("📱", "تطبيقات", .apps), ("🛠️", "أدوات", .tools),
+                  ]
+                  for (emoji, name, cat) in cats {
+                      let chip = CategoryChip(emoji: emoji, title: name)
+                      chip.onTap = { [weak self] in
+                          self?.tabSwitcher?.switchToApps(category: cat)
+                      }
+                      stack.addArrangedSubview(chip)
+                  }
+                  return stack
+              }
+
+              private func makeBannerSection() -> UIView {
+                  let container = UIView()
+                  container.translatesAutoresizingMaskIntoConstraints = false
+                  container.heightAnchor.constraint(equalToConstant: 172).isActive = true
+
+                  let layout = UICollectionViewFlowLayout()
+                  layout.scrollDirection = .horizontal
+                  layout.minimumLineSpacing = 12
+                  layout.sectionInset = UIEdgeInsets(top: 0, left: 20, bottom: 0, right: 20)
+
+                  bannerCollectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+                  bannerCollectionView.backgroundColor = .clear
+                  bannerCollectionView.isPagingEnabled = true
+                  bannerCollectionView.showsHorizontalScrollIndicator = false
+                  bannerCollectionView.dataSource = self
+                  bannerCollectionView.delegate = self
+                  bannerCollectionView.register(BannerCell.self, forCellWithReuseIdentifier: BannerCell.reuseID)
+                  bannerCollectionView.translatesAutoresizingMaskIntoConstraints = false
+                  container.addSubview(bannerCollectionView)
+
+                  pageControl.numberOfPages = banners.count
+                  pageControl.currentPageIndicatorTintColor = .souqPurple
+                  pageControl.pageIndicatorTintColor = UIColor.souqPurple.withAlphaComponent(0.25)
+                  pageControl.isUserInteractionEnabled = false
+                  pageControl.translatesAutoresizingMaskIntoConstraints = false
+                  container.addSubview(pageControl)
+
+                  NSLayoutConstraint.activate([
+                      bannerCollectionView.topAnchor.constraint(equalTo: container.topAnchor),
+                      bannerCollectionView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                      bannerCollectionView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                      bannerCollectionView.heightAnchor.constraint(equalToConstant: 150),
+
+                      pageControl.topAnchor.constraint(equalTo: bannerCollectionView.bottomAnchor, constant: 4),
+                      pageControl.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                  ])
+                  return container
+              }
+
+              private func startBannerTimer() {
+                  bannerTimer?.invalidate()
+                  bannerTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+                      guard let self = self, self.bannerCollectionView.bounds.width > 0 else { return }
+                      let count = self.banners.count
+                      guard count > 0 else { return }
+                      let next = (self.pageControl.currentPage + 1) % count
+                      self.bannerCollectionView.scrollToItem(at: IndexPath(item: next, section: 0), at: .centeredHorizontally, animated: true)
+                      self.pageControl.currentPage = next
+                  }
+              }
+
+              // MARK: - Banner Collection DataSource/Delegate
+
+              func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+                  banners.count
+              }
+
+              func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+                  let cell = collectionView.dequeueReusableCell(withReuseIdentifier: BannerCell.reuseID, for: indexPath) as! BannerCell
+                  cell.configure(with: banners[indexPath.item])
+                  return cell
+              }
+
+              func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout,
+                                   sizeForItemAt indexPath: IndexPath) -> CGSize {
+                  CGSize(width: collectionView.bounds.width - 40, height: 150)
+              }
+
+              func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+                  guard scrollView === bannerCollectionView, scrollView.bounds.width > 0 else { return }
+                  let page = Int(round(scrollView.contentOffset.x / (scrollView.bounds.width - 8)))
+                  pageControl.currentPage = min(max(page, 0), banners.count - 1)
+              }
+          }
+          HMVEOF
+
+      - name: Generate Source - Apps Tab (Browse/Search/Filter)
+        run: |
+          cd ${{ github.workspace }}
+          cat > AppsViewController.swift << 'SEOF'
+          import UIKit
+
+          final class AppsViewController: UIViewController,
               UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
               UISearchBarDelegate {
 
@@ -517,14 +1192,27 @@ jobs:
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  title = "سوق"
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  title = "التطبيقات"
+                  view.backgroundColor = .souqBackground
                   navigationController?.navigationBar.prefersLargeTitles = true
                   setupSortMenu()
                   setupSearchBar()
                   setupSegmented()
                   setupCollectionView()
                   applyFilter()
+              }
+
+              override func viewWillAppear(_ animated: Bool) {
+                  super.viewWillAppear(animated)
+                  navigationController?.setNavigationBarHidden(false, animated: animated)
+              }
+
+              // يسمح لتبويب الرئيسية بالانتقال هنا مع تصنيف محدد مسبقًا.
+              func select(category: StoreCategory) {
+                  if let idx = StoreCategory.allCases.firstIndex(of: category) {
+                      segmented.selectedSegmentIndex = idx
+                      applyFilter()
+                  }
               }
 
               private func setupSortMenu() {
@@ -582,7 +1270,7 @@ jobs:
                   collectionView.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(collectionView)
 
-                  refreshControl.tintColor = UIColor(hex: "7C3AED")
+                  refreshControl.tintColor = .souqPurple
                   refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
                   collectionView.refreshControl = refreshControl
 
@@ -700,7 +1388,7 @@ jobs:
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  view.backgroundColor = .souqBackground
                   title = item.name
                   build()
                   setupFavoriteButton()
@@ -719,7 +1407,7 @@ jobs:
                       target: self,
                       action: #selector(favoriteTapped)
                   )
-                  favoriteButton.tintColor = UIColor(hex: "F59E0B")
+                  favoriteButton.tintColor = .souqAmber
 
                   let shareButton = UIBarButtonItem(
                       image: UIImage(systemName: "square.and.arrow.up"),
@@ -727,7 +1415,7 @@ jobs:
                       target: self,
                       action: #selector(shareTapped)
                   )
-                  shareButton.tintColor = .white
+                  shareButton.tintColor = .souqPrimaryText
 
                   navigationItem.rightBarButtonItems = [favoriteButton, shareButton]
               }
@@ -760,31 +1448,31 @@ jobs:
 
                   nameLabel.text = item.name
                   nameLabel.font = .systemFont(ofSize: 22, weight: .bold)
-                  nameLabel.textColor = .white
+                  nameLabel.textColor = .souqPrimaryText
                   nameLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(nameLabel)
 
                   devLabel.text = item.developer
                   devLabel.font = .systemFont(ofSize: 14)
-                  devLabel.textColor = UIColor.white.withAlphaComponent(0.55)
+                  devLabel.textColor = .souqSecondaryText
                   devLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(devLabel)
 
                   ratingLabel.text = "★ \(String(format: "%.1f", item.rating))"
                   ratingLabel.font = .systemFont(ofSize: 13, weight: .medium)
-                  ratingLabel.textColor = UIColor(hex: "F59E0B")
+                  ratingLabel.textColor = .souqAmber
                   ratingLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(ratingLabel)
 
                   sizeLabel.text = "\(item.sizeMB) MB  ·  \(item.category.rawValue)"
                   sizeLabel.font = .systemFont(ofSize: 13)
-                  sizeLabel.textColor = UIColor.white.withAlphaComponent(0.55)
+                  sizeLabel.textColor = .souqSecondaryText
                   sizeLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(sizeLabel)
 
                   installButton.setTitle(item.price == "مجانًا" ? "تثبيت" : "شراء \(item.price)", for: .normal)
                   installButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
-                  installButton.backgroundColor = UIColor(hex: "7C3AED")
+                  installButton.backgroundColor = .souqPurple
                   installButton.setTitleColor(.white, for: .normal)
                   installButton.layer.cornerRadius = 12
                   installButton.addTarget(self, action: #selector(installTapped), for: .touchUpInside)
@@ -792,20 +1480,20 @@ jobs:
                   view.addSubview(installButton)
 
                   progressView.progress = 0
-                  progressView.progressTintColor = UIColor(hex: "7C3AED")
+                  progressView.progressTintColor = .souqPurple
                   progressView.isHidden = true
                   progressView.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(progressView)
 
                   descTitleLabel.text = "الوصف"
                   descTitleLabel.font = .systemFont(ofSize: 16, weight: .bold)
-                  descTitleLabel.textColor = .white
+                  descTitleLabel.textColor = .souqPrimaryText
                   descTitleLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(descTitleLabel)
 
                   descLabel.text = item.description
                   descLabel.font = .systemFont(ofSize: 14)
-                  descLabel.textColor = UIColor.white.withAlphaComponent(0.75)
+                  descLabel.textColor = .souqSecondaryText
                   descLabel.numberOfLines = 0
                   descLabel.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(descLabel)
@@ -897,7 +1585,7 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   title = "المفضلة"
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  view.backgroundColor = .souqBackground
                   navigationController?.navigationBar.prefersLargeTitles = true
 
                   setupEmptyLabel()
@@ -910,9 +1598,14 @@ jobs:
                   )
               }
 
+              override func viewWillAppear(_ animated: Bool) {
+                  super.viewWillAppear(animated)
+                  navigationController?.setNavigationBarHidden(false, animated: animated)
+              }
+
               private func setupEmptyLabel() {
                   emptyLabel.text = "لا توجد تطبيقات في المفضلة بعد.\nاضغط على أيقونة القلب داخل صفحة أي تطبيق لإضافته هنا."
-                  emptyLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+                  emptyLabel.textColor = .souqSecondaryText
                   emptyLabel.font = .systemFont(ofSize: 14)
                   emptyLabel.numberOfLines = 0
                   emptyLabel.textAlignment = .center
@@ -941,7 +1634,7 @@ jobs:
                   collectionView.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(collectionView)
 
-                  refreshControl.tintColor = UIColor(hex: "7C3AED")
+                  refreshControl.tintColor = .souqPurple
                   refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
                   collectionView.refreshControl = refreshControl
 
@@ -991,7 +1684,7 @@ jobs:
           }
           FEOF
 
-      - name: Generate Source - Settings Tab
+      - name: Generate Source - Settings Tab (Dark Mode + Preferences)
         run: |
           cd ${{ github.workspace }}
           cat > SettingsViewController.swift << 'GEOF'
@@ -999,11 +1692,49 @@ jobs:
 
           final class SettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
-              private enum Row: Int, CaseIterable {
-                  case privacy
-                  case clearFavorites
-                  case version
-                  case about
+              private enum Section: Int, CaseIterable {
+                  case preferences, general, about
+
+                  var title: String {
+                      switch self {
+                      case .preferences: return "التفضيلات"
+                      case .general: return "عام"
+                      case .about: return "حول التطبيق"
+                      }
+                  }
+              }
+
+              private enum PreferenceRow: Int, CaseIterable {
+                  case darkMode, notifications
+
+                  var title: String { self == .darkMode ? "الوضع الداكن" : "الإشعارات" }
+                  var icon: String { self == .darkMode ? "moon.fill" : "bell.fill" }
+              }
+
+              private enum GeneralRow: Int, CaseIterable {
+                  case language, rateApp, shareApp, clearCache
+
+                  var title: String {
+                      switch self {
+                      case .language: return "اللغة"
+                      case .rateApp: return "قيّم التطبيق"
+                      case .shareApp: return "شارك التطبيق"
+                      case .clearCache: return "مسح الذاكرة المؤقتة"
+                      }
+                  }
+
+                  var icon: String {
+                      switch self {
+                      case .language: return "globe"
+                      case .rateApp: return "star.fill"
+                      case .shareApp: return "square.and.arrow.up"
+                      case .clearCache: return "arrow.triangle.2.circlepath"
+                      }
+                  }
+              }
+
+              private enum AboutRow: Int, CaseIterable {
+                  case privacy, clearFavorites, version, about
 
                   var title: String {
                       switch self {
@@ -1029,9 +1760,15 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   title = "الإعدادات"
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  view.backgroundColor = .souqBackground
                   navigationController?.navigationBar.prefersLargeTitles = true
                   setupTableView()
+              }
+
+              override func viewWillAppear(_ animated: Bool) {
+                  super.viewWillAppear(animated)
+                  navigationController?.setNavigationBarHidden(false, animated: animated)
+                  tableView.reloadData()
               }
 
               private func setupTableView() {
@@ -1049,58 +1786,149 @@ jobs:
                   ])
               }
 
+              func numberOfSections(in tableView: UITableView) -> Int {
+                  Section.allCases.count
+              }
+
+              func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+                  Section.allCases[section].title
+              }
+
               func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-                  Row.allCases.count
+                  switch Section.allCases[section] {
+                  case .preferences: return PreferenceRow.allCases.count
+                  case .general: return GeneralRow.allCases.count
+                  case .about: return AboutRow.allCases.count
+                  }
               }
 
               func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-                  let row = Row.allCases[indexPath.row]
+                  let section = Section.allCases[indexPath.section]
                   let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
-                  cell.backgroundColor = UIColor(red: 26/255, green: 26/255, blue: 42/255, alpha: 1)
-                  cell.textLabel?.textColor = .white
-                  cell.textLabel?.text = row.title
-                  cell.imageView?.image = UIImage(systemName: row.icon)
-                  cell.imageView?.tintColor = UIColor(hex: "7C3AED")
+                  cell.backgroundColor = .souqCard
+                  cell.textLabel?.textColor = .souqPrimaryText
+                  cell.accessoryView = nil
+                  cell.accessoryType = .none
+                  cell.selectionStyle = .default
 
-                  if row == .version {
-                      cell.detailTextLabel?.text = "1.0.0"
-                      cell.detailTextLabel?.textColor = UIColor.white.withAlphaComponent(0.5)
+                  switch section {
+                  case .preferences:
+                      let row = PreferenceRow.allCases[indexPath.row]
+                      cell.textLabel?.text = row.title
+                      cell.imageView?.image = UIImage(systemName: row.icon)
+                      cell.imageView?.tintColor = .souqPurple
+                      let toggle = UISwitch()
+                      toggle.onTintColor = .souqPurple
+                      toggle.isOn = row == .darkMode ? ThemeManager.isDarkMode : UserDefaults.standard.bool(forKey: "souq.notifications")
+                      toggle.tag = row == .darkMode ? 0 : 1
+                      toggle.addTarget(self, action: #selector(switchToggled(_:)), for: .valueChanged)
+                      cell.accessoryView = toggle
                       cell.selectionStyle = .none
-                  } else if row == .clearFavorites {
-                      cell.textLabel?.textColor = UIColor(hex: "EF4444")
-                      cell.accessoryType = .none
-                  } else {
-                      cell.accessoryType = .disclosureIndicator
+
+                  case .general:
+                      let row = GeneralRow.allCases[indexPath.row]
+                      cell.textLabel?.text = row.title
+                      cell.imageView?.image = UIImage(systemName: row.icon)
+                      cell.imageView?.tintColor = .souqPurple
+                      if row == .language {
+                          cell.detailTextLabel?.text = "العربية"
+                          cell.detailTextLabel?.textColor = .souqSecondaryText
+                          cell.selectionStyle = .none
+                      } else {
+                          cell.accessoryType = .disclosureIndicator
+                      }
+
+                  case .about:
+                      let row = AboutRow.allCases[indexPath.row]
+                      cell.textLabel?.text = row.title
+                      cell.imageView?.image = UIImage(systemName: row.icon)
+                      cell.imageView?.tintColor = .souqPurple
+                      if row == .version {
+                          cell.detailTextLabel?.text = "1.0.0"
+                          cell.detailTextLabel?.textColor = .souqSecondaryText
+                          cell.selectionStyle = .none
+                      } else if row == .clearFavorites {
+                          cell.textLabel?.textColor = .souqRed
+                      } else {
+                          cell.accessoryType = .disclosureIndicator
+                      }
                   }
                   return cell
               }
 
+              @objc private func switchToggled(_ sender: UISwitch) {
+                  if sender.tag == 0 {
+                      ThemeManager.isDarkMode = sender.isOn
+                      ThemeManager.apply(to: view.window)
+                  } else {
+                      UserDefaults.standard.set(sender.isOn, forKey: "souq.notifications")
+                  }
+              }
+
               func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
                   tableView.deselectRow(at: indexPath, animated: true)
-                  switch Row.allCases[indexPath.row] {
-                  case .privacy:
-                      navigationController?.pushViewController(PrivacyPolicyViewController(), animated: true)
-                  case .clearFavorites:
-                      let confirm = UIAlertController(
-                          title: "مسح المفضلة",
-                          message: "هل تريد إزالة جميع التطبيقات من قائمة المفضلة؟",
-                          preferredStyle: .alert
-                      )
-                      confirm.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
-                      confirm.addAction(UIAlertAction(title: "مسح", style: .destructive) { _ in
-                          FavoritesManager.shared.clearAll()
-                      })
-                      present(confirm, animated: true)
-                  case .version:
+                  let section = Section.allCases[indexPath.section]
+
+                  switch section {
+                  case .preferences:
                       break
+
+                  case .general:
+                      switch GeneralRow.allCases[indexPath.row] {
+                      case .language:
+                          break
+                      case .rateApp:
+                          let alert = UIAlertController(
+                              title: "قيّم التطبيق",
+                              message: "شكرًا لدعمك! هذا نموذج عرض تجريبي فلا يوجد رابط تقييم حقيقي في متجر التطبيقات حاليًا.",
+                              preferredStyle: .alert
+                          )
+                          alert.addAction(UIAlertAction(title: "حسنًا", style: .default))
+                          present(alert, animated: true)
+                      case .shareApp:
+                          let text = "جرّب تطبيق سوق - متجر تطبيقات تجريبي!"
+                          let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                          if let popover = activity.popoverPresentationController {
+                              popover.sourceView = tableView
+                              popover.sourceRect = tableView.rectForRow(at: indexPath)
+                          }
+                          present(activity, animated: true)
+                      case .clearCache:
+                          let alert = UIAlertController(
+                              title: "تم بنجاح",
+                              message: "تم مسح الذاكرة المؤقتة بنجاح.",
+                              preferredStyle: .alert
+                          )
+                          alert.addAction(UIAlertAction(title: "حسنًا", style: .default))
+                          present(alert, animated: true)
+                      }
+
                   case .about:
-                      let alert = UIAlertController(
-                          title: "سوق",
-                          message: "تطبيق عرض تجريبي (Demo) بواجهة متجر تطبيقات. جميع البيانات والتطبيقات المعروضة وهمية لأغراض العرض فقط.",
-                          preferredStyle: .alert
-                      )
-                      alert.addAction(UIAlertAction(title: "حسنًا", style: .default))
-                      present(alert, animated: true)
+                      switch AboutRow.allCases[indexPath.row] {
+                      case .privacy:
+                          navigationController?.pushViewController(PrivacyPolicyViewController(), animated: true)
+                      case .clearFavorites:
+                          let confirm = UIAlertController(
+                              title: "مسح المفضلة",
+                              message: "هل تريد إزالة جميع التطبيقات من قائمة المفضلة؟",
+                              preferredStyle: .alert
+                          )
+                          confirm.addAction(UIAlertAction(title: "إلغاء", style: .cancel))
+                          confirm.addAction(UIAlertAction(title: "مسح", style: .destructive) { _ in
+                              FavoritesManager.shared.clearAll()
+                          })
+                          present(confirm, animated: true)
+                      case .version:
+                          break
+                      case .about:
+                          let alert = UIAlertController(
+                              title: "سوق",
+                              message: "تطبيق عرض تجريبي (Demo) بواجهة متجر تطبيقات. جميع البيانات والتطبيقات المعروضة وهمية لأغراض العرض فقط.",
+                              preferredStyle: .alert
+                          )
+                          alert.addAction(UIAlertAction(title: "حسنًا", style: .default))
+                          present(alert, animated: true)
+                      }
                   }
               }
           }
@@ -1117,7 +1945,7 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   title = "سياسة الخصوصية"
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  view.backgroundColor = .souqBackground
                   build()
               }
 
@@ -1128,7 +1956,7 @@ jobs:
 
                   let label = UILabel()
                   label.numberOfLines = 0
-                  label.textColor = UIColor.white.withAlphaComponent(0.85)
+                  label.textColor = .souqPrimaryText
                   label.font = .systemFont(ofSize: 14)
                   label.translatesAutoresizingMaskIntoConstraints = false
                   label.text = """
@@ -1181,7 +2009,7 @@ jobs:
 
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  view.backgroundColor = UIColor(red: 12/255, green: 12/255, blue: 20/255, alpha: 1)
+                  view.backgroundColor = .souqBackground
                   build()
               }
 
@@ -1196,15 +2024,15 @@ jobs:
                   let title = UILabel()
                   title.text = "أهلًا بك في سوق"
                   title.font = .systemFont(ofSize: 24, weight: .bold)
-                  title.textColor = .white
+                  title.textColor = .souqPrimaryText
                   title.textAlignment = .center
                   title.translatesAutoresizingMaskIntoConstraints = false
                   view.addSubview(title)
 
                   let subtitle = UILabel()
-                  subtitle.text = "هذا تطبيق عرض تجريبي فقط: كل التطبيقات والبيانات المعروضة وهمية، ولا يتم تنزيل أو تثبيت أي شيء حقيقي. يمكنك إضافة تطبيقات للمفضلة، ومراجعة سياسة الخصوصية من تبويب الإعدادات في أي وقت."
+                  subtitle.text = "هذا تطبيق عرض تجريبي فقط: كل التطبيقات والبيانات المعروضة وهمية، ولا يتم تنزيل أو تثبيت أي شيء حقيقي. تصفح الرئيسية والتطبيقات، أضف المفضلة، وجرّب الوضع الداكن من الإعدادات."
                   subtitle.font = .systemFont(ofSize: 15)
-                  subtitle.textColor = UIColor.white.withAlphaComponent(0.7)
+                  subtitle.textColor = .souqSecondaryText
                   subtitle.numberOfLines = 0
                   subtitle.textAlignment = .center
                   subtitle.translatesAutoresizingMaskIntoConstraints = false
@@ -1213,7 +2041,7 @@ jobs:
                   let button = UIButton(type: .system)
                   button.setTitle("ابدأ التصفح", for: .normal)
                   button.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
-                  button.backgroundColor = UIColor(hex: "7C3AED")
+                  button.backgroundColor = .souqPurple
                   button.setTitleColor(.white, for: .normal)
                   button.layer.cornerRadius = 12
                   button.addTarget(self, action: #selector(startTapped), for: .touchUpInside)
@@ -1248,35 +2076,48 @@ jobs:
           }
           OEOF
 
-      - name: Generate Source - Entry Point
+      - name: Generate Source - Entry Point (4 Tabs)
         run: |
           cd ${{ github.workspace }}
           cat > main.swift << 'EEOF'
           import UIKit
 
-          final class AppDelegate: UIResponder, UIApplicationDelegate {
-              var window: UIWindow?
+          // متحكم التبويبات الرئيسي: الرئيسية، التطبيقات، المفضلة، الإعدادات.
+          final class SouqTabBarController: UITabBarController, TabSwitching {
+
+              let homeVC = HomeViewController()
+              let appsVC = AppsViewController()
+              let favoritesVC = FavoritesViewController()
+              let settingsVC = SettingsViewController()
+
               private var favoritesNav: UINavigationController!
 
-              func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-                  window = UIWindow(frame: UIScreen.main.bounds)
-                  let tabBar = makeTabBarController()
-                  window?.rootViewController = tabBar
-                  window?.makeKeyAndVisible()
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  homeVC.tabSwitcher = self
+
+                  let homeNav = UINavigationController(rootViewController: homeVC)
+                  let appsNav = UINavigationController(rootViewController: appsVC)
+                  favoritesNav = UINavigationController(rootViewController: favoritesVC)
+                  let settingsNav = UINavigationController(rootViewController: settingsVC)
+
+                  for nav in [homeNav, appsNav, favoritesNav, settingsNav] {
+                      nav.navigationBar.prefersLargeTitles = true
+                  }
+
+                  homeNav.tabBarItem = UITabBarItem(title: "الرئيسية", image: UIImage(systemName: "house.fill"), tag: 0)
+                  appsNav.tabBarItem = UITabBarItem(title: "التطبيقات", image: UIImage(systemName: "square.grid.2x2.fill"), tag: 1)
+                  favoritesNav.tabBarItem = UITabBarItem(title: "المفضلة", image: UIImage(systemName: "heart.fill"), tag: 2)
+                  settingsNav.tabBarItem = UITabBarItem(title: "الإعدادات", image: UIImage(systemName: "gearshape.fill"), tag: 3)
+
+                  viewControllers = [homeNav, appsNav, favoritesNav, settingsNav]
+                  tabBar.tintColor = .souqPurple
 
                   NotificationCenter.default.addObserver(
                       self, selector: #selector(updateBadge),
                       name: .favoritesChanged, object: nil
                   )
                   updateBadge()
-
-                  if !UserDefaults.standard.bool(forKey: "souq.onboarding.seen") {
-                      let onboarding = OnboardingViewController()
-                      onboarding.modalPresentationStyle = .fullScreen
-                      tabBar.present(onboarding, animated: false)
-                  }
-
-                  return true
               }
 
               @objc private func updateBadge() {
@@ -1284,27 +2125,35 @@ jobs:
                   favoritesNav.tabBarItem.badgeValue = count > 0 ? "\(count)" : nil
               }
 
-              private func makeTabBarController() -> UITabBarController {
-                  // تبويب المتجر: تصفح وبحث عن التطبيقات
-                  let storeNav = UINavigationController(rootViewController: StoreViewController())
-                  storeNav.navigationBar.barStyle = .black
-                  storeNav.tabBarItem = UITabBarItem(title: "المتجر", image: UIImage(systemName: "bag.fill"), tag: 0)
+              func switchToSettings() {
+                  selectedIndex = 3
+              }
 
-                  // تبويب المفضلة: التطبيقات التي أضافها المستخدم محليًا
-                  favoritesNav = UINavigationController(rootViewController: FavoritesViewController())
-                  favoritesNav.navigationBar.barStyle = .black
-                  favoritesNav.tabBarItem = UITabBarItem(title: "المفضلة", image: UIImage(systemName: "heart.fill"), tag: 1)
+              func switchToApps(category: StoreCategory) {
+                  appsVC.select(category: category)
+                  selectedIndex = 1
+                  (viewControllers?[1] as? UINavigationController)?.popToRootViewController(animated: false)
+              }
+          }
 
-                  // تبويب الإعدادات: يحتوي على سياسة الخصوصية ومعلومات عن التطبيق
-                  let settingsNav = UINavigationController(rootViewController: SettingsViewController())
-                  settingsNav.navigationBar.barStyle = .black
-                  settingsNav.tabBarItem = UITabBarItem(title: "الإعدادات", image: UIImage(systemName: "gearshape.fill"), tag: 2)
+          final class AppDelegate: UIResponder, UIApplicationDelegate {
+              var window: UIWindow?
+              private var tabBarController: SouqTabBarController!
 
-                  let tabBar = UITabBarController()
-                  tabBar.viewControllers = [storeNav, favoritesNav, settingsNav]
-                  tabBar.tabBar.barStyle = .black
-                  tabBar.tabBar.tintColor = UIColor(red: 124/255, green: 58/255, blue: 237/255, alpha: 1)
-                  return tabBar
+              func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+                  window = UIWindow(frame: UIScreen.main.bounds)
+                  tabBarController = SouqTabBarController()
+                  window?.rootViewController = tabBarController
+                  ThemeManager.apply(to: window)
+                  window?.makeKeyAndVisible()
+
+                  if !UserDefaults.standard.bool(forKey: "souq.onboarding.seen") {
+                      let onboarding = OnboardingViewController()
+                      onboarding.modalPresentationStyle = .fullScreen
+                      tabBarController.present(onboarding, animated: false)
+                  }
+
+                  return true
               }
           }
 
@@ -1389,9 +2238,10 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Using SDK: $SDK_PATH"
 
-          xcrun swiftc main.swift AppModel.swift AppCell.swift StoreViewController.swift DetailViewController.swift \
-            FavoritesViewController.swift SettingsViewController.swift PrivacyPolicyViewController.swift \
-            OnboardingViewController.swift \
+          xcrun swiftc main.swift Theme.swift AppModel.swift AppCell.swift BannerCell.swift AppsRowView.swift \
+            AdBannerView.swift CategoryChip.swift TopBarView.swift HomeViewController.swift AppsViewController.swift \
+            DetailViewController.swift FavoritesViewController.swift SettingsViewController.swift \
+            PrivacyPolicyViewController.swift OnboardingViewController.swift \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios14.0 \
             -O \
