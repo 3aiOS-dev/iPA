@@ -3693,6 +3693,290 @@ jobs:
           echo "✅ AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
 
       # ──────────────────────────────────────────────────────────────────
+      - name: 📝 Generate Source — InstallSupportViews.swift
+        run: |
+          cat > InstallSupportViews.swift << 'VIPEOF'
+          import SwiftUI
+          import Foundation
+          import UIKit
+          
+          // MARK: - VIP21FullInstallView
+          struct VIP21FullInstallView: View {
+              let file: IPAFile
+              @ObservedObject var certificateManager: CertificateManager
+              @ObservedObject var downloadManager: IPADownloadManager
+              @Environment(\.dismiss) var dismiss
+              @Environment(\.colorScheme) var scheme
+          
+              @State private var progress: Double = 0
+              @State private var statusMsg  = ""
+              @State private var isRunning  = false
+              @State private var resultMsg: String?
+              @State private var succeeded  = false
+          
+              var appName: String { file.fileName.replacingOccurrences(of: ".ipa", with: "") }
+              var bundleID: String {
+                  "com.vip21.\(appName.lowercased().replacingOccurrences(of: " ", with: ""))"
+              }
+          
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 24) {
+                              // ── App Header ──
+                              VStack(spacing: 8) {
+                                  Image(systemName: "app.badge.fill")
+                                      .font(.system(size: 54))
+                                      .foregroundStyle(LinearGradient(
+                                          colors: [.vipPurple, .blue],
+                                          startPoint: .top, endPoint: .bottom))
+                                  Text(appName)
+                                      .font(.system(size: 18, weight: .bold))
+                                  Text(file.fileSize)
+                                      .font(.caption).foregroundColor(.secondary)
+                                  if file.isSigned {
+                                      Label("موقَّع وجاهز للتثبيت", systemImage: "checkmark.seal.fill")
+                                          .font(.caption).foregroundColor(.green)
+                                  } else {
+                                      Label("غير موقَّع — يُنصح بالتوقيع أولاً",
+                                            systemImage: "exclamationmark.triangle.fill")
+                                          .font(.caption).foregroundColor(.orange)
+                                  }
+                              }.padding(.top, 20)
+          
+                              Divider()
+          
+                              // ── Progress Bar ──
+                              if isRunning || progress > 0 {
+                                  VStack(spacing: 8) {
+                                      ProgressView(value: progress)
+                                          .progressViewStyle(LinearProgressViewStyle(tint: .vipPurple))
+                                          .animation(.easeInOut, value: progress)
+                                      Text(statusMsg)
+                                          .font(.caption).foregroundColor(.secondary)
+                                          .multilineTextAlignment(.center)
+                                  }.padding(.horizontal)
+                              }
+          
+                              // ── Result ──
+                              if let msg = resultMsg {
+                                  Text(msg)
+                                      .font(.system(size: 13))
+                                      .foregroundColor(succeeded ? .green : .red)
+                                      .multilineTextAlignment(.center)
+                                      .padding(.horizontal)
+                              }
+          
+                              // ── Install Button ──
+                              GradientButton(
+                                  title:    isRunning ? "جاري التثبيت..." : "تثبيت التطبيق",
+                                  icon:     isRunning ? nil : "icloud.and.arrow.down.fill",
+                                  gradient: [.vipPurple, .blue],
+                                  action:   doInstall,
+                                  isLoading: isRunning,
+                                  isDisabled: isRunning
+                              ).padding(.horizontal)
+          
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .navigationTitle("تثبيت التطبيق")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("إغلاق") { dismiss() }
+                                  .foregroundColor(.vipPurple)
+                          }
+                      }
+                      .background(scheme == .dark ? Color.black.opacity(0.9) : Color(uiColor: .systemGroupedBackground))
+                  }
+              }
+          
+              private func doInstall() {
+                  isRunning  = true
+                  resultMsg  = nil
+                  succeeded  = false
+                  let ipaURL = URL(fileURLWithPath: file.signedPath ?? file.localPath)
+                  VIP21InstallEngine.shared.install(
+                      ipaURL:   ipaURL,
+                      bundleID: bundleID,
+                      appName:  appName,
+                      version:  "1.0",
+                      progressHandler: { pct, msg in
+                          DispatchQueue.main.async { progress = pct; statusMsg = msg }
+                      },
+                      completion: { result in
+                          DispatchQueue.main.async {
+                              isRunning = false
+                              switch result {
+                              case .success:
+                                  succeeded = true
+                                  resultMsg = "\u2705 تم إرسال طلب التثبيت بنجاح"
+                                  HapticManager.shared.notification(.success)
+                              case .failure(let err):
+                                  succeeded = false
+                                  resultMsg = "\u274c " + err.localizedDescription
+                                  HapticManager.shared.notification(.error)
+                              }
+                          }
+                      }
+                  )
+              }
+          }
+          
+          // MARK: - VIP21FileRecoveryView
+          struct VIP21FileRecoveryView: View {
+              @ObservedObject var downloadManager: IPADownloadManager
+              @Environment(\.colorScheme) var scheme
+              @State private var isRecovering = false
+              @State private var recoveryMsg  = ""
+              @State private var recovered    = 0
+          
+              var body: some View {
+                  VStack(spacing: 20) {
+                      // ── Header ──
+                      VStack(spacing: 8) {
+                          Image(systemName: "arrow.triangle.2.circlepath.doc.fill")
+                              .font(.system(size: 48))
+                              .foregroundStyle(LinearGradient(
+                                  colors: [.vipPurple, .cyan], startPoint: .top, endPoint: .bottom))
+                          Text("استرداد الملفات")
+                              .font(.system(size: 20, weight: .bold))
+                          Text("يبحث عن ملفات IPA في تخزين التطبيق ويستردها")
+                              .font(.caption).foregroundColor(.secondary)
+                              .multilineTextAlignment(.center)
+                      }.padding(.top, 16)
+          
+                      Divider()
+          
+                      // ── Stats ──
+                      HStack(spacing: 20) {
+                          recoveryStatCard(
+                              count: downloadManager.ipaFiles.count,
+                              label: "ملفات محفوظة",
+                              icon: "archivebox.fill",
+                              color: .vipPurple)
+                          recoveryStatCard(
+                              count: downloadManager.ipaFiles.filter(\.isSigned).count,
+                              label: "موقَّعة",
+                              icon: "checkmark.seal.fill",
+                              color: .green)
+                          recoveryStatCard(
+                              count: downloadManager.ipaFiles.filter(\.isInstalled).count,
+                              label: "مثبَّتة",
+                              icon: "square.and.arrow.down.fill",
+                              color: .blue)
+                      }.padding(.horizontal)
+          
+                      // ── Progress / Result ──
+                      if isRecovering {
+                          ProgressView().scaleEffect(1.3).padding()
+                          Text(recoveryMsg)
+                              .font(.caption).foregroundColor(.secondary)
+                      } else if !recoveryMsg.isEmpty {
+                          HStack {
+                              Image(systemName: recovered > 0 ? "checkmark.circle.fill" : "info.circle.fill")
+                                  .foregroundColor(recovered > 0 ? .green : .blue)
+                              Text(recoveryMsg)
+                                  .font(.system(size: 13))
+                                  .foregroundColor(recovered > 0 ? .green : .secondary)
+                          }
+                          .padding(.horizontal)
+                      }
+          
+                      // ── Recover Button ──
+                      GradientButton(
+                          title:     isRecovering ? "جاري الاسترداد..." : "استرداد الآن",
+                          icon:      isRecovering ? nil : "arrow.triangle.2.circlepath",
+                          gradient:  [.vipPurple, .cyan],
+                          action:    startRecovery,
+                          isLoading: isRecovering,
+                          isDisabled: isRecovering
+                      ).padding(.horizontal)
+          
+                      // ── File List ──
+                      if !downloadManager.ipaFiles.isEmpty {
+                          VStack(alignment: .leading, spacing: 12) {
+                              Text("الملفات المتوفرة")
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .padding(.horizontal)
+                              ForEach(downloadManager.ipaFiles) { file in
+                                  HStack(spacing: 12) {
+                                      Image(systemName: "doc.badge.gearshape.fill")
+                                          .foregroundColor(.vipPurple)
+                                      VStack(alignment: .leading, spacing: 2) {
+                                          Text(file.fileName)
+                                              .font(.system(size: 13, weight: .medium))
+                                              .lineLimit(1)
+                                          Text(file.fileSize)
+                                              .font(.caption).foregroundColor(.secondary)
+                                      }
+                                      Spacer()
+                                      if file.isSigned {
+                                          Image(systemName: "checkmark.seal.fill")
+                                              .foregroundColor(.green).font(.caption)
+                                      }
+                                  }
+                                  .padding(.horizontal)
+                                  .padding(.vertical, 6)
+                                  .background(RoundedRectangle(cornerRadius: 10)
+                                      .fill(Color(uiColor: .secondarySystemBackground)))
+                                  .padding(.horizontal)
+                              }
+                          }
+                      }
+          
+                      Spacer(minLength: 30)
+                  }
+              }
+          
+              private func recoveryStatCard(count: Int, label: String, icon: String, color: Color) -> some View {
+                  VStack(spacing: 4) {
+                      Image(systemName: icon).font(.system(size: 22)).foregroundColor(color)
+                      Text("\(count)").font(.system(size: 20, weight: .bold))
+                      Text(label).font(.caption2).foregroundColor(.secondary).multilineTextAlignment(.center)
+                  }
+                  .frame(maxWidth: .infinity)
+                  .padding(.vertical, 12)
+                  .background(RoundedRectangle(cornerRadius: 12)
+                      .fill(color.opacity(0.1)))
+              }
+          
+              private func startRecovery() {
+                  isRecovering = true
+                  recoveryMsg  = ""
+                  recovered    = 0
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let fm   = FileManager.default
+                      let docs  = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+                      var count = 0
+                      if let files = try? fm.contentsOfDirectory(
+                          at: docs, includingPropertiesForKeys: nil) {
+                          for url in files where url.pathExtension.lowercased() == "ipa" {
+                              let already = downloadManager.ipaFiles.contains {
+                                  $0.localPath == url.path
+                              }
+                              if !already {
+                                  downloadManager.importIPAFromURL(url: url)
+                                  count += 1
+                              }
+                          }
+                      }
+                      DispatchQueue.main.async {
+                          isRecovering = false
+                          recovered    = count
+                          recoveryMsg  = count > 0
+                              ? "\u2705 تم استرداد \(count) ملف"
+                              : "\u2139\ufe0f لا توجد ملفات جديدة للاسترداد"
+                          if count > 0 { HapticManager.shared.notification(.success) }
+                      }
+                  }
+              }
+          }
+          VIPEOF
+          echo "InstallSupportViews.swift: $(wc -l < InstallSupportViews.swift) lines"
+
+      # ──────────────────────────────────────────────────────────────────
       - name: 📝 Generate Source — SigningTabView.swift
         run: |
           cat > SigningTabView.swift << 'VIPEOF'
@@ -6868,6 +7152,7 @@ jobs:
           xcrun swiftc \
             VIPZipHelper.swift \
             VIP21InstallEngine.swift \
+            InstallSupportViews.swift \
             Constants.swift \
             HapticManager.swift \
             Models.swift \
