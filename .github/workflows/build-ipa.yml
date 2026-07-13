@@ -20,7 +20,15 @@ jobs:
           swift --version
 
       - name: Setup Dependencies
-        run: brew install ldid zip
+        run: |
+          brew install ldid zip
+          # Download ZIP libraries from GitHub
+          mkdir -p libs
+          curl -L -o libs/ZIPFoundation.zip "https://github.com/weichsel/ZIPFoundation/archive/refs/heads/main.zip"
+          unzip -q libs/ZIPFoundation.zip -d libs/
+          # Download CryptoSwift for signing
+          curl -L -o libs/CryptoSwift.zip "https://github.com/krzyzanowskim/CryptoSwift/archive/refs/heads/main.zip"
+          unzip -q libs/CryptoSwift.zip -d libs/
 
       - name: Generate App Icons
         run: |
@@ -94,6 +102,8 @@ jobs:
               <string>لاستيراد أيقونات التطبيقات</string>
               <key>NSFaceIDUsageDescription</key>
               <string>لحماية إعدادات التطبيق</string>
+              <key>UIFileSharingEnabled</key><true/>
+              <key>LSSupportsOpeningDocumentsInPlace</key><true/>
           </dict>
           </plist>
           PEOF
@@ -113,8 +123,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
-          
           
           // MARK: - Constants
           struct AppConstants {
@@ -163,7 +171,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Haptic Manager
           class HapticManager {
@@ -220,7 +227,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - IPA File Model
           struct IPAFile: Identifiable, Codable {
@@ -310,9 +316,6 @@ jobs:
               let iconURL: String
               var installMethod: String
           }
-          
-          // MARK: - Onboarding Step
-          enum OnboardingStep: CaseIterable { case welcome, features, source, final }
           
           // MARK: - Source Platform
           enum SourcePlatform: String, CaseIterable {
@@ -537,7 +540,7 @@ jobs:
           }
           
           // MARK: - Install Method
-          enum InstallMethod { case iTunes; case direct; case local }
+          enum InstallMethod { case ota; case direct; case local }
           VIPEOF
           echo "Models.swift: $(wc -l < Models.swift) lines"
 
@@ -547,6 +550,7 @@ jobs:
           import Foundation
           import Compression
           
+          // MARK: - ZIP Utilities (Pure Swift)
           private let kLocalFileSig:    UInt32 = 0x04034b50
           private let kCentralDirSig:   UInt32 = 0x02014b50
           private let kEndOfCentralSig: UInt32 = 0x06054b50
@@ -574,6 +578,7 @@ jobs:
               return crc ^ 0xffffffff
           }
           
+          // MARK: - VIPZipReader
           final class VIPZipReader {
               private let data: Data
               init?(url: URL) {
@@ -623,6 +628,7 @@ jobs:
               }
           }
           
+          // MARK: - VIPZipWriter
           final class VIPZipWriter {
               static func createZip(from directory: URL) throws -> Data {
                   let fm = FileManager.default
@@ -689,12 +695,11 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
+          // MARK: - Signing Error
           enum SigningError: LocalizedError {
               case appBundleNotFound
               case p12ImportFailed(String)
-              case noToolAvailable
               case signingFailed(Int32)
               case repackFailed(Error)
               case extractionFailed
@@ -704,7 +709,6 @@ jobs:
                   switch self {
                   case .appBundleNotFound:          return "❌ لم يُعثر على .app bundle داخل IPA"
                   case .p12ImportFailed(let m):     return "❌ فشل استيراد P12: \(m)"
-                  case .noToolAvailable:            return "❌ لا توجد أداة توقيع"
                   case .signingFailed(let c):       return "❌ فشل التوقيع — كود: \(c)"
                   case .repackFailed(let e):        return "❌ فشل إعادة الضغط: \(e.localizedDescription)"
                   case .extractionFailed:           return "❌ فشل فك ضغط IPA — تأكد من صحة الملف"
@@ -713,6 +717,7 @@ jobs:
               }
           }
           
+          // MARK: - Signing Engine
           class SigningEngine {
               static let shared = SigningEngine()
               private let fm = FileManager.default
@@ -768,8 +773,6 @@ jobs:
           
                   progress(0.35, "📄 استخراج Entitlements...")
                   let entData = parseEntitlements(from: cert.mobileProvisionData)
-                  let entFile = tmp.appendingPathComponent("entitlements.plist")
-                  if let ed = entData { try ed.write(to: entFile, options: .atomicWrite) }
           
                   progress(0.42, "🔑 استيراد P12...")
                   let identity = try importP12Identity(p12Data: cert.p12Data, password: cert.password)
@@ -777,7 +780,7 @@ jobs:
                   let binaries = collectMachO(in: appBundle)
                   let bundleID = readBundleID(from: appBundle) ?? cert.displayName
                   let infoPlistData = try? Data(contentsOf: appBundle.appendingPathComponent("Info.plist"))
-                  progress(0.50, "✍️ توقيع \(binaries.count) ملف ثنائي بالتوازي...")
+                  progress(0.50, "✍️ توقيع \(binaries.count) ملف ثنائي...")
           
                   let lock = NSLock()
                   var signError: Error?
@@ -1307,7 +1310,7 @@ jobs:
               }
           }
           
-          // MARK: - Install Engine (OTA only - no jailbreak)
+          // MARK: - Install Engine (OTA Only)
           enum VIP21InstallError: LocalizedError {
               case invalidIPA
               case installFailed(String)
@@ -1399,7 +1402,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Certificate Manager
           class CertificateManager: ObservableObject {
@@ -1408,6 +1410,8 @@ jobs:
               @Published var errorMessage: String?
               @Published var showImportSuccess = false
               @Published var showImportError   = false
+              @Published var showPermissionAlert = false
+              @Published var permissionMessage = ""
           
               private let fm = FileManager.default
               private var certDir: URL {
@@ -1635,6 +1639,8 @@ jobs:
               @Published var downloadProgress: [UUID: Double] = [:]
               @Published var installHistory: [InstallRecord] = []
               @Published var favoriteAppNames: Set<String> = []
+              @Published var showPermissionAlert = false
+              @Published var permissionMessage = ""
           
               private var urlSession: URLSession!
               private let fm = FileManager.default
@@ -1731,8 +1737,13 @@ jobs:
                       )
                       ipaFiles.insert(ipaFile, at: 0); saveIPAFiles()
                       HapticManager.shared.notification(.success)
+                      // Show permission message
+                      showPermissionAlert = true
+                      permissionMessage = "✅ تم استيراد الملف بنجاح:\n\(url.lastPathComponent)"
                   } catch {
                       downloadError = "فشل استيراد الملف: \(error.localizedDescription)"
+                      showPermissionAlert = true
+                      permissionMessage = "❌ فشل استيراد الملف:\n\(error.localizedDescription)"
                   }
               }
           
@@ -1781,6 +1792,24 @@ jobs:
               func cancelDownload(_ download: ActiveDownload) {
                   download.task?.cancel()
                   activeDownloads.removeAll { $0.id == download.id }
+              }
+          
+              // MARK: - File Recovery
+              func recoverFiles() -> Int {
+                  var recovered = 0
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  do {
+                      let files = try FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
+                      for url in files where url.pathExtension.lowercased() == "ipa" {
+                          if !ipaFiles.contains(where: { $0.localPath == url.path }) {
+                              importIPAFromURL(url: url)
+                              recovered += 1
+                          }
+                      }
+                  } catch {
+                      // Silent fail
+                  }
+                  return recovered
               }
           }
           
@@ -1841,7 +1870,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Apps Manager
           class AppsManager: ObservableObject {
@@ -1973,7 +2001,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Cached Async Image
           struct CachedAsyncImage<Content: View>: View {
@@ -2203,11 +2230,10 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
-          // MARK: - Main Content View
+          // MARK: - Main Content View - Xcode Style Tabs
           struct ContentView: View {
-              @State private var selectedTab = "الرئيسية"
+              @State private var selectedTab = 0
               @Environment(\.colorScheme) var scheme
               @StateObject private var appsManager        = AppsManager()
               @StateObject private var certificateManager = CertificateManager()
@@ -2218,6 +2244,16 @@ jobs:
                   mainContent
                       .preferredColorScheme(.none)
                       .onAppear { appsManager.fetchApps(); appsManager.loadRecentSearches(); requestNotifications() }
+                      .alert("تنبيه", isPresented: $downloadManager.showPermissionAlert) {
+                          Button("حسناً", role: .cancel) { }
+                      } message: {
+                          Text(downloadManager.permissionMessage)
+                      }
+                      .alert("تنبيه", isPresented: $certificateManager.showPermissionAlert) {
+                          Button("حسناً", role: .cancel) { }
+                      } message: {
+                          Text(certificateManager.permissionMessage)
+                      }
               }
           
               var mainContent: some View {
@@ -2229,7 +2265,7 @@ jobs:
                               .padding(.bottom, 6)
                           contentArea.padding(.bottom, 1)
                       }
-                      VStack { Spacer(); floatingTabBar }
+                      VStack { Spacer(); xcodeStyleTabBar }
                   }
               }
           
@@ -2241,7 +2277,7 @@ jobs:
                               .foregroundColor(scheme == .dark ? .white : .black)
                           Text(AppConstants.storeName).font(.system(size: 11)).foregroundColor(.gray)
                       }
-                      Button(action: { withAnimation { selectedTab = "الاعدادات" } }) {
+                      Button(action: { withAnimation { selectedTab = 4 } }) {
                           Group {
                               if let img = profileManager.profile.profileImage {
                                   Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
@@ -2270,15 +2306,15 @@ jobs:
                               ErrorView(message: err) { appsManager.retryFetch() }
                           } else {
                               switch selectedTab {
-                              case "الرئيسية":
+                              case 0:
                                   HomeTabView(appsManager: appsManager, downloadManager: downloadManager, certificateManager: certificateManager)
-                              case "التطبيقات":
+                              case 1:
                                   AppsTabView(appsManager: appsManager, downloadManager: downloadManager)
-                              case "المفضلة":
+                              case 2:
                                   FavoritesTabView(appsManager: appsManager, downloadManager: downloadManager)
-                              case "التوقيع":
+                              case 3:
                                   SigningTabView(downloadManager: downloadManager, certificateManager: certificateManager)
-                              case "الاعدادات":
+                              case 4:
                                   SettingsView(certificateManager: certificateManager, profileManager: profileManager)
                               default:
                                   HomeTabView(appsManager: appsManager, downloadManager: downloadManager, certificateManager: certificateManager)
@@ -2289,24 +2325,26 @@ jobs:
                   }
               }
           
-              var floatingTabBar: some View {
+              // MARK: - Xcode Style Tab Bar
+              var xcodeStyleTabBar: some View {
                   HStack(spacing: 0) {
-                      PremiumTabItem(icon: "sparkles",              title: "الرئيسية",  tab: "الرئيسية",  selectedTab: $selectedTab)
-                      PremiumTabItem(icon: "square.stack.3d.up",    title: "التطبيقات", tab: "التطبيقات", selectedTab: $selectedTab)
-                      PremiumTabItem(icon: "bookmark",              title: "المفضلة",  tab: "المفضلة",  selectedTab: $selectedTab)
-                      PremiumTabItem(icon: "wand.and.stars",        title: "التوقيع",  tab: "التوقيع",  selectedTab: $selectedTab,
-                                     badge: downloadManager.ipaFiles.count + downloadManager.activeDownloads.count)
-                      PremiumTabItem(icon: "gearshape.2",           title: "الاعدادات", tab: "الاعدادات", selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "house.fill", title: "الرئيسية", index: 0, selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "square.grid.2x2.fill", title: "التطبيقات", index: 1, selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "heart.fill", title: "المفضلة", index: 2, selectedTab: $selectedTab,
+                                   badge: downloadManager.favoriteAppNames.count)
+                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 3, selectedTab: $selectedTab,
+                                   badge: downloadManager.ipaFiles.count + downloadManager.activeDownloads.count)
+                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 4, selectedTab: $selectedTab)
                   }
-                  .padding(.horizontal, 12).padding(.vertical, 10)
+                  .padding(.horizontal, 12).padding(.vertical, 8)
                   .background(
-                      RoundedRectangle(cornerRadius: 30)
+                      RoundedRectangle(cornerRadius: 28)
                           .fill(.ultraThinMaterial)
-                          .shadow(color: .black.opacity(0.18), radius: 22, x: 0, y: -4)
+                          .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: -3)
                   )
-                  .overlay(RoundedRectangle(cornerRadius: 30)
+                  .overlay(RoundedRectangle(cornerRadius: 28)
                       .stroke(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06), lineWidth: 1))
-                  .padding(.horizontal, 12).padding(.bottom, 22)
+                  .padding(.horizontal, 12).padding(.bottom, 20)
               }
           
               func requestNotifications() {
@@ -2314,39 +2352,49 @@ jobs:
               }
           }
           
-          struct PremiumTabItem: View {
-              let icon: String; let title: String; let tab: String
-              @Binding var selectedTab: String
+          // MARK: - Xcode Style Tab Item
+          struct XcodeTabItem: View {
+              let icon: String
+              let title: String
+              let index: Int
+              @Binding var selectedTab: Int
               var badge: Int = 0
-              var isSelected: Bool { selectedTab == tab }
               @Environment(\.colorScheme) var scheme
+          
+              var isSelected: Bool { selectedTab == index }
           
               var body: some View {
                   Button(action: {
-                      withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { selectedTab = tab }
+                      withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                          selectedTab = index
+                      }
                       HapticManager.shared.selection()
                   }) {
-                      VStack(spacing: 4) {
+                      VStack(spacing: 3) {
                           ZStack {
                               if isSelected {
-                                  RoundedRectangle(cornerRadius: 10)
-                                      .fill(LinearGradient(colors: [.vipPurple.opacity(0.2), .blue.opacity(0.15)],
-                                                           startPoint: .top, endPoint: .bottom))
-                                      .frame(width: 40, height: 32)
+                                  RoundedRectangle(cornerRadius: 8)
+                                      .fill(Color.vipPurple.opacity(0.15))
+                                      .frame(width: 36, height: 28)
                               }
-                              Image(systemName: isSelected ? "\(icon).fill" : icon)
+                              Image(systemName: icon)
                                   .font(.system(size: 18, weight: isSelected ? .semibold : .regular))
-                                  .foregroundStyle(isSelected
-                                      ? LinearGradient(colors: [.vipPurple, .blue], startPoint: .top, endPoint: .bottom)
-                                      : LinearGradient(colors: [.gray.opacity(0.6), .gray.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                                  .foregroundColor(isSelected ? .vipPurple : .gray.opacity(0.6))
                               if badge > 0 {
-                                  Text("\(min(badge, 99))").font(.system(size: 9, weight: .bold)).foregroundColor(.white)
-                                      .padding(4).background(Circle().fill(Color.red)).offset(x: 12, y: -10)
+                                  Text("\(min(badge, 99))")
+                                      .font(.system(size: 8, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(4)
+                                      .background(Circle().fill(Color.red))
+                                      .offset(x: 12, y: -10)
                               }
-                          }.frame(height: 32)
-                          Text(title).font(.system(size: 9, weight: isSelected ? .semibold : .regular))
+                          }
+                          .frame(height: 28)
+                          Text(title)
+                              .font(.system(size: 8, weight: isSelected ? .semibold : .regular))
                               .foregroundColor(isSelected ? .vipPurple : .gray.opacity(0.7))
-                      }.frame(maxWidth: .infinity)
+                      }
+                      .frame(maxWidth: .infinity)
                   }
               }
           }
@@ -2466,7 +2514,6 @@ jobs:
                   }
               }
           }
-          
           VIPEOF
           echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
 
@@ -2485,7 +2532,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Home Tab
           struct HomeTabView: View {
@@ -2493,7 +2539,6 @@ jobs:
               @ObservedObject var downloadManager: IPADownloadManager
               @ObservedObject var certificateManager: CertificateManager
               @State private var selectedApp: AppItem?
-              @State private var showStats = false
               @Environment(\.colorScheme) var scheme
           
               private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
@@ -2859,8 +2904,6 @@ jobs:
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
               var isFavorite: Bool; let onFavorite: () -> Void
-              @State private var showDownloadAlert = false
-              @State private var isDownloading = false
               @Environment(\.colorScheme) var scheme
           
               var body: some View {
@@ -2921,7 +2964,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Apps Tab
           struct AppsTabView: View {
@@ -2984,7 +3026,6 @@ jobs:
                                   .font(.system(size: 11)).foregroundColor(.gray)
                           }
                           Spacer()
-                          // Sort menu
                           Menu {
                               ForEach(AppSortMode.allCases, id: \.self) { mode in
                                   Button(action: { sortMode = mode }) {
@@ -3079,7 +3120,7 @@ jobs:
                               .font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
                       }
           
-                      // App List - Enhanced Cards
+                      // App List
                       if filteredApps.isEmpty {
                           VStack(spacing: 16) {
                               Image(systemName: "magnifyingglass")
@@ -3109,11 +3150,9 @@ jobs:
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.colorScheme) var scheme
-              @State private var isDownloading = false
           
               var body: some View {
                   HStack(spacing: 14) {
-                      // App Icon
                       ZStack(alignment: .bottomTrailing) {
                           CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                               if let img = phase.image {
@@ -3140,7 +3179,6 @@ jobs:
                           }
                       }
           
-                      // Info
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
                               if app.isPopular {
@@ -3386,7 +3424,7 @@ jobs:
               }
           }
           
-          // MARK: - VIP21FileRecoveryView - Fixed to work on all devices
+          // MARK: - VIP21FileRecoveryView
           struct VIP21FileRecoveryView: View {
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.colorScheme) var scheme
@@ -3476,28 +3514,14 @@ jobs:
               private func startRecovery() {
                   isRecovering = true; recoveryMsg = ""; recovered = 0
                   DispatchQueue.global(qos: .userInitiated).async {
-                      let fm   = FileManager.default
-                      let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-                      var cnt  = 0
-                      do {
-                          let files = try fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
-                          for url in files where url.pathExtension.lowercased() == "ipa" {
-                              if !downloadManager.ipaFiles.contains(where: { $0.localPath == url.path }) {
-                                  DispatchQueue.main.async {
-                                      downloadManager.importIPAFromURL(url: url)
-                                  }
-                                  cnt += 1
-                              }
-                          }
-                      } catch {
-                          // Silent fail - just show message
-                      }
+                      let recoveredCount = downloadManager.recoverFiles()
                       DispatchQueue.main.async {
-                          isRecovering = false; recovered = cnt
-                          recoveryMsg = cnt > 0
-                              ? "تم استرداد " + String(cnt) + " ملف"
+                          isRecovering = false
+                          recovered = recoveredCount
+                          recoveryMsg = recoveredCount > 0
+                              ? "تم استرداد " + String(recoveredCount) + " ملف"
                               : "لا توجد ملفات جديدة للاسترداد"
-                          if cnt > 0 { HapticManager.shared.notification(.success) }
+                          if recoveredCount > 0 { HapticManager.shared.notification(.success) }
                       }
                   }
               }
@@ -3520,7 +3544,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Signing Tab
           struct SigningTabView: View {
@@ -4304,14 +4327,12 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - App Detail View - Enhanced
           struct AppDetailView: View {
               let app: AppItem
               let downloadManager: IPADownloadManager?
               @State private var isDownloading = false
-              @State private var showAlert = false
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
           
@@ -4520,9 +4541,8 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
-          // MARK: - Settings View (Cleaned - No Help Centre, No Extra Sources, No Store Features)
+          // MARK: - Settings View (Xcode Style)
           struct SettingsView: View {
               @ObservedObject var certificateManager: CertificateManager
               @ObservedObject var profileManager: UserProfileManager
@@ -4569,11 +4589,15 @@ jobs:
                   .sheet(isPresented: $showP12Picker) {
                       DataDocumentPicker(types: p12Types) { data, name in
                           p12Data = data; p12Name = name
+                          certificateManager.showPermissionAlert = true
+                          certificateManager.permissionMessage = "✅ تم اختيار ملف P12:\n\(name)"
                       }
                   }
                   .sheet(isPresented: $showProvPicker) {
                       DataDocumentPicker(types: provTypes) { data, name in
                           provData = data; provName = name
+                          certificateManager.showPermissionAlert = true
+                          certificateManager.permissionMessage = "✅ تم اختيار ملف Provisioning Profile:\n\(name)"
                       }
                   }
                   .alert("✅ تم استيراد الشهادة بنجاح", isPresented: $certificateManager.showImportSuccess) {
@@ -4585,6 +4609,11 @@ jobs:
                   .alert("خطأ", isPresented: $certificateManager.showImportError) {
                       Button("حسناً", role: .cancel) { }
                   } message: { Text(certificateManager.errorMessage ?? "فشل الاستيراد") }
+                  .alert("تنبيه", isPresented: $certificateManager.showPermissionAlert) {
+                      Button("حسناً", role: .cancel) { }
+                  } message: {
+                      Text(certificateManager.permissionMessage)
+                  }
               }
           
               var certificateSection: some View {
@@ -4880,6 +4909,8 @@ jobs:
                           p12Data  = nil; p12Name  = ""
                           provData = nil; provName = ""
                           certPassword = ""; certDisplayName = ""
+                          certificateManager.showPermissionAlert = true
+                          certificateManager.permissionMessage = "✅ تم استيراد الشهادة بنجاح:\n\(cert.displayName)"
                       case .failure(let err):
                           validationError = err.localizedDescription
                           showValidationError = true
@@ -5014,7 +5045,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - IPA Patcher Engine
           class IPAPatcher {
@@ -5332,7 +5362,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - App Entry Point
           @main
@@ -5421,7 +5450,6 @@ jobs:
           import Network
           import UniformTypeIdentifiers
           import LocalAuthentication
-          import Compression
           
           // MARK: - Notification Manager
           class NotificationManager {
