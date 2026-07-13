@@ -326,7 +326,7 @@ jobs:
           
               // MARK: - إخفاء رابط التحميل من الواجهة
               // الرابط مشفّر داخلياً ولا يُعرض في أي Text() بالواجهة
-              fileprivate var _secureDownloadURL: String { downloadURL }
+              var _secureDownloadURL: String { downloadURL }
           }
           
           // MARK: - Install Record
@@ -1474,6 +1474,166 @@ jobs:
           
           VIPEOF
           echo "✅ SigningEngine.swift: $(wc -l < SigningEngine.swift) lines"
+
+      # ──────────────────────────────────────────────────────────────────
+      - name: 📝 Generate Source — VIP21InstallEngine.swift
+        run: |
+          cat > VIP21InstallEngine.swift << 'VIPEOF'
+          import Foundation
+          import UIKit
+          import SwiftUI
+          
+          // MARK: - Install Error
+          enum VIP21InstallError: LocalizedError {
+              case invalidIPA
+              case installFailed(String)
+              case unsupportedMethod
+              case timeout
+              var errorDescription: String? {
+                  switch self {
+                  case .invalidIPA:            return "ملف IPA غير صالح"
+                  case .installFailed(let m):  return "فشل التثبيت: \(m)"
+                  case .unsupportedMethod:     return "طريقة التثبيت غير مدعومة"
+                  case .timeout:               return "انتهت مهلة التثبيت"
+                  }
+              }
+          }
+          
+          // MARK: - VIP21InstallEngine
+          final class VIP21InstallEngine {
+              static let shared = VIP21InstallEngine()
+              private init() {}
+          
+              // MARK: - Detect method
+              var availableMethod: String {
+                  if isTrollStoreAvailable { return "trollstore" }
+                  if isAltStoreAvailable   { return "altstore" }
+                  return "ota"
+              }
+              private var isTrollStoreAvailable: Bool {
+                  UIApplication.shared.canOpenURL(URL(string: "apple-magnifier://")!) ||
+                  FileManager.default.fileExists(atPath: "/var/jb/usr/bin/trollstorehelper") ||
+                  FileManager.default.fileExists(atPath: "/usr/bin/trollstorehelper")
+              }
+              private var isAltStoreAvailable: Bool {
+                  UIApplication.shared.canOpenURL(URL(string: "altstore://")!)
+              }
+          
+              // MARK: - Main install
+              func install(
+                  ipaURL:          URL,
+                  bundleID:        String,
+                  appName:         String,
+                  version:         String,
+                  progressHandler: @escaping (Double, String) -> Void,
+                  completion:      @escaping (Result<Void, Error>) -> Void
+              ) {
+                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                      guard let self = self else { return }
+                      guard FileManager.default.fileExists(atPath: ipaURL.path) else {
+                          DispatchQueue.main.async { completion(.failure(VIP21InstallError.invalidIPA)) }
+                          return
+                      }
+                      switch self.availableMethod {
+                      case "trollstore":
+                          self.installViaTrollStore(ipaURL: ipaURL, appName: appName,
+                                                   progressHandler: progressHandler, completion: completion)
+                      case "altstore":
+                          self.installViaAltStore(ipaURL: ipaURL, appName: appName, bundleID: bundleID,
+                                                  progressHandler: progressHandler, completion: completion)
+                      default:
+                          self.installViaOTA(ipaURL: ipaURL, appName: appName, bundleID: bundleID,
+                                             version: version, progressHandler: progressHandler, completion: completion)
+                      }
+                  }
+              }
+          
+              // MARK: - TrollStore
+              private func installViaTrollStore(
+                  ipaURL: URL, appName: String,
+                  progressHandler: @escaping (Double, String) -> Void,
+                  completion: @escaping (Result<Void, Error>) -> Void
+              ) {
+                  let encoded = ipaURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                  guard let url = URL(string: "apple-magnifier://install?url=\(encoded)") else {
+                      DispatchQueue.main.async { completion(.failure(VIP21InstallError.installFailed("رابط TrollStore غير صالح"))) }
+                      return
+                  }
+                  DispatchQueue.main.async {
+                      progressHandler(0.3, "⚙️ فتح TrollStore...")
+                      UIApplication.shared.open(url) { success in
+                          if success { progressHandler(1.0, "✅ تم إرسال الطلب إلى TrollStore"); completion(.success(())) }
+                          else { completion(.failure(VIP21InstallError.installFailed("تعذّر فتح TrollStore"))) }
+                      }
+                  }
+              }
+          
+              // MARK: - AltStore
+              private func installViaAltStore(
+                  ipaURL: URL, appName: String, bundleID: String,
+                  progressHandler: @escaping (Double, String) -> Void,
+                  completion: @escaping (Result<Void, Error>) -> Void
+              ) {
+                  let encoded = ipaURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                  guard let url = URL(string: "altstore://install?url=\(encoded)") else {
+                      DispatchQueue.main.async { completion(.failure(VIP21InstallError.installFailed("رابط AltStore غير صالح"))) }
+                      return
+                  }
+                  DispatchQueue.main.async {
+                      progressHandler(0.3, "⚙️ فتح AltStore...")
+                      UIApplication.shared.open(url) { success in
+                          if success { progressHandler(1.0, "✅ تم إرسال الطلب إلى AltStore"); completion(.success(())) }
+                          else { completion(.failure(VIP21InstallError.installFailed("تعذّر فتح AltStore"))) }
+                      }
+                  }
+              }
+          
+              // MARK: - OTA (itms-services)
+              private func installViaOTA(
+                  ipaURL: URL, appName: String, bundleID: String, version: String,
+                  progressHandler: @escaping (Double, String) -> Void,
+                  completion: @escaping (Result<Void, Error>) -> Void
+              ) {
+                  let plist = [
+                      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                      "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"",
+                      "  \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+                      "<plist version=\"1.0\"><dict><key>items</key><array><dict>",
+                      "<key>assets</key><array><dict>",
+                      "<key>kind</key><string>software-package</string>",
+                      "<key>url</key><string>\(ipaURL.absoluteString)</string>",
+                      "</dict></array>",
+                      "<key>metadata</key><dict>",
+                      "<key>bundle-identifier</key><string>\(bundleID)</string>",
+                      "<key>bundle-version</key><string>\(version)</string>",
+                      "<key>kind</key><string>software</string>",
+                      "<key>title</key><string>\(appName)</string>",
+                      "</dict></dict></array></dict></plist>"
+                  ].joined(separator: "\n")
+                  let tmp = FileManager.default.temporaryDirectory
+                      .appendingPathComponent("install_\(UUID().uuidString).plist")
+                  guard (try? plist.write(to: tmp, atomically: true, encoding: .utf8)) != nil else {
+                      DispatchQueue.main.async {
+                          completion(.failure(VIP21InstallError.installFailed("فشل إنشاء plist")))
+                      }; return
+                  }
+                  let encoded = tmp.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                  guard let otaURL = URL(string: "itms-services://?action=download-manifest&url=\(encoded)") else {
+                      DispatchQueue.main.async {
+                          completion(.failure(VIP21InstallError.installFailed("رابط OTA غير صالح")))
+                      }; return
+                  }
+                  DispatchQueue.main.async {
+                      progressHandler(0.5, "⚙️ فتح مثبّت النظام...")
+                      UIApplication.shared.open(otaURL) { success in
+                          if success { progressHandler(1.0, "✅ تم فتح نافذة التثبيت"); completion(.success(())) }
+                          else { completion(.failure(VIP21InstallError.installFailed("تأكد من تثبيت TrollStore أو AltStore"))) }
+                      }
+                  }
+              }
+          }
+          VIPEOF
+          echo "VIP21InstallEngine.swift: $(wc -l < VIP21InstallEngine.swift) lines"
 
       # ──────────────────────────────────────────────────────────────────
       - name: 📝 Generate Source — Managers.swift
@@ -6707,6 +6867,7 @@ jobs:
           echo "SDK: $SDK"
           xcrun swiftc \
             VIPZipHelper.swift \
+            VIP21InstallEngine.swift \
             Constants.swift \
             HapticManager.swift \
             Models.swift \
