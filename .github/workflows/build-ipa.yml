@@ -589,6 +589,186 @@ jobs:
           echo "✅ Models.swift: $(wc -l < Models.swift) lines"
 
       # ──────────────────────────────────────────────────────────────────
+      - name: 📝 Generate Source — VIPZipHelper.swift
+        run: |
+          cat > VIPZipHelper.swift << 'VIPEOF'
+          import Foundation
+          import Compression
+          
+          // MARK: - ZIP Constants
+          private let kLocalFileSig:    UInt32 = 0x04034b50
+          private let kCentralDirSig:   UInt32 = 0x02014b50
+          private let kEndOfCentralSig: UInt32 = 0x06054b50
+          
+          // MARK: - Data read helpers
+          private extension Data {
+              func readU16(at off: Int) -> UInt16 {
+                  guard off + 2 <= count else { return 0 }
+                  return subdata(in: off..<off+2).withUnsafeBytes {
+                      $0.load(as: UInt16.self).littleEndian
+                  }
+              }
+              func readU32(at off: Int) -> UInt32 {
+                  guard off + 4 <= count else { return 0 }
+                  return subdata(in: off..<off+4).withUnsafeBytes {
+                      $0.load(as: UInt32.self).littleEndian
+                  }
+              }
+          }
+          
+          // MARK: - Little-endian helpers
+          private func le16(_ v: UInt16) -> Data {
+              var x = v.littleEndian; return Data(bytes: &x, count: 2)
+          }
+          private func le32(_ v: UInt32) -> Data {
+              var x = v.littleEndian; return Data(bytes: &x, count: 4)
+          }
+          
+          // MARK: - CRC-32
+          private func crc32ofData(_ data: Data) -> UInt32 {
+              var crc: UInt32 = 0xffffffff
+              for byte in data {
+                  crc ^= UInt32(byte)
+                  for _ in 0..<8 {
+                      crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1
+                  }
+              }
+              return crc ^ 0xffffffff
+          }
+          
+          // MARK: - VIPZipReader
+          final class VIPZipReader {
+              private let data: Data
+          
+              init?(url: URL) {
+                  guard let d = try? Data(contentsOf: url) else { return nil }
+                  self.data = d
+              }
+          
+              func extractAll(to destination: URL) throws {
+                  let fm = FileManager.default
+                  try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                  var offset = 0
+                  while offset + 30 <= data.count {
+                      let sig = data.readU32(at: offset)
+                      guard sig == kLocalFileSig else { offset += 1; continue }
+                      let method     = Int(data.readU16(at: offset + 8))
+                      let compSize   = Int(data.readU32(at: offset + 18))
+                      let uncompSize = Int(data.readU32(at: offset + 22))
+                      let nameLen    = Int(data.readU16(at: offset + 26))
+                      let extraLen   = Int(data.readU16(at: offset + 28))
+                      guard offset + 30 + nameLen <= data.count else { break }
+                      let name = String(data: data[offset+30 ..< offset+30+nameLen],
+                                        encoding: .utf8) ?? ""
+                      let dataStart = offset + 30 + nameLen + extraLen
+                      guard dataStart + compSize <= data.count else { break }
+                      if !name.isEmpty && !name.hasSuffix("/") {
+                          let dest = destination.appendingPathComponent(name)
+                          try fm.createDirectory(at: dest.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+                          let raw = Data(data[dataStart ..< dataStart + compSize])
+                          let out: Data
+                          switch method {
+                          case 0:  out = raw
+                          case 8:  out = try inflate(raw, expected: uncompSize)
+                          default:
+                              throw NSError(domain: "VIPZipReader", code: method,
+                                  userInfo: [NSLocalizedDescriptionKey: "Unsupported method \(method)"])
+                          }
+                          try out.write(to: dest)
+                      }
+                      offset = dataStart + compSize
+                  }
+              }
+          
+              private func inflate(_ src: Data, expected: Int) throws -> Data {
+                  let cap = max(expected, src.count * 6, 4096)
+                  var dst = Data(count: cap)
+                  let n = src.withUnsafeBytes { s -> Int in
+                      dst.withUnsafeMutableBytes { d -> Int in
+                          compression_decode_buffer(
+                              d.baseAddress!.assumingMemoryBound(to: UInt8.self), cap,
+                              s.baseAddress!.assumingMemoryBound(to: UInt8.self), s.count,
+                              nil, COMPRESSION_ZLIB)
+                      }
+                  }
+                  guard n > 0 else {
+                      throw NSError(domain: "VIPZipReader", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "inflate failed"])
+                  }
+                  return dst.prefix(n)
+              }
+          }
+          
+          // MARK: - VIPZipWriter
+          final class VIPZipWriter {
+          
+              static func createZip(from directory: URL) throws -> Data {
+                  let fm = FileManager.default
+                  guard let enumerator = fm.enumerator(
+                      at: directory,
+                      includingPropertiesForKeys: [.isDirectoryKey],
+                      options: [.skipsHiddenFiles]
+                  ) else {
+                      throw NSError(domain: "VIPZipWriter", code: -1)
+                  }
+          
+                  var localData   = Data()
+                  var centralData = Data()
+                  var count: UInt16 = 0
+          
+                  for case let url as URL in enumerator {
+                      let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                                      .isDirectory ?? false
+                      var rel = String(url.path.dropFirst(directory.path.count))
+                      if rel.hasPrefix("/") { rel = String(rel.dropFirst()) }
+                      guard !rel.isEmpty else { continue }
+          
+                      let entryName = isDir ? rel + "/" : rel
+                      let nameData  = entryName.data(using: .utf8) ?? Data()
+                      let fileData  = isDir ? Data() : ((try? Data(contentsOf: url)) ?? Data())
+                      let crc       = crc32ofData(fileData)
+                      let sz        = UInt32(fileData.count)
+                      let localOff  = UInt32(localData.count)
+          
+                      var lhdr = Data()
+                      lhdr += le32(kLocalFileSig)
+                      lhdr += le16(20); lhdr += le16(0); lhdr += le16(0)
+                      lhdr += le16(0);  lhdr += le16(0)
+                      lhdr += le32(crc); lhdr += le32(sz); lhdr += le32(sz)
+                      lhdr += le16(UInt16(nameData.count)); lhdr += le16(0)
+                      lhdr += nameData
+                      lhdr += fileData
+                      localData += lhdr
+          
+                      var cd = Data()
+                      cd += le32(kCentralDirSig)
+                      cd += le16(20); cd += le16(20); cd += le16(0); cd += le16(0)
+                      cd += le16(0);  cd += le16(0)
+                      cd += le32(crc); cd += le32(sz); cd += le32(sz)
+                      cd += le16(UInt16(nameData.count))
+                      cd += le16(0); cd += le16(0); cd += le16(0)
+                      cd += le16(0); cd += le32(0); cd += le32(localOff)
+                      cd += nameData
+                      centralData += cd
+                      count += 1
+                  }
+          
+                  var eocd = Data()
+                  eocd += le32(kEndOfCentralSig)
+                  eocd += le16(0); eocd += le16(0)
+                  eocd += le16(count); eocd += le16(count)
+                  eocd += le32(UInt32(centralData.count))
+                  eocd += le32(UInt32(localData.count))
+                  eocd += le16(0)
+          
+                  return localData + centralData + eocd
+              }
+          }
+          VIPEOF
+          echo "VIPZipHelper.swift: $(wc -l < VIPZipHelper.swift) lines"
+
+      # ──────────────────────────────────────────────────────────────────
       - name: 📝 Generate Source — SigningEngine.swift
         run: |
           cat > SigningEngine.swift << 'VIPEOF'
@@ -6526,6 +6706,7 @@ jobs:
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
           xcrun swiftc \
+            VIPZipHelper.swift \
             Constants.swift \
             HapticManager.swift \
             Models.swift \
