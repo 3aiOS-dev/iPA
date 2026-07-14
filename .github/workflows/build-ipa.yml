@@ -83,30 +83,14 @@ jobs:
           </plist>
           PEOF
 
-      - name: Generate Package.swift
+      - name: Setup ZIPFoundation
         run: |
-          cat > Package.swift << 'PKGEOF'
-          // swift-tools-version:5.5
-          import PackageDescription
-
-          let package = Package(
-              name: "VIP21Store",
-              platforms: [
-                  .iOS(.v16)
-              ],
-              dependencies: [
-                  .package(url: "https://github.com/weichsel/ZIPFoundation.git", .upToNextMajor(from: "0.9.0"))
-              ],
-              targets: [
-                  .target(
-                      name: "VIP21Store",
-                      dependencies: ["ZIPFoundation"],
-                      path: ".",
-                      exclude: ["Resources", "Build", "artifacts"]
-                  )
-              ]
-          )
-          PKGEOF
+          mkdir -p Sources/ZIPFoundation
+          cd Sources
+          git clone --depth 1 https://github.com/weichsel/ZIPFoundation.git
+          cd ZIPFoundation
+          swift build -c release
+          cd ../..
 
       - name: Generate Source - Constants.swift
         run: |
@@ -430,7 +414,6 @@ jobs:
         run: |
           cat > SigningEngine.swift << 'VIPEOF'
           import Foundation
-          import ZIPFoundation
           
           enum SigningError: LocalizedError {
               case appBundleNotFound
@@ -504,9 +487,35 @@ jobs:
           
                   // 2. Extract IPA using ZIPFoundation
                   progress(0.15, "📦 فك ضغط IPA...")
+                  let zipHelper = """
+                  import Foundation
+                  import ZIPFoundation
                   do {
-                      try fm.unzipItem(at: ipaURL, to: extractDir)
+                      try FileManager.default.unzipItem(at: URL(fileURLWithPath: "\(ipaURL.path)"), to: URL(fileURLWithPath: "\(extractDir.path)"))
+                      print("SUCCESS")
                   } catch {
+                      print("ERROR: \\(error)")
+                      exit(1)
+                  }
+                  """
+                  let scriptPath = tmp.appendingPathComponent("extract.swift")
+                  try zipHelper.write(to: scriptPath, atomically: true, encoding: .utf8)
+                  
+                  let process = Process()
+                  process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+                  process.arguments = [scriptPath.path]
+                  
+                  let outputPipe = Pipe()
+                  let errorPipe = Pipe()
+                  process.standardOutput = outputPipe
+                  process.standardError = errorPipe
+                  
+                  try process.run()
+                  process.waitUntilExit()
+                  
+                  guard process.terminationStatus == 0 else {
+                      let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                      let errorString = String(data: errorData, encoding: .utf8) ?? "خطأ غير معروف"
                       throw SigningError.extractionFailed
                   }
           
@@ -530,9 +539,9 @@ jobs:
                   progress(0.40, "✍️ توقيع باستخدام zsign...")
                   let signedIpaPath = tmp.appendingPathComponent("signed.ipa")
                   
-                  let process = Process()
-                  process.executableURL = URL(fileURLWithPath: "/usr/local/bin/zsign") // Assuming zsign is installed
-                  process.arguments = [
+                  let zsignProcess = Process()
+                  zsignProcess.executableURL = URL(fileURLWithPath: "/usr/local/bin/zsign")
+                  zsignProcess.arguments = [
                       "-k", p12Path.path,
                       "-p", cert.password,
                       "-m", provPath.path,
@@ -540,18 +549,18 @@ jobs:
                       ipaURL.path
                   ]
                   
-                  let outputPipe = Pipe()
-                  let errorPipe = Pipe()
-                  process.standardOutput = outputPipe
-                  process.standardError = errorPipe
+                  let zsignOutput = Pipe()
+                  let zsignError = Pipe()
+                  zsignProcess.standardOutput = zsignOutput
+                  zsignProcess.standardError = zsignError
                   
-                  try process.run()
-                  process.waitUntilExit()
+                  try zsignProcess.run()
+                  zsignProcess.waitUntilExit()
                   
-                  guard process.terminationStatus == 0 else {
-                      let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                  guard zsignProcess.terminationStatus == 0 else {
+                      let errorData = zsignError.fileHandleForReading.readDataToEndOfFile()
                       let errorString = String(data: errorData, encoding: .utf8) ?? "خطأ غير معروف"
-                      throw SigningError.signingFailed(process.terminationStatus)
+                      throw SigningError.signingFailed(zsignProcess.terminationStatus)
                   }
           
                   progress(0.90, "✅ اكتمل التوقيع!")
@@ -652,7 +661,6 @@ jobs:
           import UIKit
           import Foundation
           import Combine
-          import ZIPFoundation
           
           class CertificateManager: ObservableObject {
               @Published var certificates: [CertificateInfoModel] = []
@@ -3734,7 +3742,6 @@ jobs:
           cat > IPAPatcher.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import ZIPFoundation
           
           class IPAPatcher {
               static let shared = IPAPatcher()
@@ -3786,11 +3793,37 @@ jobs:
                   let extractDir = tmp.appendingPathComponent("extracted")
                   try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
                   progress(0.05, "📦 فك ضغط IPA...")
+                  
+                  let zipHelper = """
+                  import Foundation
+                  import ZIPFoundation
                   do {
-                      try fm.unzipItem(at: sourceURL, to: extractDir)
+                      try FileManager.default.unzipItem(at: URL(fileURLWithPath: "\(sourceURL.path)"), to: URL(fileURLWithPath: "\(extractDir.path)"))
+                      print("SUCCESS")
                   } catch {
+                      print("ERROR: \\(error)")
+                      exit(1)
+                  }
+                  """
+                  let scriptPath = tmp.appendingPathComponent("extract.swift")
+                  try zipHelper.write(to: scriptPath, atomically: true, encoding: .utf8)
+                  
+                  let process = Process()
+                  process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+                  process.arguments = [scriptPath.path]
+                  
+                  let outputPipe = Pipe()
+                  let errorPipe = Pipe()
+                  process.standardOutput = outputPipe
+                  process.standardError = errorPipe
+                  
+                  try process.run()
+                  process.waitUntilExit()
+                  
+                  guard process.terminationStatus == 0 else {
                       throw NSError(domain: "IPAPatcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "فشل فك الضغط"])
                   }
+          
                   progress(0.20, "🔍 البحث عن .app bundle...")
                   let payloadDir = extractDir.appendingPathComponent("Payload")
                   guard fm.fileExists(atPath: payloadDir.path),
@@ -3835,7 +3868,32 @@ jobs:
                   try? fm.createDirectory(at: outURL.deletingLastPathComponent(),
                                           withIntermediateDirectories: true)
                   if fm.fileExists(atPath: outURL.path) { try fm.removeItem(at: outURL) }
-                  try fm.zipItem(at: extractDir, to: outURL)
+                  
+                  let zipHelper2 = """
+                  import Foundation
+                  import ZIPFoundation
+                  do {
+                      try FileManager.default.zipItem(at: URL(fileURLWithPath: "\(extractDir.path)"), to: URL(fileURLWithPath: "\(outURL.path)"))
+                      print("SUCCESS")
+                  } catch {
+                      print("ERROR: \\(error)")
+                      exit(1)
+                  }
+                  """
+                  let scriptPath2 = tmp.appendingPathComponent("zip.swift")
+                  try zipHelper2.write(to: scriptPath2, atomically: true, encoding: .utf8)
+                  
+                  let process2 = Process()
+                  process2.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+                  process2.arguments = [scriptPath2.path]
+                  
+                  try process2.run()
+                  process2.waitUntilExit()
+                  
+                  guard process2.terminationStatus == 0 else {
+                      throw NSError(domain: "IPAPatcher", code: 3, userInfo: [NSLocalizedDescriptionKey: "فشل إعادة الضغط"])
+                  }
+                  
                   progress(1.0, "✅ اكتملت عملية التعديل!")
                   return outURL
               }
@@ -4140,8 +4198,16 @@ jobs:
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
+          
+          # Build with ZIPFoundation
+          cd Sources/ZIPFoundation
+          swift build -c release -Xswiftc -module-name -Xswiftc ZIPFoundation
+          cd ../..
+          
           xcrun swiftc \
-            -I .build/checkouts/ZIPFoundation \
+            -I Sources/ZIPFoundation/.build/release \
+            -L Sources/ZIPFoundation/.build/release \
+            -lZIPFoundation \
             Constants.swift \
             HapticManager.swift \
             Models.swift \
