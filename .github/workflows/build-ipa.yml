@@ -228,12 +228,11 @@ jobs:
               var isInstalled: Bool = false
               var installDate: Date?
               var signingCertificateId: UUID?
-              var isFavorite: Bool = false
           
               enum CodingKeys: String, CodingKey {
                   case id, fileName, localPath, originalURL, fileSize, fileSizeBytes,
                        date, isSigned, signedPath, isInstalled, installDate,
-                       signingCertificateId, isFavorite
+                       signingCertificateId
               }
           }
           
@@ -345,7 +344,6 @@ jobs:
               var sourcePlatform: String?
               var hasCompletedOnboarding: Bool = false
               var totalInstalls: Int = 0
-              var favoriteApps: [String] = []
           
               var profileImage: UIImage? {
                   guard let d = profileImageData else { return nil }
@@ -529,38 +527,22 @@ jobs:
           enum InstallMethod { case ota; case direct; case local }
           VIPEOF
 
-      - name: Generate Source - VIPZipHelper.swift (FIXED - No import needed)
+      - name: Generate Source - VIPZipHelper.swift (FIXED - No Process error)
         run: |
           cat > VIPZipHelper.swift << 'VIPEOF'
           import Foundation
-          // No import ZIPFoundation - we use the files directly
+          import ZIPFoundation
           
-          // MARK: - Streaming ZIP Utilities (using built-in compression)
+          // MARK: - Streaming ZIP Utilities (using ZIPFoundation)
           enum VIPZipHelper {
               static func extractAll(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
                   let fm = FileManager.default
                   try fm.createDirectory(at: destinationURL, withIntermediateDirectories: true)
                   
-                  // Use libz compression directly
-                  let fileHandle = try FileHandle(forReadingFrom: sourceURL)
-                  defer { try? fileHandle.close() }
-                  
-                  // For now, use a simple unzip via Process or fallback
-                  // Since we can't use ZIPFoundation as a module, we'll use system unzip
-                  let process = Process()
-                  process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-                  process.arguments = ["-o", sourceURL.path, "-d", destinationURL.path]
-                  
-                  let pipe = Pipe()
-                  process.standardOutput = pipe
-                  process.standardError = pipe
-                  
-                  try process.run()
-                  process.waitUntilExit()
-                  
-                  guard process.terminationStatus == 0 else {
-                      throw NSError(domain: "VIPZipHelper", code: Int(process.terminationStatus),
-                                  userInfo: [NSLocalizedDescriptionKey: "Failed to extract zip"])
+                  do {
+                      try fm.unzipItem(at: sourceURL, to: destinationURL, progress: progress)
+                  } catch {
+                      throw error
                   }
               }
           
@@ -569,22 +551,10 @@ jobs:
                       try FileManager.default.removeItem(at: destinationURL)
                   }
                   
-                  // Use system zip command
-                  let process = Process()
-                  process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-                  process.arguments = ["-r", destinationURL.path, "-C", sourceURL.path, "."]
-                  process.currentDirectoryURL = sourceURL.deletingLastPathComponent()
-                  
-                  let pipe = Pipe()
-                  process.standardOutput = pipe
-                  process.standardError = pipe
-                  
-                  try process.run()
-                  process.waitUntilExit()
-                  
-                  guard process.terminationStatus == 0 else {
-                      throw NSError(domain: "VIPZipHelper", code: Int(process.terminationStatus),
-                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create zip"])
+                  do {
+                      try FileManager.default.zipItem(at: sourceURL, to: destinationURL)
+                  } catch {
+                      throw error
                   }
               }
           }
@@ -595,7 +565,7 @@ jobs:
           cat > SigningEngine.swift << 'VIPEOF'
           import Foundation
           import Security
-          // No ZIPFoundation import - using VIPZipHelper
+          import ZIPFoundation
           
           // MARK: - Signing Error
           enum SigningError: LocalizedError {
@@ -1315,7 +1285,7 @@ jobs:
           import UIKit
           import Foundation
           import Combine
-          // No ZIPFoundation import
+          import ZIPFoundation
           
           // MARK: - Certificate Manager
           class CertificateManager: ObservableObject {
@@ -1552,7 +1522,6 @@ jobs:
               @Published var downloadError: String?
               @Published var downloadProgress: [UUID: Double] = [:]
               @Published var installHistory: [InstallRecord] = []
-              @Published var favoriteAppNames: Set<String> = []
               @Published var showPermissionAlert = false
               @Published var permissionMessage = ""
           
@@ -1567,7 +1536,7 @@ jobs:
                   config.timeoutIntervalForRequest  = 180
                   config.timeoutIntervalForResource = 1200
                   urlSession = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
-                  loadIPAFiles(); loadInstallHistory(); loadFavorites()
+                  loadIPAFiles(); loadInstallHistory()
               }
           
               private func loadIPAFiles() {
@@ -1601,19 +1570,6 @@ jobs:
                   if installHistory.count > 100 { installHistory = Array(installHistory.prefix(50)) }
                   saveInstallHistory()
               }
-          
-              private func loadFavorites() {
-                  let arr = UserDefaults.standard.stringArray(forKey: "favoriteApps") ?? []
-                  favoriteAppNames = Set(arr)
-              }
-          
-              func toggleFavorite(appName: String) {
-                  if favoriteAppNames.contains(appName) { favoriteAppNames.remove(appName) }
-                  else { favoriteAppNames.insert(appName); HapticManager.shared.impact(.light) }
-                  UserDefaults.standard.set(Array(favoriteAppNames), forKey: "favoriteApps")
-              }
-          
-              func isFavorite(_ appName: String) -> Bool { favoriteAppNames.contains(appName) }
           
               func startDownload(app: AppItem) {
                   if activeDownloads.contains(where: { $0.appName == app.name &&
@@ -1707,23 +1663,7 @@ jobs:
                   activeDownloads.removeAll { $0.id == download.id }
               }
           
-              // MARK: - File Recovery
-              func recoverFiles() -> Int {
-                  var recovered = 0
-                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                  do {
-                      let files = try FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
-                      for url in files where url.pathExtension.lowercased() == "ipa" {
-                          if !ipaFiles.contains(where: { $0.localPath == url.path }) {
-                              importIPAFromURL(url: url)
-                              recovered += 1
-                          }
-                      }
-                  } catch {
-                      // Silent fail
-                  }
-                  return recovered
-              }
+              // MARK: - File Recovery (removed - no longer needed)
           }
           
           // MARK: - URLSession Delegate
@@ -1767,9 +1707,6 @@ jobs:
           }
           VIPEOF
 
-      # --- THE REST OF YOUR FILES (AppsManager.swift through NotificationManager.swift) ---
-      # I'll include them but shortened for brevity - they remain the same as before
-      
       - name: Generate Source - AppsManager.swift
         run: |
           cat > AppsManager.swift << 'VIPEOF'
@@ -2162,7 +2099,7 @@ jobs:
                               .foregroundColor(scheme == .dark ? .white : .black)
                           Text(AppConstants.storeName).font(.system(size: 11)).foregroundColor(.gray)
                       }
-                      Button(action: { withAnimation { selectedTab = 4 } }) {
+                      Button(action: { withAnimation { selectedTab = 3 } }) {
                           Group {
                               if let img = profileManager.profile.profileImage {
                                   Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
@@ -2196,10 +2133,8 @@ jobs:
                               case 1:
                                   AppsTabView(appsManager: appsManager, downloadManager: downloadManager)
                               case 2:
-                                  FavoritesTabView(appsManager: appsManager, downloadManager: downloadManager)
-                              case 3:
                                   SigningTabView(downloadManager: downloadManager, certificateManager: certificateManager)
-                              case 4:
+                              case 3:
                                   SettingsView(certificateManager: certificateManager, profileManager: profileManager)
                               default:
                                   HomeTabView(appsManager: appsManager, downloadManager: downloadManager, certificateManager: certificateManager)
@@ -2215,11 +2150,9 @@ jobs:
                   HStack(spacing: 0) {
                       XcodeTabItem(icon: "house.fill", title: "الرئيسية", index: 0, selectedTab: $selectedTab)
                       XcodeTabItem(icon: "square.grid.2x2.fill", title: "التطبيقات", index: 1, selectedTab: $selectedTab)
-                      XcodeTabItem(icon: "heart.fill", title: "المفضلة", index: 2, selectedTab: $selectedTab,
-                                   badge: downloadManager.favoriteAppNames.count)
-                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 3, selectedTab: $selectedTab,
+                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 2, selectedTab: $selectedTab,
                                    badge: downloadManager.ipaFiles.count + downloadManager.activeDownloads.count)
-                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 4, selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 3, selectedTab: $selectedTab)
                   }
                   .padding(.horizontal, 12).padding(.vertical, 8)
                   .background(
@@ -2406,7 +2339,7 @@ jobs:
           cat > HomeTabView.swift << 'VIPEOF'
           import SwiftUI
           
-          // MARK: - Home Tab
+          // MARK: - Home Tab (Removed Trending and Top Downloads)
           struct HomeTabView: View {
               @ObservedObject var appsManager: AppsManager
               @ObservedObject var downloadManager: IPADownloadManager
@@ -2416,8 +2349,6 @@ jobs:
           
               private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
               private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
-              private var trending: [AppItem] { appsManager.apps.filter { $0.isNew }.prefix(8).map { $0 } }
-              private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
           
               var body: some View {
                   VStack(spacing: 0) {
@@ -2440,38 +2371,9 @@ jobs:
                               }
                           }
           
-                          if !trending.isEmpty {
-                              sectionHeader(title: "✨ جديد هذا الأسبوع", icon: "sparkles", color: .purple)
-                              ScrollView(.horizontal, showsIndicators: false) {
-                                  HStack(spacing: 12) {
-                                      ForEach(trending, id: \.id) { app in
-                                          FeaturedAppCard(app: app)
-                                              .contentShape(Rectangle())
-                                              .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
-                                      }
-                                  }.padding(.horizontal, 16)
-                              }
-                          }
-          
-                          if !topRated.isEmpty {
-                              sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
-                              ScrollView(.horizontal, showsIndicators: false) {
-                                  HStack(spacing: 12) {
-                                      ForEach(Array(topRated.enumerated()), id: \.element.id) { idx, app in
-                                          TopDownloadWideCard(rank: idx + 1, app: app)
-                                              .onTapGesture { selectedApp = app }
-                                      }
-                                  }
-                                  .padding(.horizontal, 16)
-                                  .padding(.vertical, 4)
-                              }
-                          }
-          
                           sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                           ForEach(newest, id: \.id) { app in
-                              AppCardView(app: app, downloadManager: downloadManager,
-                                          isFavorite: downloadManager.isFavorite(app.name),
-                                          onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
+                              AppCardView(app: app, downloadManager: downloadManager)
                                   .contentShape(Rectangle())
                                   .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
                                   .padding(.horizontal)
@@ -2683,100 +2585,10 @@ jobs:
               }
           }
           
-          // MARK: - Top Download Wide Card
-          struct TopDownloadWideCard: View {
-              let rank: Int; let app: AppItem
-              @Environment(\.colorScheme) var scheme
-          
-              var rankGradient: [Color] {
-                  switch rank {
-                  case 1: return [Color(red: 1.0, green: 0.84, blue: 0.0), Color(red: 0.9, green: 0.6, blue: 0.1)]
-                  case 2: return [Color(white: 0.75), Color(white: 0.55)]
-                  case 3: return [Color(red: 0.80, green: 0.50, blue: 0.20), Color(red: 0.65, green: 0.35, blue: 0.10)]
-                  default: return [.vipPurple.opacity(0.7), .blue.opacity(0.6)]
-                  }
-              }
-          
-              var shortDesc: String {
-                  let d = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
-                  let words = d.components(separatedBy: .whitespaces).prefix(8).joined(separator: " ")
-                  return words.isEmpty ? app.developerName : words
-              }
-          
-              var body: some View {
-                  VStack(spacing: 0) {
-                      ZStack(alignment: .topLeading) {
-                          CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                              if let img = phase.image {
-                                  img.resizable().aspectRatio(contentMode: .fill)
-                              } else {
-                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
-                              }
-                          }
-                          .frame(width: 160, height: 110)
-                          .clipped()
-                          .overlay(
-                              LinearGradient(colors: [.clear, .black.opacity(0.55)],
-                                             startPoint: .top, endPoint: .bottom)
-                          )
-          
-                          ZStack {
-                              Circle()
-                                  .fill(LinearGradient(colors: rankGradient,
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  .frame(width: 32, height: 32)
-                                  .shadow(color: rankGradient.first!.opacity(0.6), radius: 6, y: 2)
-                              Text("\(rank)")
-                                  .font(.system(size: 13, weight: .black))
-                                  .foregroundColor(.white)
-                          }
-                          .padding(8)
-                      }
-                      .frame(width: 160, height: 110)
-          
-                      VStack(alignment: .leading, spacing: 4) {
-                          Text(app.name)
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.primary)
-                              .lineLimit(1)
-          
-                          Text(shortDesc)
-                              .font(.system(size: 10))
-                              .foregroundColor(.secondary)
-                              .lineLimit(2)
-                              .multilineTextAlignment(.leading)
-          
-                          HStack(spacing: 4) {
-                              if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 8, weight: .semibold))
-                                      .foregroundColor(.vipPurple)
-                                      .padding(.horizontal, 5).padding(.vertical, 2)
-                                      .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
-                              }
-                              Spacer()
-                              Text(app.formattedSize)
-                                  .font(.system(size: 9)).foregroundColor(.gray)
-                          }
-                      }
-                      .padding(.horizontal, 10)
-                      .padding(.vertical, 8)
-                      .frame(width: 160, alignment: .leading)
-                      .background(scheme == .dark ? Color(white: 0.11) : Color.white)
-                  }
-                  .frame(width: 160)
-                  .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                  .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.vipPurple.opacity(0.08), lineWidth: 1))
-                  .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 4)
-              }
-          }
-          
-          // MARK: - App Card View
+          // MARK: - App Card View (Removed favorite button)
           struct AppCardView: View {
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
-              var isFavorite: Bool; let onFavorite: () -> Void
               @Environment(\.colorScheme) var scheme
           
               var body: some View {
@@ -2810,11 +2622,6 @@ jobs:
                       }
           
                       Spacer()
-          
-                      Button(action: onFavorite) {
-                          Image(systemName: isFavorite ? "heart.fill" : "heart")
-                              .font(.system(size: 20)).foregroundColor(isFavorite ? .red : .gray)
-                      }
                   }
                   .padding(14).glassCard(radius: 18)
               }
@@ -3093,77 +2900,6 @@ jobs:
                       .stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
               }
           }
-          
-          // MARK: - Favorites Tab
-          struct FavoritesTabView: View {
-              @ObservedObject var appsManager: AppsManager
-              @ObservedObject var downloadManager: IPADownloadManager
-              @State private var selectedApp: AppItem?
-              @State private var showDetail = false
-          
-              var favoriteApps: [AppItem] { appsManager.apps.filter { downloadManager.isFavorite($0.name) } }
-          
-              var body: some View {
-                  VStack(spacing: 20) {
-                      HStack {
-                          Spacer()
-                          VStack(alignment: .trailing, spacing: 2) {
-                              Text("المفضلة").font(.system(size: 22, weight: .bold))
-                              Text("\(favoriteApps.count) تطبيق محفوظ").font(.system(size: 12)).foregroundColor(.gray)
-                          }
-                          Image(systemName: "heart.fill").font(.system(size: 26))
-                              .foregroundStyle(LinearGradient(colors: [.red, .pink], startPoint: .top, endPoint: .bottom))
-                      }.padding(.horizontal)
-          
-                      if favoriteApps.isEmpty {
-                          VStack(spacing: 16) {
-                              Image(systemName: "heart.slash").font(.system(size: 60)).foregroundColor(.gray.opacity(0.4))
-                              Text("لا توجد تطبيقات مفضلة").font(.system(size: 18, weight: .medium))
-                              Text("اضغط على ❤️ على أي تطبيق لإضافته هنا").font(.system(size: 13)).foregroundColor(.gray).multilineTextAlignment(.center)
-                          }.frame(maxWidth: .infinity).padding(.top, 80)
-                      } else {
-                          LazyVStack(spacing: 12) {
-                              ForEach(favoriteApps, id: \.id) { app in
-                                  AppCardView(app: app, downloadManager: downloadManager,
-                                              isFavorite: true,
-                                              onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
-                                      .onTapGesture { selectedApp = app; showDetail = true }
-                                      .padding(.horizontal)
-                              }
-                          }
-                      }
-          
-                      if !downloadManager.installHistory.isEmpty {
-                          VStack(alignment: .trailing, spacing: 12) {
-                              HStack { Spacer(); Text("سجل التثبيت").font(.system(size: 18, weight: .bold)) }.padding(.horizontal)
-                              ForEach(downloadManager.installHistory.prefix(5)) { record in InstallRecordRow(record: record) }
-                          }
-                      }
-                  }
-                  .sheet(isPresented: $showDetail) {
-                      if let app = selectedApp { AppDetailView(app: app, downloadManager: downloadManager) }
-                  }
-              }
-          }
-          
-          struct InstallRecordRow: View {
-              let record: InstallRecord; @Environment(\.colorScheme) var scheme
-              var body: some View {
-                  HStack(spacing: 12) {
-                      Image(systemName: "checkmark.seal.fill").font(.system(size: 20)).foregroundColor(.green)
-                          .frame(width: 40, height: 40)
-                          .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
-                      VStack(alignment: .trailing, spacing: 2) {
-                          Text(record.appName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                          Text(record.installMethod).font(.system(size: 11)).foregroundColor(.blue)
-                      }
-                      Spacer()
-                      Text({ let df = DateFormatter(); df.dateFormat = "dd/MM HH:mm"; return df.string(from: record.installDate) }() as String)
-                          .font(.system(size: 10)).foregroundColor(.gray)
-                  }
-                  .padding(12).glassCard(radius: 14).padding(.horizontal)
-              }
-          }
           VIPEOF
 
       - name: Generate Source - InstallSupportViews.swift
@@ -3282,109 +3018,6 @@ jobs:
                   )
               }
           }
-          
-          // MARK: - VIP21FileRecoveryView
-          struct VIP21FileRecoveryView: View {
-              @ObservedObject var downloadManager: IPADownloadManager
-              @Environment(\.colorScheme) var scheme
-              @State private var isRecovering = false
-              @State private var recoveryMsg  = ""
-              @State private var recovered    = 0
-          
-              var body: some View {
-                  VStack(spacing: 20) {
-                      VStack(spacing: 8) {
-                          Image(systemName: "arrow.triangle.2.circlepath.doc.fill")
-                              .font(.system(size: 48))
-                              .foregroundStyle(LinearGradient(
-                                  colors: [.vipPurple, .cyan], startPoint: .top, endPoint: .bottom))
-                          Text("استرداد الملفات").font(.system(size: 20, weight: .bold))
-                          Text("يبحث عن ملفات IPA في تخزين التطبيق ويستردها")
-                              .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                      }.padding(.top, 16)
-          
-                      Divider()
-          
-                      HStack(spacing: 20) {
-                          statCard(downloadManager.ipaFiles.count,  "ملفات",  "archivebox.fill",         .vipPurple)
-                          statCard(downloadManager.ipaFiles.filter(\.isSigned).count,   "موقَّعة", "checkmark.seal.fill",     .green)
-                          statCard(downloadManager.ipaFiles.filter(\.isInstalled).count, "مثبَّتة", "square.and.arrow.down.fill", .blue)
-                      }.padding(.horizontal)
-          
-                      if isRecovering {
-                          ProgressView().scaleEffect(1.3).padding()
-                          Text(recoveryMsg).font(.caption).foregroundColor(.secondary)
-                      } else if !recoveryMsg.isEmpty {
-                          HStack {
-                              Image(systemName: recovered > 0 ? "checkmark.circle.fill" : "info.circle.fill")
-                                  .foregroundColor(recovered > 0 ? .green : .blue)
-                              Text(recoveryMsg).font(.system(size: 13))
-                          }.padding(.horizontal)
-                      }
-          
-                      GradientButton(
-                          title:      isRecovering ? "جاري الاسترداد..." : "استرداد الآن",
-                          icon:       isRecovering ? nil : "arrow.triangle.2.circlepath",
-                          gradient:   [.vipPurple, .cyan],
-                          action:     startRecovery,
-                          isLoading:  isRecovering,
-                          isDisabled: isRecovering
-                      ).padding(.horizontal)
-          
-                      if !downloadManager.ipaFiles.isEmpty {
-                          VStack(alignment: .leading, spacing: 10) {
-                              Text("الملفات المتوفرة")
-                                  .font(.system(size: 14, weight: .semibold))
-                                  .padding(.horizontal)
-                              ForEach(downloadManager.ipaFiles) { file in
-                                  HStack(spacing: 12) {
-                                      Image(systemName: "doc.badge.gearshape.fill").foregroundColor(.vipPurple)
-                                      VStack(alignment: .leading, spacing: 2) {
-                                          Text(file.fileName).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                                          Text(file.fileSize).font(.caption).foregroundColor(.secondary)
-                                      }
-                                      Spacer()
-                                      if file.isSigned {
-                                          Image(systemName: "checkmark.seal.fill")
-                                              .foregroundColor(.green).font(.caption)
-                                      }
-                                  }
-                                  .padding(.horizontal).padding(.vertical, 6)
-                                  .background(RoundedRectangle(cornerRadius: 10)
-                                      .fill(Color(uiColor: .secondarySystemBackground)))
-                                  .padding(.horizontal)
-                              }
-                          }
-                      }
-                      Spacer(minLength: 30)
-                  }
-              }
-          
-              private func statCard(_ count: Int, _ label: String, _ icon: String, _ color: Color) -> some View {
-                  VStack(spacing: 4) {
-                      Image(systemName: icon).font(.system(size: 22)).foregroundColor(color)
-                      Text("\(count)").font(.system(size: 20, weight: .bold))
-                      Text(label).font(.caption2).foregroundColor(.secondary)
-                  }
-                  .frame(maxWidth: .infinity).padding(.vertical, 12)
-                  .background(RoundedRectangle(cornerRadius: 12).fill(color.opacity(0.1)))
-              }
-          
-              private func startRecovery() {
-                  isRecovering = true; recoveryMsg = ""; recovered = 0
-                  DispatchQueue.global(qos: .userInitiated).async {
-                      let recoveredCount = downloadManager.recoverFiles()
-                      DispatchQueue.main.async {
-                          isRecovering = false
-                          recovered = recoveredCount
-                          recoveryMsg = recoveredCount > 0
-                              ? "تم استرداد " + String(recoveredCount) + " ملف"
-                              : "لا توجد ملفات جديدة للاسترداد"
-                          if recoveredCount > 0 { HapticManager.shared.notification(.success) }
-                      }
-                  }
-              }
-          }
           VIPEOF
 
       - name: Generate Source - SigningTabView.swift
@@ -3393,7 +3026,7 @@ jobs:
           import SwiftUI
           import UIKit
           
-          // MARK: - Signing Tab
+          // MARK: - Signing Tab (Removed Recovery and Tags)
           struct SigningTabView: View {
               @ObservedObject var downloadManager: IPADownloadManager
               @ObservedObject var certificateManager: CertificateManager
@@ -3407,9 +3040,6 @@ jobs:
               @State private var showInstallError = false
               @State private var installErrorMsg = ""
               @State private var selectedSegment = 0
-              @State private var tagInput: String = ""
-              @State private var pendingRecovery = false
-              @AppStorage("vip21.userTags") private var savedTagsCSV: String = ""
               @Environment(\.colorScheme) var scheme
           
               var body: some View {
@@ -3450,14 +3080,11 @@ jobs:
                       HStack(spacing: 10) {
                           quickActionButton(title: "استورد IPA", icon: "tray.and.arrow.down.fill",
                                             colors: [.vipPurple, .indigo]) { showIPAPicker = true }
-                          quickActionButton(title: "استرداد الملفات", icon: "arrow.clockwise.icloud.fill",
-                                            colors: [.orange, .red]) { pendingRecovery = true }
                       }.padding(.horizontal)
           
                       Picker("", selection: $selectedSegment) {
                           Text("الملفات (\(downloadManager.ipaFiles.count))").tag(0)
                           Text("قيد التحميل (\(downloadManager.activeDownloads.count))").tag(1)
-                          Text("العلامات").tag(2)
                       }.pickerStyle(SegmentedPickerStyle()).padding(.horizontal)
           
                       if selectedSegment == 0 {
@@ -3478,7 +3105,7 @@ jobs:
                                   }
                               }
                           }
-                      } else if selectedSegment == 1 {
+                      } else {
                           if downloadManager.activeDownloads.isEmpty {
                               VStack(spacing: 12) {
                                   Image(systemName: "icloud.and.arrow.down").font(.system(size: 50))
@@ -3492,8 +3119,6 @@ jobs:
                                   }
                               }
                           }
-                      } else {
-                          tagsSection.padding(.horizontal)
                       }
                   }
                   .sheet(isPresented: $showIPAPicker) {
@@ -3521,21 +3146,6 @@ jobs:
                       }
                   }
                   .overlay(signingProgress.map { p in SigningProgressOverlay(progress: p, status: signingStatus) })
-                  .sheet(isPresented: $pendingRecovery) {
-                      NavigationView {
-                          ScrollView {
-                              VIP21FileRecoveryView(downloadManager: downloadManager)
-                          }
-                          .navigationTitle("استرداد الملفات")
-                          .navigationBarTitleDisplayMode(.inline)
-                          .toolbar {
-                              ToolbarItem(placement: .navigationBarTrailing) {
-                                  Button("إغلاق") { pendingRecovery = false }
-                                      .foregroundColor(.vipPurple)
-                              }
-                          }
-                      }
-                  }
                   .alert("خطأ في التثبيت", isPresented: $showInstallError) {
                       Button("حسناً", role: .cancel) { }
                   } message: { Text(installErrorMsg) }
@@ -3556,53 +3166,6 @@ jobs:
                               .shadow(color: (colors.first ?? .vipPurple).opacity(0.35), radius: 8, y: 4)
                       )
                   }
-              }
-          
-              var tagsSection: some View {
-                  var tags: [String] {
-                      savedTagsCSV.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                  }
-                  return VStack(alignment: .trailing, spacing: 14) {
-                      HStack {
-                          Spacer()
-                          Text("العلامات المخصصة").font(.system(size: 15, weight: .bold))
-                          Image(systemName: "tag.fill").foregroundColor(.vipPurple)
-                      }
-                      HStack(spacing: 8) {
-                          Button(action: {
-                              let t = tagInput.trimmingCharacters(in: .whitespaces)
-                              guard !t.isEmpty else { return }
-                              var current = tags
-                              if !current.contains(t) { current.append(t) }
-                              savedTagsCSV = current.joined(separator: ",")
-                              tagInput = ""
-                              HapticManager.shared.impact(.light)
-                          }) {
-                              Image(systemName: "plus.circle.fill").font(.system(size: 24))
-                                  .foregroundStyle(LinearGradient(colors: [.vipPurple, .blue],
-                                                   startPoint: .top, endPoint: .bottom))
-                          }
-                          TextField("أضف علامة (مثال: مفضّل، عمل، ألعاب)", text: $tagInput)
-                              .font(.system(size: 14)).multilineTextAlignment(.trailing)
-                              .padding(.horizontal, 12).padding(.vertical, 10)
-                              .background(RoundedRectangle(cornerRadius: 12)
-                                  .fill(scheme == .dark ? Color(white: 0.12) : Color(white: 0.96)))
-                      }
-          
-                      if tags.isEmpty {
-                          VStack(spacing: 8) {
-                              Image(systemName: "tag.slash").font(.system(size: 32)).foregroundColor(.gray.opacity(0.4))
-                              Text("لا توجد علامات بعد").font(.system(size: 12)).foregroundColor(.gray)
-                          }.frame(maxWidth: .infinity).padding(.vertical, 16)
-                      } else {
-                          FlexibleTagsView(tags: tags) { tag in
-                              var current = tags
-                              current.removeAll { $0 == tag }
-                              savedTagsCSV = current.joined(separator: ",")
-                          }
-                      }
-                  }
-                  .padding(16).glassCard(radius: 18)
               }
           
               var emptyCertView: some View {
@@ -3733,38 +3296,6 @@ jobs:
                           Spacer()
                       }
                   }.padding(14).glassCard(radius: 14)
-              }
-          }
-          
-          // MARK: - Flexible Tags View
-          struct FlexibleTagsView: View {
-              let tags: [String]
-              let onRemove: (String) -> Void
-              var body: some View {
-                  VStack(alignment: .trailing, spacing: 8) {
-                      ForEach(stride(from: 0, to: tags.count, by: 3).map { Array(tags[$0..<min($0+3, tags.count)]) }, id: \.self) { row in
-                          HStack(spacing: 8) {
-                              Spacer(minLength: 0)
-                              ForEach(row, id: \.self) { tag in
-                                  HStack(spacing: 6) {
-                                      Button(action: { onRemove(tag) }) {
-                                          Image(systemName: "xmark.circle.fill")
-                                              .font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
-                                      }
-                                      Text(tag).font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
-                                          .lineLimit(1)
-                                  }
-                                  .padding(.horizontal, 10).padding(.vertical, 6)
-                                  .background(
-                                      Capsule().fill(LinearGradient(
-                                          colors: [.vipPurple, .blue],
-                                          startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  )
-                                  .shadow(color: .vipPurple.opacity(0.25), radius: 4, y: 2)
-                              }
-                          }
-                      }
-                  }
               }
           }
           
@@ -4188,13 +3719,6 @@ jobs:
                                   .font(.system(size: 17, weight: .bold))
                                   .lineLimit(1)
                               Spacer()
-                              if let dm = downloadManager {
-                                  Button(action: { dm.toggleFavorite(appName: app.name); HapticManager.shared.impact(.light) }) {
-                                      Image(systemName: dm.isFavorite(app.name) ? "heart.fill" : "heart")
-                                          .font(.title3)
-                                          .foregroundColor(dm.isFavorite(app.name) ? .red : .gray)
-                                  }
-                              }
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 12)
@@ -4859,7 +4383,7 @@ jobs:
           cat > IPAPatcher.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          // No ZIPFoundation import - using VIPZipHelper
+          import ZIPFoundation
           
           // MARK: - IPA Patcher Engine
           class IPAPatcher {
@@ -5307,14 +4831,14 @@ jobs:
           }
           VIPEOF
 
-      # --- BUILD STEP (FIXED - Using system zip/unzip instead of ZIPFoundation) ---
+      # --- BUILD STEP ---
       
       - name: Build Application
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
           
-          # Compile all files together (ZIPFoundation files are available but we don't import them)
+          # Compile all files together
           xcrun swiftc \
             Constants.swift \
             HapticManager.swift \
@@ -5334,6 +4858,7 @@ jobs:
             IPAPatcher.swift \
             VIP21StoreApp.swift \
             NotificationManager.swift \
+            Sources/ZIPFoundation/*.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
