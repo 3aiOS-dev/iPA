@@ -22,18 +22,6 @@ jobs:
       - name: Setup Dependencies
         run: |
           brew install ldid zip
-          # Download ZIPFoundation source code directly into the project
-          mkdir -p Sources/ZIPFoundation
-          curl -L -o /tmp/ZIPFoundation.zip "https://github.com/weichsel/ZIPFoundation/archive/refs/heads/main.zip"
-          unzip -q /tmp/ZIPFoundation.zip -d /tmp/
-          # Copy all Swift files from ZIPFoundation to our Sources folder
-          find /tmp/ZIPFoundation-main/Sources/ZIPFoundation -name "*.swift" -exec cp {} Sources/ZIPFoundation/ \;
-          # Also download CryptoSwift (for compatibility)
-          mkdir -p Sources/CryptoSwift
-          curl -L -o /tmp/CryptoSwift.zip "https://github.com/krzyzanowskim/CryptoSwift/archive/refs/heads/main.zip"
-          unzip -q /tmp/CryptoSwift.zip -d /tmp/
-          find /tmp/CryptoSwift-main/Sources/CryptoSwift -name "*.swift" -exec cp {} Sources/CryptoSwift/ \;
-          ls -la Sources/ZIPFoundation/
 
       - name: Generate App Icons
         run: |
@@ -113,7 +101,7 @@ jobs:
           </plist>
           PEOF
 
-      # --- SOURCE CODE GENERATION (WITH FIXED VIPZipHelper) ---
+      # --- SOURCE CODE GENERATION ---
 
       - name: Generate Source - Constants.swift
         run: |
@@ -527,22 +515,31 @@ jobs:
           enum InstallMethod { case ota; case direct; case local }
           VIPEOF
 
-      - name: Generate Source - VIPZipHelper.swift (FIXED - No Process error)
+      - name: Generate Source - VIPZipHelper.swift (NO ZIPFoundation - uses Process)
         run: |
           cat > VIPZipHelper.swift << 'VIPEOF'
           import Foundation
-          import ZIPFoundation
           
-          // MARK: - Streaming ZIP Utilities (using ZIPFoundation)
+          // MARK: - Streaming ZIP Utilities (using system commands)
           enum VIPZipHelper {
               static func extractAll(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
                   let fm = FileManager.default
                   try fm.createDirectory(at: destinationURL, withIntermediateDirectories: true)
                   
-                  do {
-                      try fm.unzipItem(at: sourceURL, to: destinationURL, progress: progress)
-                  } catch {
-                      throw error
+                  let task = Process()
+                  task.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+                  task.arguments = ["-o", sourceURL.path, "-d", destinationURL.path]
+                  
+                  let pipe = Pipe()
+                  task.standardOutput = pipe
+                  task.standardError = pipe
+                  
+                  try task.run()
+                  task.waitUntilExit()
+                  
+                  guard task.terminationStatus == 0 else {
+                      throw NSError(domain: "VIPZipHelper", code: Int(task.terminationStatus),
+                                  userInfo: [NSLocalizedDescriptionKey: "Failed to extract zip"])
                   }
               }
           
@@ -551,10 +548,21 @@ jobs:
                       try FileManager.default.removeItem(at: destinationURL)
                   }
                   
-                  do {
-                      try FileManager.default.zipItem(at: sourceURL, to: destinationURL)
-                  } catch {
-                      throw error
+                  let task = Process()
+                  task.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                  task.arguments = ["-r", destinationURL.path, "-C", sourceURL.path, "."]
+                  task.currentDirectoryURL = sourceURL.deletingLastPathComponent()
+                  
+                  let pipe = Pipe()
+                  task.standardOutput = pipe
+                  task.standardError = pipe
+                  
+                  try task.run()
+                  task.waitUntilExit()
+                  
+                  guard task.terminationStatus == 0 else {
+                      throw NSError(domain: "VIPZipHelper", code: Int(task.terminationStatus),
+                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create zip"])
                   }
               }
           }
@@ -565,7 +573,6 @@ jobs:
           cat > SigningEngine.swift << 'VIPEOF'
           import Foundation
           import Security
-          import ZIPFoundation
           
           // MARK: - Signing Error
           enum SigningError: LocalizedError {
@@ -1285,7 +1292,6 @@ jobs:
           import UIKit
           import Foundation
           import Combine
-          import ZIPFoundation
           
           // MARK: - Certificate Manager
           class CertificateManager: ObservableObject {
@@ -1662,8 +1668,6 @@ jobs:
                   download.task?.cancel()
                   activeDownloads.removeAll { $0.id == download.id }
               }
-          
-              // MARK: - File Recovery (removed - no longer needed)
           }
           
           // MARK: - URLSession Delegate
@@ -4383,7 +4387,6 @@ jobs:
           cat > IPAPatcher.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import ZIPFoundation
           
           // MARK: - IPA Patcher Engine
           class IPAPatcher {
@@ -4858,7 +4861,6 @@ jobs:
             IPAPatcher.swift \
             VIP21StoreApp.swift \
             NotificationManager.swift \
-            Sources/ZIPFoundation/*.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
