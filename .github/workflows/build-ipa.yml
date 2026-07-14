@@ -125,9 +125,7 @@ jobs:
               static let appVersion  = "7.0"
               static let storeName   = "21s"
               static let accentColor = Color(red: 0.4, green: 0.2, blue: 1.0)
-          
               static let topNotification = "📸 صوّر  •  📣 أعلن للمتجر  •  🎁 واحصل على كوبون هدية اشتراك ببلاش  •  "
-          
               static let adBanners: [(image: String, link: String)] = [
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
@@ -209,11 +207,11 @@ jobs:
               var isInstalled: Bool = false
               var installDate: Date?
               var signingCertificateId: UUID?
-          
+              var isFavorite: Bool = false
               enum CodingKeys: String, CodingKey {
                   case id, fileName, localPath, originalURL, fileSize, fileSizeBytes,
                        date, isSigned, signedPath, isInstalled, installDate,
-                       signingCertificateId
+                       signingCertificateId, isFavorite
               }
           }
           
@@ -234,15 +232,12 @@ jobs:
               let icon: String
               let iconURL: String
               var category: String?
-          
               enum CodingKeys: String, CodingKey {
                   case name, type, bundleID, bundleIdentifier, version, versionDate,
                        fullDate, size, down, downloadURL, developerName,
                        localizedDescription, icon, iconURL
               }
-          
               var formattedSize: String { ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
-          
               var formattedDate: String {
                   let input = DateFormatter(); input.dateFormat = "yyyy-MM-dd"
                   if let d = input.date(from: versionDate) {
@@ -250,7 +245,6 @@ jobs:
                   }
                   return versionDate
               }
-          
               var subscriptionType: String {
                   if localizedDescription.contains("Subscription Unlocked") { return "الاشتراك مدى الحياة" }
                   if localizedDescription.contains("Premium") { return "بريميوم" }
@@ -259,15 +253,12 @@ jobs:
                   if localizedDescription.contains("IAP")     { return "المشتريات مفعّلة" }
                   return "مفعّل"
               }
-          
               var isNew: Bool {
                   let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
                   guard let d = f.date(from: versionDate) else { return false }
                   return Calendar.current.dateComponents([.day], from: d, to: Date()).day ?? 999 < 7
               }
-          
               var isPopular: Bool { (Int(down) ?? 0) > 500 }
-          
               var _secureDownloadURL: String { downloadURL }
           }
           
@@ -285,7 +276,6 @@ jobs:
               case instagram = "Instagram"; case tiktok = "TikTok"
               case telegram  = "Telegram";  case youtube = "YouTube"
               case friend    = "صديق"
-          
               var icon: String {
                   switch self {
                   case .instagram: return "camera.fill"
@@ -295,7 +285,6 @@ jobs:
                   case .friend:    return "person.2.fill"
                   }
               }
-          
               var gradient: [Color] {
                   switch self {
                   case .instagram: return [.purple, .pink, .orange]
@@ -320,12 +309,11 @@ jobs:
               var sourcePlatform: String?
               var hasCompletedOnboarding: Bool = false
               var totalInstalls: Int = 0
-          
+              var favoriteApps: [String] = []
               var profileImage: UIImage? {
                   guard let d = profileImageData else { return nil }
                   return UIImage(data: d)
               }
-          
               static let defaultProfile = UserProfile(
                   userName: "1-21s",
                   profileImageData: nil,
@@ -363,17 +351,14 @@ jobs:
               let expiryDate: Date?
               let certificateName: String?
               var teamID: String?
-          
               var isValid: Bool {
                   guard let expiry = expiryDate else { return true }
                   return expiry > Date()
               }
-          
               var daysRemaining: Int? {
                   guard let expiry = expiryDate else { return nil }
                   return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
               }
-          
               var expiryStatusColor: Color {
                   guard let d = daysRemaining else { return .gray }
                   if d < 0  { return .red }
@@ -381,14 +366,12 @@ jobs:
                   if d < 30 { return Color(red: 1.0, green: 0.6, blue: 0.0) }
                   return .green
               }
-          
               var expiryText: String {
                   guard let d = daysRemaining else { return "غير معروف" }
                   if d < 0  { return "منتهية منذ \(abs(d)) يوم" }
                   if d == 0 { return "تنتهي اليوم!" }
                   return "متبقي \(d) يوم"
               }
-          
               var healthScore: Int {
                   guard let d = daysRemaining else { return 50 }
                   if d < 0  { return 0 }
@@ -396,10 +379,8 @@ jobs:
                   if d < 30 { return 60 }
                   return 100
               }
-          
               var p12Data: Data { Data(base64Encoded: p12DataString) ?? Data() }
               var mobileProvisionData: Data { Data(base64Encoded: mobileProvisionDataString) ?? Data() }
-          
               init(id: UUID = UUID(), name: String, p12Data: Data, mobileProvisionData: Data,
                    password: String, displayName: String, creationDate: Date) {
                   self.id = id
@@ -414,7 +395,6 @@ jobs:
                   self.certificateName = certName
                   self.teamID = tid
               }
-          
               private static func extractExpiryDate(from data: Data) -> Date? {
                   let bytes = [UInt8](data)
                   let xmlMarker = Array("<?xml".utf8)
@@ -437,7 +417,6 @@ jobs:
                   }
                   return nil
               }
-          
               private static func extractCertInfo(from data: Data, password: String) -> (String?, String?) {
                   let passwords = [password, password.trimmingCharacters(in: .whitespaces), ""]
                   for pwd in passwords {
@@ -483,12 +462,10 @@ jobs:
               var task: URLSessionDataTask?
               var resumeData: Data?
               var destinationURL: URL?
-          
               init(appName: String, appIconURL: String, downloadURL: URL, appItem: AppItem? = nil) {
                   self.appName = appName; self.appIconURL = appIconURL
                   self.downloadURL = downloadURL; self.appItem = appItem
               }
-          
               var progressPercentage: Int { Int(progress * 100) }
               var formattedDownloadedSize: String { ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file) }
               var formattedTotalSize: String      { ByteCountFormatter.string(fromByteCount: totalBytes,      countStyle: .file) }
@@ -497,56 +474,532 @@ jobs:
           enum InstallMethod { case ota; case direct; case local }
           VIPEOF
 
-      - name: Generate Source - VIPZipHelper.swift
+      - name: Generate Source - VIPZipHelper.swift (Pure Swift - No Dependencies)
         run: |
           cat > VIPZipHelper.swift << 'VIPEOF'
           import Foundation
+          import Compression
           
+          // MARK: - Pure Swift ZIP Helper (No External Dependencies)
           enum VIPZipHelper {
-              static func extractAll(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
+              
+              // MARK: - Extract ZIP
+              static func extractAll(from sourceURL: URL, to destinationURL: URL) throws {
                   let fm = FileManager.default
-                  try fm.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+                  try fm.createDirectory(at: destinationURL, withIntermediateDirectories: true, attributes: nil)
                   
-                  let task = Process()
-                  task.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-                  task.arguments = ["-o", sourceURL.path, "-d", destinationURL.path]
+                  guard let fileHandle = try? FileHandle(forReadingFrom: sourceURL) else {
+                      throw NSError(domain: "VIPZipHelper", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot open source file"])
+                  }
+                  defer { try? fileHandle.close() }
                   
-                  let pipe = Pipe()
-                  task.standardOutput = pipe
-                  task.standardError = pipe
+                  // Read ZIP file data
+                  let fileData = try fileHandle.readToEnd() ?? Data()
+                  guard fileData.count >= 22 else {
+                      throw NSError(domain: "VIPZipHelper", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid ZIP file"])
+                  }
                   
-                  try task.run()
-                  task.waitUntilExit()
+                  // Parse ZIP entries
+                  let entries = try parseZipEntries(from: fileData)
                   
-                  guard task.terminationStatus == 0 else {
-                      throw NSError(domain: "VIPZipHelper", code: Int(task.terminationStatus),
-                                  userInfo: [NSLocalizedDescriptionKey: "Failed to extract zip"])
+                  for entry in entries {
+                      let destPath = destinationURL.appendingPathComponent(entry.fileName)
+                      let parentDir = destPath.deletingLastPathComponent()
+                      try fm.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
+                      
+                      if entry.isDirectory {
+                          try fm.createDirectory(at: destPath, withIntermediateDirectories: true, attributes: nil)
+                      } else {
+                          let data = try extractFileData(from: fileData, entry: entry)
+                          try data.write(to: destPath, options: .atomic)
+                      }
                   }
               }
-          
-              static func createZip(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
-                  if FileManager.default.fileExists(atPath: destinationURL.path) {
-                      try FileManager.default.removeItem(at: destinationURL)
+              
+              // MARK: - Create ZIP
+              static func createZip(from sourceURL: URL, to destinationURL: URL) throws {
+                  let fm = FileManager.default
+                  if fm.fileExists(atPath: destinationURL.path) {
+                      try fm.removeItem(at: destinationURL)
                   }
                   
-                  let task = Process()
-                  task.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-                  task.arguments = ["-r", destinationURL.path, "-C", sourceURL.path, "."]
-                  task.currentDirectoryURL = sourceURL.deletingLastPathComponent()
+                  var entries: [(fileName: String, data: Data, isDirectory: Bool)] = []
                   
-                  let pipe = Pipe()
-                  task.standardOutput = pipe
-                  task.standardError = pipe
-                  
-                  try task.run()
-                  task.waitUntilExit()
-                  
-                  guard task.terminationStatus == 0 else {
-                      throw NSError(domain: "VIPZipHelper", code: Int(task.terminationStatus),
-                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create zip"])
+                  // Collect all files recursively
+                  let enumerator = fm.enumerator(at: sourceURL, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey])
+                  while let itemURL = enumerator?.nextObject() as? URL {
+                      let relativePath = itemURL.path.replacingOccurrences(of: sourceURL.path + "/", with: "")
+                      let isDir = try itemURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory ?? false
+                      
+                      if isDir {
+                          entries.append((fileName: relativePath + "/", data: Data(), isDirectory: true))
+                      } else {
+                          let data = try Data(contentsOf: itemURL)
+                          entries.append((fileName: relativePath, data: data, isDirectory: false))
+                      }
                   }
+                  
+                  // Generate ZIP file
+                  var zipData = Data()
+                  var centralDirectory = Data()
+                  var offset: UInt32 = 0
+                  
+                  for entry in entries {
+                      let entryData = createLocalFileHeader(fileName: entry.fileName, data: entry.data, isDirectory: entry.isDirectory)
+                      let cdData = createCentralDirectoryEntry(fileName: entry.fileName, data: entry.data, isDirectory: entry.isDirectory, offset: offset)
+                      
+                      zipData.append(entryData)
+                      centralDirectory.append(cdData)
+                      offset += UInt32(entryData.count)
+                  }
+                  
+                  // Append central directory
+                  zipData.append(centralDirectory)
+                  
+                  // Append end of central directory
+                  let endOfCentral = createEndOfCentralDirectory(totalEntries: UInt16(entries.count), centralDirectorySize: UInt32(centralDirectory.count), centralDirectoryOffset: offset)
+                  zipData.append(endOfCentral)
+                  
+                  try zipData.write(to: destinationURL, options: .atomic)
+              }
+              
+              // MARK: - ZIP Parsing Structures
+              private struct ZipEntry {
+                  let fileName: String
+                  let dataOffset: Int
+                  let compressedSize: Int
+                  let uncompressedSize: Int
+                  let isDirectory: Bool
+              }
+              
+              private static func parseZipEntries(from data: Data) throws -> [ZipEntry] {
+                  var entries: [ZipEntry] = []
+                  var index = 0
+                  
+                  // Find end of central directory
+                  let endOfCentralOffset = findEndOfCentralDirectory(in: data)
+                  guard endOfCentralOffset >= 0 else { return [] }
+                  
+                  // Read central directory
+                  var centralDirIndex = endOfCentralOffset + 22  // Skip end of central directory
+                  let centralDirSize = data.withUnsafeBytes { ptr -> UInt32 in
+                      var v: UInt32 = 0
+                      memcpy(&v, ptr.baseAddress!.advanced(by: endOfCentralOffset + 12), 4)
+                      return v
+                  }
+                  
+                  let centralDirStart = endOfCentralOffset - Int(centralDirSize)
+                  var localIndex = centralDirStart
+                  
+                  while localIndex < endOfCentralOffset {
+                      // Read central directory entry
+                      guard localIndex + 46 <= data.count else { break }
+                      
+                      let fileNameLen = data.withUnsafeBytes { ptr -> UInt16 in
+                          var v: UInt16 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 28), 2)
+                          return v
+                      }
+                      
+                      let extraLen = data.withUnsafeBytes { ptr -> UInt16 in
+                          var v: UInt16 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 30), 2)
+                          return v
+                      }
+                      
+                      let commentLen = data.withUnsafeBytes { ptr -> UInt16 in
+                          var v: UInt16 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 32), 2)
+                          return v
+                      }
+                      
+                      let fileNameStart = localIndex + 46
+                      guard fileNameStart + Int(fileNameLen) <= data.count else { break }
+                      
+                      let fileNameData = data.subdata(in: fileNameStart..<fileNameStart + Int(fileNameLen))
+                      let fileName = String(data: fileNameData, encoding: .utf8) ?? ""
+                      
+                      let isDir = fileName.hasSuffix("/")
+                      
+                      let localHeaderOffset = data.withUnsafeBytes { ptr -> UInt32 in
+                          var v: UInt32 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 42), 4)
+                          return v
+                      }
+                      
+                      let compressedSize = data.withUnsafeBytes { ptr -> UInt32 in
+                          var v: UInt32 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 20), 4)
+                          return v
+                      }
+                      
+                      let uncompressedSize = data.withUnsafeBytes { ptr -> UInt32 in
+                          var v: UInt32 = 0
+                          memcpy(&v, ptr.baseAddress!.advanced(by: localIndex + 24), 4)
+                          return v
+                      }
+                      
+                      entries.append(ZipEntry(
+                          fileName: fileName,
+                          dataOffset: Int(localHeaderOffset) + 30 + Int(fileNameLen) + Int(extraLen),
+                          compressedSize: Int(compressedSize),
+                          uncompressedSize: Int(uncompressedSize),
+                          isDirectory: isDir
+                      ))
+                      
+                      localIndex += 46 + Int(fileNameLen) + Int(extraLen) + Int(commentLen)
+                  }
+                  
+                  return entries
+              }
+              
+              private static func findEndOfCentralDirectory(in data: Data) -> Int {
+                  let endOfCentralSignature: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
+                  
+                  for i in stride(from: max(0, data.count - 65536), to: data.count - 4, by: 1) {
+                      let bytes = data.subdata(in: i..<i+4)
+                      if bytes.elementsEqual(endOfCentralSignature) {
+                          return i
+                      }
+                  }
+                  return -1
+              }
+              
+              private static func extractFileData(from data: Data, entry: ZipEntry) throws -> Data {
+                  guard entry.dataOffset + entry.compressedSize <= data.count else {
+                      throw NSError(domain: "VIPZipHelper", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid file data"])
+                  }
+                  
+                  let compressedData = data.subdata(in: entry.dataOffset..<entry.dataOffset + entry.compressedSize)
+                  
+                  if entry.compressedSize == entry.uncompressedSize {
+                      // Stored (no compression)
+                      return compressedData
+                  } else {
+                      // Deflate compression
+                      return try decompressData(compressedData)
+                  }
+              }
+              
+              private static func decompressData(_ data: Data) throws -> Data {
+                  let bufferSize = 65536
+                  var outputData = Data()
+                  
+                  let sourceBuffer = [UInt8](data)
+                  let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+                  defer { destinationBuffer.deallocate() }
+                  
+                  var stream = z_stream()
+                  stream.next_in = UnsafePointer<UInt8>(sourceBuffer)
+                  stream.avail_in = UInt32(sourceBuffer.count)
+                  stream.total_out = 0
+                  stream.zalloc = nil
+                  stream.zfree = nil
+                  
+                  let initResult = inflateInit2_(&stream, 15 + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+                  guard initResult == Z_OK else {
+                      throw NSError(domain: "VIPZipHelper", code: 5, userInfo: [NSLocalizedDescriptionKey: "Init decompression failed"])
+                  }
+                  defer { inflateEnd(&stream) }
+                  
+                  while true {
+                      stream.next_out = destinationBuffer
+                      stream.avail_out = UInt32(bufferSize)
+                      
+                      let result = inflate(&stream, Z_SYNC_FLUSH)
+                      
+                      let bytesDecompressed = bufferSize - Int(stream.avail_out)
+                      if bytesDecompressed > 0 {
+                          outputData.append(destinationBuffer, count: bytesDecompressed)
+                      }
+                      
+                      if result == Z_STREAM_END {
+                          break
+                      }
+                      
+                      guard result == Z_OK else {
+                          throw NSError(domain: "VIPZipHelper", code: 6, userInfo: [NSLocalizedDescriptionKey: "Decompression failed"])
+                      }
+                  }
+                  
+                  return outputData
+              }
+              
+              // MARK: - ZIP Creation Helpers
+              private static func createLocalFileHeader(fileName: String, data: Data, isDirectory: Bool) -> Data {
+                  var header = Data()
+                  let nameData = fileName.data(using: .utf8) ?? Data()
+                  
+                  // Local file header signature
+                  header.append(contentsOf: [0x50, 0x4B, 0x03, 0x04])
+                  
+                  // Version needed to extract
+                  header.append(contentsOf: [0x14, 0x00])
+                  
+                  // General purpose bit flag
+                  header.append(contentsOf: [0x00, 0x00])
+                  
+                  // Compression method (0 = stored, 8 = deflate)
+                  let compressionMethod: UInt16 = isDirectory ? 0 : 8
+                  header.append(contentsOf: [UInt8(compressionMethod & 0xFF), UInt8(compressionMethod >> 8)])
+                  
+                  // Last mod time (dummy)
+                  header.append(contentsOf: [0x00, 0x00])
+                  
+                  // Last mod date (dummy)
+                  header.append(contentsOf: [0x00, 0x00])
+                  
+                  // CRC32
+                  if isDirectory {
+                      header.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+                  } else {
+                      let crc = data.crc32()
+                      header.append(contentsOf: [
+                          UInt8(crc & 0xFF),
+                          UInt8((crc >> 8) & 0xFF),
+                          UInt8((crc >> 16) & 0xFF),
+                          UInt8((crc >> 24) & 0xFF)
+                      ])
+                  }
+                  
+                  // Compressed size
+                  let compressedData: Data
+                  if isDirectory {
+                      compressedData = Data()
+                  } else {
+                      compressedData = deflateData(data)
+                  }
+                  let compressedSize = UInt32(compressedData.count)
+                  let uncompressedSize = UInt32(isDirectory ? 0 : data.count)
+                  
+                  header.append(contentsOf: [
+                      UInt8(compressedSize & 0xFF),
+                      UInt8((compressedSize >> 8) & 0xFF),
+                      UInt8((compressedSize >> 16) & 0xFF),
+                      UInt8((compressedSize >> 24) & 0xFF)
+                  ])
+                  
+                  header.append(contentsOf: [
+                      UInt8(uncompressedSize & 0xFF),
+                      UInt8((uncompressedSize >> 8) & 0xFF),
+                      UInt8((uncompressedSize >> 16) & 0xFF),
+                      UInt8((uncompressedSize >> 24) & 0xFF)
+                  ])
+                  
+                  // File name length
+                  let fileNameLen = UInt16(nameData.count)
+                  header.append(contentsOf: [UInt8(fileNameLen & 0xFF), UInt8(fileNameLen >> 8)])
+                  
+                  // Extra field length
+                  header.append(contentsOf: [0x00, 0x00])
+                  
+                  // File name
+                  header.append(nameData)
+                  
+                  // File data
+                  if !isDirectory {
+                      header.append(compressedData)
+                  }
+                  
+                  return header
+              }
+              
+              private static func createCentralDirectoryEntry(fileName: String, data: Data, isDirectory: Bool, offset: UInt32) -> Data {
+                  var entry = Data()
+                  let nameData = fileName.data(using: .utf8) ?? Data()
+                  
+                  // Central file header signature
+                  entry.append(contentsOf: [0x50, 0x4B, 0x01, 0x02])
+                  
+                  // Version made by
+                  entry.append(contentsOf: [0x14, 0x00])
+                  
+                  // Version needed to extract
+                  entry.append(contentsOf: [0x14, 0x00])
+                  
+                  // General purpose bit flag
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // Compression method
+                  let compressionMethod: UInt16 = isDirectory ? 0 : 8
+                  entry.append(contentsOf: [UInt8(compressionMethod & 0xFF), UInt8(compressionMethod >> 8)])
+                  
+                  // Last mod time
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // Last mod date
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // CRC32
+                  if isDirectory {
+                      entry.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+                  } else {
+                      let crc = data.crc32()
+                      entry.append(contentsOf: [
+                          UInt8(crc & 0xFF),
+                          UInt8((crc >> 8) & 0xFF),
+                          UInt8((crc >> 16) & 0xFF),
+                          UInt8((crc >> 24) & 0xFF)
+                      ])
+                  }
+                  
+                  // Compressed size
+                  let compressedData = isDirectory ? Data() : deflateData(data)
+                  let compressedSize = UInt32(compressedData.count)
+                  let uncompressedSize = UInt32(isDirectory ? 0 : data.count)
+                  
+                  entry.append(contentsOf: [
+                      UInt8(compressedSize & 0xFF),
+                      UInt8((compressedSize >> 8) & 0xFF),
+                      UInt8((compressedSize >> 16) & 0xFF),
+                      UInt8((compressedSize >> 24) & 0xFF)
+                  ])
+                  
+                  entry.append(contentsOf: [
+                      UInt8(uncompressedSize & 0xFF),
+                      UInt8((uncompressedSize >> 8) & 0xFF),
+                      UInt8((uncompressedSize >> 16) & 0xFF),
+                      UInt8((uncompressedSize >> 24) & 0xFF)
+                  ])
+                  
+                  // File name length
+                  let fileNameLen = UInt16(nameData.count)
+                  entry.append(contentsOf: [UInt8(fileNameLen & 0xFF), UInt8(fileNameLen >> 8)])
+                  
+                  // Extra field length
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // File comment length
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // Disk number start
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // Internal file attributes
+                  entry.append(contentsOf: [0x00, 0x00])
+                  
+                  // External file attributes
+                  entry.append(contentsOf: isDirectory ? [0x10, 0x00, 0x00, 0x00] : [0x00, 0x00, 0x00, 0x00])
+                  
+                  // Relative offset of local header
+                  entry.append(contentsOf: [
+                      UInt8(offset & 0xFF),
+                      UInt8((offset >> 8) & 0xFF),
+                      UInt8((offset >> 16) & 0xFF),
+                      UInt8((offset >> 24) & 0xFF)
+                  ])
+                  
+                  // File name
+                  entry.append(nameData)
+                  
+                  return entry
+              }
+              
+              private static func createEndOfCentralDirectory(totalEntries: UInt16, centralDirectorySize: UInt32, centralDirectoryOffset: UInt32) -> Data {
+                  var end = Data()
+                  
+                  // End of central dir signature
+                  end.append(contentsOf: [0x50, 0x4B, 0x05, 0x06])
+                  
+                  // Number of this disk
+                  end.append(contentsOf: [0x00, 0x00])
+                  
+                  // Disk where central directory starts
+                  end.append(contentsOf: [0x00, 0x00])
+                  
+                  // Number of central directory entries on this disk
+                  end.append(contentsOf: [UInt8(totalEntries & 0xFF), UInt8(totalEntries >> 8)])
+                  
+                  // Total number of central directory entries
+                  end.append(contentsOf: [UInt8(totalEntries & 0xFF), UInt8(totalEntries >> 8)])
+                  
+                  // Size of central directory
+                  end.append(contentsOf: [
+                      UInt8(centralDirectorySize & 0xFF),
+                      UInt8((centralDirectorySize >> 8) & 0xFF),
+                      UInt8((centralDirectorySize >> 16) & 0xFF),
+                      UInt8((centralDirectorySize >> 24) & 0xFF)
+                  ])
+                  
+                  // Offset of start of central directory
+                  end.append(contentsOf: [
+                      UInt8(centralDirectoryOffset & 0xFF),
+                      UInt8((centralDirectoryOffset >> 8) & 0xFF),
+                      UInt8((centralDirectoryOffset >> 16) & 0xFF),
+                      UInt8((centralDirectoryOffset >> 24) & 0xFF)
+                  ])
+                  
+                  // ZIP file comment length
+                  end.append(contentsOf: [0x00, 0x00])
+                  
+                  return end
+              }
+              
+              private static func deflateData(_ data: Data) -> Data {
+                  let bufferSize = 65536
+                  var outputData = Data()
+                  
+                  let sourceBuffer = [UInt8](data)
+                  let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+                  defer { destinationBuffer.deallocate() }
+                  
+                  var stream = z_stream()
+                  stream.next_in = UnsafePointer<UInt8>(sourceBuffer)
+                  stream.avail_in = UInt32(sourceBuffer.count)
+                  stream.total_out = 0
+                  stream.zalloc = nil
+                  stream.zfree = nil
+                  
+                  let initResult = deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+                  guard initResult == Z_OK else {
+                      return data // Return uncompressed if compression fails
+                  }
+                  defer { deflateEnd(&stream) }
+                  
+                  while true {
+                      stream.next_out = destinationBuffer
+                      stream.avail_out = UInt32(bufferSize)
+                      
+                      let result = deflate(&stream, Z_FINISH)
+                      
+                      let bytesCompressed = bufferSize - Int(stream.avail_out)
+                      if bytesCompressed > 0 {
+                          outputData.append(destinationBuffer, count: bytesCompressed)
+                      }
+                      
+                      if result == Z_STREAM_END {
+                          break
+                      }
+                      
+                      guard result == Z_OK else {
+                          return data
+                      }
+                  }
+                  
+                  return outputData
               }
           }
+          
+          // MARK: - CRC32 Extension
+          extension Data {
+              func crc32() -> UInt32 {
+                  var crc: UInt32 = 0xFFFFFFFF
+                  for byte in self {
+                      crc ^= UInt32(byte)
+                      for _ in 0..<8 {
+                          if crc & 1 != 0 {
+                              crc = (crc >> 1) ^ 0xEDB88320
+                          } else {
+                              crc >>= 1
+                          }
+                      }
+                  }
+                  return crc ^ 0xFFFFFFFF
+              }
+          }
+          
+          // MARK: - zlib Compatibility
+          import zlib
           VIPEOF
 
       - name: Generate Source - SigningEngine.swift
@@ -564,7 +1017,6 @@ jobs:
               case cmsSignatureFailed(String)
               case fileReadError
               case fileWriteError
-          
               var errorDescription: String? {
                   switch self {
                   case .appBundleNotFound:          return "❌ لم يُعثر على .app bundle داخل IPA"
@@ -1279,25 +1731,20 @@ jobs:
               @Published var showImportError   = false
               @Published var showPermissionAlert = false
               @Published var permissionMessage = ""
-          
               private let fm = FileManager.default
               private var certDir: URL {
                   fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
                       .appendingPathComponent("Certificates")
               }
-          
               init() { createDir(); loadCertificates() }
-          
               private func createDir() {
                   try? fm.createDirectory(at: certDir, withIntermediateDirectories: true)
               }
-          
               func loadCertificates() {
                   let url = certDir.appendingPathComponent("certificates.json")
                   guard let data = try? Data(contentsOf: url),
                         let decoded = try? JSONDecoder().decode([CertificateInfoModel].self, from: data)
                   else { return }
-          
                   let sorted = decoded.sorted { lhs, rhs in
                       if lhs.isValid != rhs.isValid { return lhs.isValid && !rhs.isValid }
                       return (lhs.daysRemaining ?? 0) > (rhs.daysRemaining ?? 0)
@@ -1313,7 +1760,6 @@ jobs:
                   }
                   if Thread.isMainThread { apply() } else { DispatchQueue.main.async { apply() } }
               }
-          
               func validateAndSaveCertificate(
                   p12Data: Data,
                   provisionData: Data,
@@ -1325,7 +1771,6 @@ jobs:
                       let passwords = [password, password.trimmingCharacters(in: .whitespaces), ""]
                       var p12Valid = false
                       var p12StatusCode: OSStatus = 0
-          
                       for pwd in passwords {
                           let opts: [String: Any] = [kSecImportExportPassphrase as String: pwd]
                           var items: CFArray?
@@ -1337,7 +1782,6 @@ jobs:
                               p12Valid = true; break
                           }
                       }
-          
                       if !p12Valid {
                           let msg: String
                           switch p12StatusCode {
@@ -1356,14 +1800,11 @@ jobs:
                           }
                           return
                       }
-          
                       let bytes     = [UInt8](provisionData)
                       let xmlMarker = Array("<?xml".utf8)
                       let plistEnd  = Array("</plist>".utf8)
-          
                       var provValid     = false
                       var parsedProfile : [String: Any]? = nil
-          
                       if let startIdx = bytes.firstRange(of: xmlMarker),
                          let endRange  = bytes.firstRange(of: plistEnd) {
                           let xmlData = Data(bytes[startIdx.lowerBound..<endRange.upperBound])
@@ -1378,7 +1819,6 @@ jobs:
                                      || dict["application-identifier"] != nil
                           }
                       }
-          
                       if !provValid {
                           if let dict = try? PropertyListSerialization.propertyList(
                               from: provisionData, options: [], format: nil) as? [String: Any] {
@@ -1389,7 +1829,6 @@ jobs:
                                      || entitlements?["application-identifier"] != nil
                           }
                       }
-          
                       if !provValid && provisionData.count > 100 {
                           let str = String(bytes: bytes.prefix(500), encoding: .ascii) ?? ""
                           let strUtf8 = String(bytes: bytes.prefix(500), encoding: .utf8) ?? ""
@@ -1401,7 +1840,6 @@ jobs:
                               provValid = true
                           }
                       }
-          
                       if !provValid {
                           DispatchQueue.main.async {
                               completion(.failure(NSError(domain: "CertImport", code: -2, userInfo: [
@@ -1410,7 +1848,6 @@ jobs:
                           }
                           return
                       }
-          
                       let profileName = parsedProfile?["Name"] as? String
                       let teamName    = parsedProfile?["TeamName"] as? String
                       let autoName: String = {
@@ -1423,11 +1860,9 @@ jobs:
                           name: autoName, p12Data: p12Data, mobileProvisionData: provisionData,
                           password: password, displayName: autoName, creationDate: Date()
                       )
-          
                       DispatchQueue.main.async { completion(.success(cert)) }
                   }
               }
-          
               func saveCertificate(_ cert: CertificateInfoModel) {
                   DispatchQueue.main.async {
                       if !self.certificates.contains(where: { $0.id == cert.id }) {
@@ -1446,7 +1881,6 @@ jobs:
                       DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.showImportSuccess = false }
                   }
               }
-          
               func removeCertificate(at index: IndexSet) {
                   certificates.remove(atOffsets: index)
                   let remainingIDs = Set(certificates.map { $0.id })
@@ -1459,7 +1893,6 @@ jobs:
                   }
                   saveToDisk()
               }
-          
               private func saveToDisk() {
                   let url = certDir.appendingPathComponent("certificates.json")
                   do {
@@ -1469,7 +1902,6 @@ jobs:
                       DispatchQueue.main.async { self.errorMessage = "❌ فشل حفظ الشهادات: \(error.localizedDescription)" }
                   }
               }
-          
               func signIPA(ipaURL: URL, with certificate: CertificateInfoModel,
                            progressHandler: @escaping (Double, String) -> Void,
                            completion: @escaping (Result<URL, Error>) -> Void) {
@@ -1480,7 +1912,6 @@ jobs:
                       completion: completion
                   )
               }
-          
               func installIPA(ipaURL: URL, appName: String, bundleID: String,
                               progressHandler: @escaping (Double, String) -> Void,
                               completion: @escaping (Result<Void, Error>) -> Void) {
@@ -1504,13 +1935,12 @@ jobs:
               @Published var downloadError: String?
               @Published var downloadProgress: [UUID: Double] = [:]
               @Published var installHistory: [InstallRecord] = []
+              @Published var favoriteAppNames: Set<String> = []
               @Published var showPermissionAlert = false
               @Published var permissionMessage = ""
-          
               private var urlSession: URLSession!
               private let fm = FileManager.default
               private let documentsPath: URL
-          
               override init() {
                   documentsPath = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
                   super.init()
@@ -1518,9 +1948,8 @@ jobs:
                   config.timeoutIntervalForRequest  = 180
                   config.timeoutIntervalForResource = 1200
                   urlSession = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
-                  loadIPAFiles(); loadInstallHistory()
+                  loadIPAFiles(); loadInstallHistory(); loadFavorites()
               }
-          
               private func loadIPAFiles() {
                   let url = documentsPath.appendingPathComponent("ipa_files_v6.json")
                   guard let data = try? Data(contentsOf: url),
@@ -1528,12 +1957,10 @@ jobs:
                   else { return }
                   ipaFiles = decoded.filter { fm.fileExists(atPath: $0.localPath) }
               }
-          
               func saveIPAFiles() {
                   let url = documentsPath.appendingPathComponent("ipa_files_v6.json")
                   if let data = try? JSONEncoder().encode(ipaFiles) { try? data.write(to: url) }
               }
-          
               private func loadInstallHistory() {
                   let url = documentsPath.appendingPathComponent("install_history.json")
                   guard let data = try? Data(contentsOf: url),
@@ -1541,18 +1968,25 @@ jobs:
                   else { return }
                   installHistory = decoded
               }
-          
               func saveInstallHistory() {
                   let url = documentsPath.appendingPathComponent("install_history.json")
                   if let data = try? JSONEncoder().encode(installHistory) { try? data.write(to: url) }
               }
-          
               func addInstallRecord(_ record: InstallRecord) {
                   installHistory.insert(record, at: 0)
                   if installHistory.count > 100 { installHistory = Array(installHistory.prefix(50)) }
                   saveInstallHistory()
               }
-          
+              private func loadFavorites() {
+                  let arr = UserDefaults.standard.stringArray(forKey: "favoriteApps") ?? []
+                  favoriteAppNames = Set(arr)
+              }
+              func toggleFavorite(appName: String) {
+                  if favoriteAppNames.contains(appName) { favoriteAppNames.remove(appName) }
+                  else { favoriteAppNames.insert(appName); HapticManager.shared.impact(.light) }
+                  UserDefaults.standard.set(Array(favoriteAppNames), forKey: "favoriteApps")
+              }
+              func isFavorite(_ appName: String) -> Bool { favoriteAppNames.contains(appName) }
               func startDownload(app: AppItem) {
                   if activeDownloads.contains(where: { $0.appName == app.name &&
                       ($0.status == .downloading || $0.status == .waiting) }) {
@@ -1562,18 +1996,15 @@ jobs:
                   isDownloading = true; downloadError = nil
                   statusMessage = "بدء تحميل \(app.name)..."
                   HapticManager.shared.impact(.medium)
-          
                   let download = ActiveDownload(appName: app.name, appIconURL: app.iconURL, downloadURL: url, appItem: app)
                   download.status = .downloading
                   download.destinationURL = documentsPath
                       .appendingPathComponent("\(app.name.replacingOccurrences(of: "/", with: "_"))_\(UUID().uuidString).ipa")
-          
                   var req = URLRequest(url: url); req.timeoutInterval = 120
                   let task = urlSession.dataTask(with: req)
                   download.task = task
                   DispatchQueue.main.async { self.activeDownloads.append(download); task.resume() }
               }
-          
               func importIPAFromURL(url: URL) {
                   let dest = documentsPath.appendingPathComponent(url.lastPathComponent)
                   do {
@@ -1597,7 +2028,6 @@ jobs:
                       permissionMessage = "❌ فشل استيراد الملف:\n\(error.localizedDescription)"
                   }
               }
-          
               func markAsSigned(_ file: IPAFile, signedPath: String, certificateId: UUID) {
                   if let i = ipaFiles.firstIndex(where: { $0.id == file.id }) {
                       ipaFiles[i].isSigned = true
@@ -1606,7 +2036,6 @@ jobs:
                       saveIPAFiles()
                   }
               }
-          
               func markAsInstalled(_ file: IPAFile, method: String) {
                   if let i = ipaFiles.firstIndex(where: { $0.id == file.id }) {
                       ipaFiles[i].isInstalled = true
@@ -1620,29 +2049,41 @@ jobs:
                       addInstallRecord(record)
                   }
               }
-          
               func deleteIPAFile(_ file: IPAFile) {
                   try? fm.removeItem(atPath: file.localPath)
                   if let sp = file.signedPath { try? fm.removeItem(atPath: sp) }
                   ipaFiles.removeAll { $0.id == file.id }
                   saveIPAFiles()
               }
-          
               func pauseDownload(_ download: ActiveDownload) {
                   download.task?.cancel()
                   DispatchQueue.main.async { download.status = .paused }
               }
-          
               func resumeDownload(_ download: ActiveDownload) {
                   download.status = .downloading
                   var req = URLRequest(url: download.downloadURL); req.timeoutInterval = 120
                   let task = urlSession.dataTask(with: req)
                   download.task = task; task.resume()
               }
-          
               func cancelDownload(_ download: ActiveDownload) {
                   download.task?.cancel()
                   activeDownloads.removeAll { $0.id == download.id }
+              }
+              func recoverFiles() -> Int {
+                  var recovered = 0
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  do {
+                      let files = try FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
+                      for url in files where url.pathExtension.lowercased() == "ipa" {
+                          if !ipaFiles.contains(where: { $0.localPath == url.path }) {
+                              importIPAFromURL(url: url)
+                              recovered += 1
+                          }
+                      }
+                  } catch {
+                      // Silent fail
+                  }
+                  return recovered
               }
           }
           
@@ -1660,7 +2101,6 @@ jobs:
                       }
                   } else { fm.createFile(atPath: dest.path, contents: data) }
               }
-          
               func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
                   guard let dl = activeDownloads.first(where: { $0.task == task }) else { return }
                   if let err = error {
@@ -1697,13 +2137,10 @@ jobs:
               @Published var isLoading = false
               @Published var errorMessage: String?
               @Published var recentSearches: [String] = []
-          
               var categories: [AppCategory] { [] }
-          
               func appsForCategory(_ cat: AppCategory) -> [AppItem] {
                   return apps
               }
-          
               func fetchApps() {
                   isLoading = true; errorMessage = nil
                   guard let url = URL(string: AppConstants.storeURL) else { isLoading = false; return }
@@ -1730,7 +2167,6 @@ jobs:
                       }
                   }.resume()
               }
-          
               static func inferCategory(name: String, desc: String) -> String {
                   let text = (name + " " + desc).lowercased()
                   let map: [(keys: [String], cat: String)] = [
@@ -1753,13 +2189,10 @@ jobs:
                   }
                   return "أدوات"
               }
-          
               func retryFetch() { fetchApps() }
-          
               func loadRecentSearches() {
                   recentSearches = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
               }
-          
               func addRecentSearch(_ term: String) {
                   guard !term.isEmpty else { return }
                   recentSearches.removeAll { $0 == term }
@@ -1771,32 +2204,26 @@ jobs:
           
           class UserProfileManager: ObservableObject {
               @Published var profile: UserProfile = UserProfile.defaultProfile
-          
               init() { loadProfile() }
-          
               func loadProfile() {
                   if let data = UserDefaults.standard.data(forKey: "userProfile"),
                      let p = try? JSONDecoder().decode(UserProfile.self, from: data) {
                       profile = p
                   }
               }
-          
               func saveProfile() {
                   if let data = try? JSONEncoder().encode(profile) {
                       UserDefaults.standard.set(data, forKey: "userProfile")
                   }
               }
-          
               func updateProfileImage(_ image: UIImage?) {
                   profile.profileImageData = image?.jpegData(compressionQuality: 0.8)
                   saveProfile()
               }
-          
               func updateSourcePlatform(_ platform: SourcePlatform) {
                   profile.sourcePlatform = platform.rawValue
                   saveProfile()
               }
-          
               func completeOnboarding() {
                   profile.hasCompletedOnboarding = true
                   saveProfile()
@@ -1822,31 +2249,24 @@ jobs:
           struct DocumentPicker: UIViewControllerRepresentable {
               let types: [UTType]
               let onPick: (URL) -> Void
-          
               func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-          
               func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
                   let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
                   picker.delegate = context.coordinator
                   picker.allowsMultipleSelection = false
                   return picker
               }
-          
               func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-          
               class Coordinator: NSObject, UIDocumentPickerDelegate {
                   let onPick: (URL) -> Void
                   init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-          
                   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
                       guard let url = urls.first else { return }
                       let accessed = url.startAccessingSecurityScopedResource()
                       defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-          
                       let ext = url.pathExtension.isEmpty ? "bin" : url.pathExtension
                       let tmp = FileManager.default.temporaryDirectory
                           .appendingPathComponent(UUID().uuidString + "." + ext)
-          
                       if let data = try? Data(contentsOf: url), (try? data.write(to: tmp)) != nil {
                           onPick(tmp)
                       } else if (try? FileManager.default.copyItem(at: url, to: tmp)) != nil {
@@ -1861,9 +2281,7 @@ jobs:
           struct DataDocumentPicker: UIViewControllerRepresentable {
               let types: [UTType]
               let onPick: (Data, String) -> Void
-          
               func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-          
               func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
                   let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
                   picker.delegate = context.coordinator
@@ -1871,9 +2289,7 @@ jobs:
                   picker.shouldShowFileExtensions = true
                   return picker
               }
-          
               func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-          
               class Coordinator: NSObject, UIDocumentPickerDelegate {
                   let onPick: (Data, String) -> Void
                   var selfRef: Coordinator?
@@ -1882,13 +2298,11 @@ jobs:
                       super.init()
                       selfRef = self
                   }
-          
                   func documentPicker(_ controller: UIDocumentPickerViewController,
                                       didPickDocumentsAt urls: [URL]) {
                       guard let url = urls.first else { selfRef = nil; return }
                       let name = url.lastPathComponent
                       let accessed = url.startAccessingSecurityScopedResource()
-          
                       func finish(data: Data) {
                           if accessed { url.stopAccessingSecurityScopedResource() }
                           DispatchQueue.main.async { [weak self] in
@@ -1896,11 +2310,9 @@ jobs:
                               self?.selfRef = nil
                           }
                       }
-          
                       if let data = try? Data(contentsOf: url), !data.isEmpty {
                           finish(data: data); return
                       }
-          
                       let ext  = url.pathExtension.isEmpty ? "bin" : url.pathExtension
                       let tmp  = FileManager.default.temporaryDirectory
                           .appendingPathComponent(UUID().uuidString + "." + ext)
@@ -1910,7 +2322,6 @@ jobs:
                               finish(data: data); return
                           }
                       } catch {}
-          
                       var coordErr: NSError?
                       NSFileCoordinator().coordinate(
                           readingItemAt: url, options: [.withoutChanges],
@@ -1924,7 +2335,6 @@ jobs:
                           }
                       }
                   }
-          
                   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
                       selfRef = nil
                   }
@@ -1956,7 +2366,6 @@ jobs:
               let action: () -> Void
               var isLoading: Bool = false; var isDisabled: Bool = false
               @State private var pressed = false
-          
               var body: some View {
                   Button(action: { HapticManager.shared.impact(.medium); action() }) {
                       HStack(spacing: 8) {
@@ -2029,7 +2438,6 @@ jobs:
               @StateObject private var certificateManager = CertificateManager()
               @StateObject private var downloadManager    = IPADownloadManager()
               @StateObject private var profileManager     = UserProfileManager()
-          
               var body: some View {
                   mainContent
                       .preferredColorScheme(.none)
@@ -2045,7 +2453,6 @@ jobs:
                           Text(certificateManager.permissionMessage)
                       }
               }
-          
               var mainContent: some View {
                   ZStack {
                       (scheme == .dark ? Color.vipDark : Color(red: 0.96, green: 0.96, blue: 1.0)).edgesIgnoringSafeArea(.all)
@@ -2058,7 +2465,6 @@ jobs:
                       VStack { Spacer(); xcodeStyleTabBar }
                   }
               }
-          
               var topBar: some View {
                   HStack {
                       Spacer()
@@ -2067,7 +2473,7 @@ jobs:
                               .foregroundColor(scheme == .dark ? .white : .black)
                           Text(AppConstants.storeName).font(.system(size: 11)).foregroundColor(.gray)
                       }
-                      Button(action: { withAnimation { selectedTab = 3 } }) {
+                      Button(action: { withAnimation { selectedTab = 4 } }) {
                           Group {
                               if let img = profileManager.profile.profileImage {
                                   Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
@@ -2086,7 +2492,6 @@ jobs:
                   }
                   .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
               }
-          
               var contentArea: some View {
                   ScrollView(showsIndicators: false) {
                       VStack(spacing: 0) {
@@ -2101,8 +2506,10 @@ jobs:
                               case 1:
                                   AppsTabView(appsManager: appsManager, downloadManager: downloadManager)
                               case 2:
-                                  SigningTabView(downloadManager: downloadManager, certificateManager: certificateManager)
+                                  FavoritesTabView(appsManager: appsManager, downloadManager: downloadManager)
                               case 3:
+                                  SigningTabView(downloadManager: downloadManager, certificateManager: certificateManager)
+                              case 4:
                                   SettingsView(certificateManager: certificateManager, profileManager: profileManager)
                               default:
                                   HomeTabView(appsManager: appsManager, downloadManager: downloadManager, certificateManager: certificateManager)
@@ -2112,14 +2519,15 @@ jobs:
                       .padding(.top, 10).padding(.bottom, 110)
                   }
               }
-          
               var xcodeStyleTabBar: some View {
                   HStack(spacing: 0) {
                       XcodeTabItem(icon: "house.fill", title: "الرئيسية", index: 0, selectedTab: $selectedTab)
                       XcodeTabItem(icon: "square.grid.2x2.fill", title: "التطبيقات", index: 1, selectedTab: $selectedTab)
-                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 2, selectedTab: $selectedTab,
+                      XcodeTabItem(icon: "heart.fill", title: "المفضلة", index: 2, selectedTab: $selectedTab,
+                                   badge: downloadManager.favoriteAppNames.count)
+                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 3, selectedTab: $selectedTab,
                                    badge: downloadManager.ipaFiles.count + downloadManager.activeDownloads.count)
-                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 3, selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 4, selectedTab: $selectedTab)
                   }
                   .padding(.horizontal, 12).padding(.vertical, 8)
                   .background(
@@ -2131,7 +2539,6 @@ jobs:
                       .stroke(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06), lineWidth: 1))
                   .padding(.horizontal, 12).padding(.bottom, 20)
               }
-          
               func requestNotifications() {
                   UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
               }
@@ -2144,9 +2551,7 @@ jobs:
               @Binding var selectedTab: Int
               var badge: Int = 0
               @Environment(\.colorScheme) var scheme
-          
               var isSelected: Bool { selectedTab == index }
-          
               var body: some View {
                   Button(action: {
                       withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
@@ -2219,10 +2624,8 @@ jobs:
               var font: Font = .system(size: 13, weight: .semibold)
               var color: Color = .white
               var speed: Double = 28
-          
               @State private var offset: CGFloat = 0
               @State private var textWidth: CGFloat = 0
-          
               var body: some View {
                   GeometryReader { geo in
                       let gap: CGFloat = 60
@@ -2245,11 +2648,9 @@ jobs:
                   }
                   .frame(height: 22)
               }
-          
               private var marqueeContent: some View {
                   Text(text).font(font).foregroundColor(color).fixedSize(horizontal: true, vertical: false)
               }
-          
               private func startAnimation(gap: CGFloat) {
                   let distance = textWidth + gap
                   offset = 0
@@ -2308,18 +2709,16 @@ jobs:
               @ObservedObject var certificateManager: CertificateManager
               @State private var selectedApp: AppItem?
               @Environment(\.colorScheme) var scheme
-          
               private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
               private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
-          
+              private var trending: [AppItem] { appsManager.apps.filter { $0.isNew }.prefix(8).map { $0 } }
+              private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
               var body: some View {
                   VStack(spacing: 0) {
                       VStack(spacing: 22) {
                           StoreHeroBanner()
                               .padding(.top, 6)
-          
                           AdImageCarousel(images: AppConstants.adBanners)
-          
                           if !popular.isEmpty {
                               sectionHeader(title: "🔥 الأكثر شعبية", icon: "flame.fill", color: .orange)
                               ScrollView(.horizontal, showsIndicators: false) {
@@ -2332,10 +2731,36 @@ jobs:
                                   }.padding(.horizontal, 16)
                               }
                           }
-          
+                          if !trending.isEmpty {
+                              sectionHeader(title: "✨ جديد هذا الأسبوع", icon: "sparkles", color: .purple)
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 12) {
+                                      ForEach(trending, id: \.id) { app in
+                                          FeaturedAppCard(app: app)
+                                              .contentShape(Rectangle())
+                                              .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
+                                      }
+                                  }.padding(.horizontal, 16)
+                              }
+                          }
+                          if !topRated.isEmpty {
+                              sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 12) {
+                                      ForEach(Array(topRated.enumerated()), id: \.element.id) { idx, app in
+                                          TopDownloadWideCard(rank: idx + 1, app: app)
+                                              .onTapGesture { selectedApp = app }
+                                      }
+                                  }
+                                  .padding(.horizontal, 16)
+                                  .padding(.vertical, 4)
+                              }
+                          }
                           sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                           ForEach(newest, id: \.id) { app in
-                              AppCardView(app: app, downloadManager: downloadManager)
+                              AppCardView(app: app, downloadManager: downloadManager,
+                                          isFavorite: downloadManager.isFavorite(app.name),
+                                          onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
                                   .contentShape(Rectangle())
                                   .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
                                   .padding(.horizontal)
@@ -2346,7 +2771,6 @@ jobs:
                       AppDetailView(app: app, downloadManager: downloadManager)
                   }
               }
-          
               private func sectionHeader(title: String, icon: String, color: Color = .vipPurple) -> some View {
                   HStack {
                       Image(systemName: "chevron.left").foregroundColor(color).font(.caption)
@@ -2359,7 +2783,6 @@ jobs:
           
           struct StoreHeroBanner: View {
               @State private var pulse = false
-          
               var body: some View {
                   HStack(spacing: 0) {
                       ZStack {
@@ -2385,23 +2808,18 @@ jobs:
                           }
                       }
                       .padding(.leading, 20)
-          
                       Spacer(minLength: 16)
-          
                       VStack(alignment: .center, spacing: 5) {
                           Text("متجر VIP21")
                               .font(.system(size: 19, weight: .black, design: .rounded))
                               .foregroundColor(.white)
-          
                           Text("ارفع · وقّع · ثبّت بسهولة")
                               .font(.system(size: 12, weight: .medium))
                               .foregroundColor(.white.opacity(0.82))
                               .multilineTextAlignment(.center)
                       }
                       .frame(maxWidth: .infinity)
-          
                       Spacer(minLength: 16)
-          
                       VStack(spacing: 4) {
                           HStack(spacing: 3) {
                               Image(systemName: "crown.fill")
@@ -2416,7 +2834,6 @@ jobs:
                               Capsule().fill(Color.white.opacity(0.18))
                                   .overlay(Capsule().stroke(Color.vipGold.opacity(0.5), lineWidth: 1))
                           )
-          
                           Text("2026")
                               .font(.system(size: 10, weight: .semibold))
                               .foregroundColor(.white.opacity(0.65))
@@ -2457,7 +2874,6 @@ jobs:
               let images: [(image: String, link: String)]
               @State private var current: Int = 0
               private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-          
               var body: some View {
                   VStack(spacing: 8) {
                       TabView(selection: $current) {
@@ -2498,7 +2914,6 @@ jobs:
                               current = (current + 1) % max(images.count, 1)
                           }
                       }
-          
                       HStack(spacing: 6) {
                           ForEach(0..<images.count, id: \.self) { idx in
                               Capsule()
@@ -2544,11 +2959,92 @@ jobs:
               }
           }
           
+          struct TopDownloadWideCard: View {
+              let rank: Int; let app: AppItem
+              @Environment(\.colorScheme) var scheme
+              var rankGradient: [Color] {
+                  switch rank {
+                  case 1: return [Color(red: 1.0, green: 0.84, blue: 0.0), Color(red: 0.9, green: 0.6, blue: 0.1)]
+                  case 2: return [Color(white: 0.75), Color(white: 0.55)]
+                  case 3: return [Color(red: 0.80, green: 0.50, blue: 0.20), Color(red: 0.65, green: 0.35, blue: 0.10)]
+                  default: return [.vipPurple.opacity(0.7), .blue.opacity(0.6)]
+                  }
+              }
+              var shortDesc: String {
+                  let d = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
+                  let words = d.components(separatedBy: .whitespaces).prefix(8).joined(separator: " ")
+                  return words.isEmpty ? app.developerName : words
+              }
+              var body: some View {
+                  VStack(spacing: 0) {
+                      ZStack(alignment: .topLeading) {
+                          CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
+                              if let img = phase.image {
+                                  img.resizable().aspectRatio(contentMode: .fill)
+                              } else {
+                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
+                              }
+                          }
+                          .frame(width: 160, height: 110)
+                          .clipped()
+                          .overlay(
+                              LinearGradient(colors: [.clear, .black.opacity(0.55)],
+                                             startPoint: .top, endPoint: .bottom)
+                          )
+                          ZStack {
+                              Circle()
+                                  .fill(LinearGradient(colors: rankGradient,
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                                  .frame(width: 32, height: 32)
+                                  .shadow(color: rankGradient.first!.opacity(0.6), radius: 6, y: 2)
+                              Text("\(rank)")
+                                  .font(.system(size: 13, weight: .black))
+                                  .foregroundColor(.white)
+                          }
+                          .padding(8)
+                      }
+                      .frame(width: 160, height: 110)
+                      VStack(alignment: .leading, spacing: 4) {
+                          Text(app.name)
+                              .font(.system(size: 13, weight: .bold))
+                              .foregroundColor(.primary)
+                              .lineLimit(1)
+                          Text(shortDesc)
+                              .font(.system(size: 10))
+                              .foregroundColor(.secondary)
+                              .lineLimit(2)
+                              .multilineTextAlignment(.leading)
+                          HStack(spacing: 4) {
+                              if let cat = app.category {
+                                  Text(cat)
+                                      .font(.system(size: 8, weight: .semibold))
+                                      .foregroundColor(.vipPurple)
+                                      .padding(.horizontal, 5).padding(.vertical, 2)
+                                      .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
+                              }
+                              Spacer()
+                              Text(app.formattedSize)
+                                  .font(.system(size: 9)).foregroundColor(.gray)
+                          }
+                      }
+                      .padding(.horizontal, 10)
+                      .padding(.vertical, 8)
+                      .frame(width: 160, alignment: .leading)
+                      .background(scheme == .dark ? Color(white: 0.11) : Color.white)
+                  }
+                  .frame(width: 160)
+                  .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                  .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.vipPurple.opacity(0.08), lineWidth: 1))
+                  .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 4)
+              }
+          }
+          
           struct AppCardView: View {
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
+              var isFavorite: Bool; let onFavorite: () -> Void
               @Environment(\.colorScheme) var scheme
-          
               var body: some View {
                   HStack(spacing: 14) {
                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
@@ -2564,7 +3060,6 @@ jobs:
                                   .overlay(Image(systemName: "app.fill").foregroundColor(.white.opacity(0.5)))
                           }
                       }.frame(width: 58, height: 58)
-          
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
                               if app.isNew { NewBadge() }
@@ -2578,8 +3073,11 @@ jobs:
                               Label(app.formattedDate, systemImage: "calendar").font(.system(size: 9))
                           }.foregroundColor(.gray.opacity(0.7))
                       }
-          
                       Spacer()
+                      Button(action: onFavorite) {
+                          Image(systemName: isFavorite ? "heart.fill" : "heart")
+                              .font(.system(size: 20)).foregroundColor(isFavorite ? .red : .gray)
+                      }
                   }
                   .padding(14).glassCard(radius: 18)
               }
@@ -2601,18 +3099,15 @@ jobs:
               @State private var selectedCategory: String = "الكل"
               @State private var sortMode: AppSortMode = .newest
               @Environment(\.colorScheme) var scheme
-          
               enum AppSortMode: String, CaseIterable {
                   case newest = "الأحدث"; case popular = "الأشهر"; case name = "الاسم"; case size = "الحجم"
               }
-          
               var categories: [String] {
                   var cats = ["الكل"]
                   let found = Set(appsManager.apps.compactMap { $0.category }).sorted()
                   cats += found.isEmpty ? ["ترفيه", "أدوات", "ألعاب", "اجتماعي", "تعليم"] : Array(found)
                   return cats
               }
-          
               var filteredApps: [AppItem] {
                   var base = appsManager.apps
                   if selectedCategory != "الكل" {
@@ -2632,7 +3127,6 @@ jobs:
                   case .size:    return base.sorted { $0.size > $1.size }
                   }
               }
-          
               var body: some View {
                   VStack(spacing: 14) {
                       HStack(spacing: 12) {
@@ -2671,7 +3165,6 @@ jobs:
                               .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                           }
                       }.padding(.horizontal)
-          
                       HStack(spacing: 10) {
                           Image(systemName: "magnifyingglass")
                               .foregroundColor(isSearchFocused ? .vipPurple : .gray)
@@ -2694,7 +3187,6 @@ jobs:
                           .stroke(isSearchFocused ? Color.vipPurple.opacity(0.5) : Color.clear, lineWidth: 1.5))
                       .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
                       .padding(.horizontal)
-          
                       if isSearchFocused && searchText.isEmpty && !appsManager.recentSearches.isEmpty {
                           VStack(alignment: .trailing, spacing: 6) {
                               Text("بحث سابق").font(.system(size: 12)).foregroundColor(.gray).padding(.horizontal)
@@ -2714,7 +3206,6 @@ jobs:
                               }
                           }.transition(.opacity)
                       }
-          
                       ScrollView(.horizontal, showsIndicators: false) {
                           HStack(spacing: 8) {
                               ForEach(categories, id: \.self) { cat in
@@ -2733,13 +3224,11 @@ jobs:
                               }
                           }.padding(.horizontal)
                       }
-          
                       HStack {
                           Spacer()
                           Text("\(filteredApps.count) نتيجة")
                               .font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
                       }
-          
                       if filteredApps.isEmpty {
                           VStack(spacing: 16) {
                               Image(systemName: "magnifyingglass")
@@ -2768,7 +3257,6 @@ jobs:
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.colorScheme) var scheme
-          
               var body: some View {
                   HStack(spacing: 14) {
                       ZStack(alignment: .bottomTrailing) {
@@ -2796,7 +3284,6 @@ jobs:
                                   .offset(x: 4, y: 4)
                           }
                       }
-          
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
                               if app.isPopular {
@@ -2850,6 +3337,72 @@ jobs:
                       .stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
               }
           }
+          
+          struct FavoritesTabView: View {
+              @ObservedObject var appsManager: AppsManager
+              @ObservedObject var downloadManager: IPADownloadManager
+              @State private var selectedApp: AppItem?
+              @State private var showDetail = false
+              var favoriteApps: [AppItem] { appsManager.apps.filter { downloadManager.isFavorite($0.name) } }
+              var body: some View {
+                  VStack(spacing: 20) {
+                      HStack {
+                          Spacer()
+                          VStack(alignment: .trailing, spacing: 2) {
+                              Text("المفضلة").font(.system(size: 22, weight: .bold))
+                              Text("\(favoriteApps.count) تطبيق محفوظ").font(.system(size: 12)).foregroundColor(.gray)
+                          }
+                          Image(systemName: "heart.fill").font(.system(size: 26))
+                              .foregroundStyle(LinearGradient(colors: [.red, .pink], startPoint: .top, endPoint: .bottom))
+                      }.padding(.horizontal)
+                      if favoriteApps.isEmpty {
+                          VStack(spacing: 16) {
+                              Image(systemName: "heart.slash").font(.system(size: 60)).foregroundColor(.gray.opacity(0.4))
+                              Text("لا توجد تطبيقات مفضلة").font(.system(size: 18, weight: .medium))
+                              Text("اضغط على ❤️ على أي تطبيق لإضافته هنا").font(.system(size: 13)).foregroundColor(.gray).multilineTextAlignment(.center)
+                          }.frame(maxWidth: .infinity).padding(.top, 80)
+                      } else {
+                          LazyVStack(spacing: 12) {
+                              ForEach(favoriteApps, id: \.id) { app in
+                                  AppCardView(app: app, downloadManager: downloadManager,
+                                              isFavorite: true,
+                                              onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
+                                      .onTapGesture { selectedApp = app; showDetail = true }
+                                      .padding(.horizontal)
+                              }
+                          }
+                      }
+                      if !downloadManager.installHistory.isEmpty {
+                          VStack(alignment: .trailing, spacing: 12) {
+                              HStack { Spacer(); Text("سجل التثبيت").font(.system(size: 18, weight: .bold)) }.padding(.horizontal)
+                              ForEach(downloadManager.installHistory.prefix(5)) { record in InstallRecordRow(record: record) }
+                          }
+                      }
+                  }
+                  .sheet(isPresented: $showDetail) {
+                      if let app = selectedApp { AppDetailView(app: app, downloadManager: downloadManager) }
+                  }
+              }
+          }
+          
+          struct InstallRecordRow: View {
+              let record: InstallRecord; @Environment(\.colorScheme) var scheme
+              var body: some View {
+                  HStack(spacing: 12) {
+                      Image(systemName: "checkmark.seal.fill").font(.system(size: 20)).foregroundColor(.green)
+                          .frame(width: 40, height: 40)
+                          .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
+                      VStack(alignment: .trailing, spacing: 2) {
+                          Text(record.appName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                          Text(record.installMethod).font(.system(size: 11)).foregroundColor(.blue)
+                      }
+                      Spacer()
+                      Text({ let df = DateFormatter(); df.dateFormat = "dd/MM HH:mm"; return df.string(from: record.installDate) }() as String)
+                          .font(.system(size: 10)).foregroundColor(.gray)
+                  }
+                  .padding(12).glassCard(radius: 14).padding(.horizontal)
+              }
+          }
           VIPEOF
 
       - name: Generate Source - InstallSupportViews.swift
@@ -2864,18 +3417,15 @@ jobs:
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
-          
               @State private var progress: Double = 0
               @State private var statusMsg  = ""
               @State private var isRunning  = false
               @State private var resultMsg: String?
               @State private var succeeded  = false
-          
               var appName: String { file.fileName.replacingOccurrences(of: ".ipa", with: "") }
               var bundleID: String {
                   "com.vip21." + appName.lowercased().replacingOccurrences(of: " ", with: "")
               }
-          
               var body: some View {
                   NavigationView {
                       ScrollView {
@@ -2897,9 +3447,7 @@ jobs:
                                           .font(.caption).foregroundColor(.orange)
                                   }
                               }.padding(.top, 20)
-          
                               Divider()
-          
                               if isRunning || progress > 0 {
                                   VStack(spacing: 8) {
                                       ProgressView(value: progress)
@@ -2909,7 +3457,6 @@ jobs:
                                           .multilineTextAlignment(.center)
                                   }.padding(.horizontal)
                               }
-          
                               if let msg = resultMsg {
                                   HStack {
                                       Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
@@ -2918,7 +3465,6 @@ jobs:
                                           .foregroundColor(succeeded ? .green : .red)
                                   }.padding(.horizontal)
                               }
-          
                               GradientButton(
                                   title:      isRunning ? "جاري التثبيت..." : "تثبيت التطبيق",
                                   icon:       isRunning ? nil : "icloud.and.arrow.down.fill",
@@ -2927,7 +3473,6 @@ jobs:
                                   isLoading:  isRunning,
                                   isDisabled: isRunning
                               ).padding(.horizontal)
-          
                               Spacer(minLength: 30)
                           }
                       }
@@ -2940,7 +3485,6 @@ jobs:
                       }
                   }
               }
-          
               private func doInstall() {
                   isRunning = true; resultMsg = nil; succeeded = false
                   let ipaURL = URL(fileURLWithPath: file.signedPath ?? file.localPath)
@@ -2967,6 +3511,100 @@ jobs:
                   )
               }
           }
+          
+          struct VIP21FileRecoveryView: View {
+              @ObservedObject var downloadManager: IPADownloadManager
+              @Environment(\.colorScheme) var scheme
+              @State private var isRecovering = false
+              @State private var recoveryMsg  = ""
+              @State private var recovered    = 0
+              var body: some View {
+                  VStack(spacing: 20) {
+                      VStack(spacing: 8) {
+                          Image(systemName: "arrow.triangle.2.circlepath.doc.fill")
+                              .font(.system(size: 48))
+                              .foregroundStyle(LinearGradient(
+                                  colors: [.vipPurple, .cyan], startPoint: .top, endPoint: .bottom))
+                          Text("استرداد الملفات").font(.system(size: 20, weight: .bold))
+                          Text("يبحث عن ملفات IPA في تخزين التطبيق ويستردها")
+                              .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                      }.padding(.top, 16)
+                      Divider()
+                      HStack(spacing: 20) {
+                          statCard(downloadManager.ipaFiles.count,  "ملفات",  "archivebox.fill",         .vipPurple)
+                          statCard(downloadManager.ipaFiles.filter(\.isSigned).count,   "موقَّعة", "checkmark.seal.fill",     .green)
+                          statCard(downloadManager.ipaFiles.filter(\.isInstalled).count, "مثبَّتة", "square.and.arrow.down.fill", .blue)
+                      }.padding(.horizontal)
+                      if isRecovering {
+                          ProgressView().scaleEffect(1.3).padding()
+                          Text(recoveryMsg).font(.caption).foregroundColor(.secondary)
+                      } else if !recoveryMsg.isEmpty {
+                          HStack {
+                              Image(systemName: recovered > 0 ? "checkmark.circle.fill" : "info.circle.fill")
+                                  .foregroundColor(recovered > 0 ? .green : .blue)
+                              Text(recoveryMsg).font(.system(size: 13))
+                          }.padding(.horizontal)
+                      }
+                      GradientButton(
+                          title:      isRecovering ? "جاري الاسترداد..." : "استرداد الآن",
+                          icon:       isRecovering ? nil : "arrow.triangle.2.circlepath",
+                          gradient:   [.vipPurple, .cyan],
+                          action:     startRecovery,
+                          isLoading:  isRecovering,
+                          isDisabled: isRecovering
+                      ).padding(.horizontal)
+                      if !downloadManager.ipaFiles.isEmpty {
+                          VStack(alignment: .leading, spacing: 10) {
+                              Text("الملفات المتوفرة")
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .padding(.horizontal)
+                              ForEach(downloadManager.ipaFiles) { file in
+                                  HStack(spacing: 12) {
+                                      Image(systemName: "doc.badge.gearshape.fill").foregroundColor(.vipPurple)
+                                      VStack(alignment: .leading, spacing: 2) {
+                                          Text(file.fileName).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                          Text(file.fileSize).font(.caption).foregroundColor(.secondary)
+                                      }
+                                      Spacer()
+                                      if file.isSigned {
+                                          Image(systemName: "checkmark.seal.fill")
+                                              .foregroundColor(.green).font(.caption)
+                                      }
+                                  }
+                                  .padding(.horizontal).padding(.vertical, 6)
+                                  .background(RoundedRectangle(cornerRadius: 10)
+                                      .fill(Color(uiColor: .secondarySystemBackground)))
+                                  .padding(.horizontal)
+                              }
+                          }
+                      }
+                      Spacer(minLength: 30)
+                  }
+              }
+              private func statCard(_ count: Int, _ label: String, _ icon: String, _ color: Color) -> some View {
+                  VStack(spacing: 4) {
+                      Image(systemName: icon).font(.system(size: 22)).foregroundColor(color)
+                      Text("\(count)").font(.system(size: 20, weight: .bold))
+                      Text(label).font(.caption2).foregroundColor(.secondary)
+                  }
+                  .frame(maxWidth: .infinity).padding(.vertical, 12)
+                  .background(RoundedRectangle(cornerRadius: 12).fill(color.opacity(0.1)))
+              }
+              private func startRecovery() {
+                  isRecovering = true; recoveryMsg = ""; recovered = 0
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let recoveredCount = downloadManager.recoverFiles()
+                      DispatchQueue.main.async {
+                          isRecovering = false
+                          recovered = recoveredCount
+                          recoveryMsg = recoveredCount > 0
+                              ? "تم استرداد " + String(recoveredCount) + " ملف"
+                              : "لا توجد ملفات جديدة للاسترداد"
+                          if recoveredCount > 0 { HapticManager.shared.notification(.success) }
+                      }
+                  }
+              }
+          }
           VIPEOF
 
       - name: Generate Source - SigningTabView.swift
@@ -2988,8 +3626,10 @@ jobs:
               @State private var showInstallError = false
               @State private var installErrorMsg = ""
               @State private var selectedSegment = 0
+              @State private var tagInput: String = ""
+              @State private var pendingRecovery = false
+              @AppStorage("vip21.userTags") private var savedTagsCSV: String = ""
               @Environment(\.colorScheme) var scheme
-          
               var body: some View {
                   VStack(spacing: 16) {
                       HStack(spacing: 14) {
@@ -3021,19 +3661,18 @@ jobs:
                               }
                           }
                       }.padding(.horizontal)
-          
                       CertificateStatusBar(certificateManager: certificateManager).padding(.horizontal)
-          
                       HStack(spacing: 10) {
                           quickActionButton(title: "استورد IPA", icon: "tray.and.arrow.down.fill",
                                             colors: [.vipPurple, .indigo]) { showIPAPicker = true }
+                          quickActionButton(title: "استرداد الملفات", icon: "arrow.clockwise.icloud.fill",
+                                            colors: [.orange, .red]) { pendingRecovery = true }
                       }.padding(.horizontal)
-          
                       Picker("", selection: $selectedSegment) {
                           Text("الملفات (\(downloadManager.ipaFiles.count))").tag(0)
                           Text("قيد التحميل (\(downloadManager.activeDownloads.count))").tag(1)
+                          Text("العلامات").tag(2)
                       }.pickerStyle(SegmentedPickerStyle()).padding(.horizontal)
-          
                       if selectedSegment == 0 {
                           if certificateManager.certificates.isEmpty { emptyCertView }
                           else if downloadManager.ipaFiles.isEmpty { emptyFilesView }
@@ -3052,7 +3691,7 @@ jobs:
                                   }
                               }
                           }
-                      } else {
+                      } else if selectedSegment == 1 {
                           if downloadManager.activeDownloads.isEmpty {
                               VStack(spacing: 12) {
                                   Image(systemName: "icloud.and.arrow.down").font(.system(size: 50))
@@ -3066,6 +3705,8 @@ jobs:
                                   }
                               }
                           }
+                      } else {
+                          tagsSection.padding(.horizontal)
                       }
                   }
                   .sheet(isPresented: $showIPAPicker) {
@@ -3093,11 +3734,25 @@ jobs:
                       }
                   }
                   .overlay(signingProgress.map { p in SigningProgressOverlay(progress: p, status: signingStatus) })
+                  .sheet(isPresented: $pendingRecovery) {
+                      NavigationView {
+                          ScrollView {
+                              VIP21FileRecoveryView(downloadManager: downloadManager)
+                          }
+                          .navigationTitle("استرداد الملفات")
+                          .navigationBarTitleDisplayMode(.inline)
+                          .toolbar {
+                              ToolbarItem(placement: .navigationBarTrailing) {
+                                  Button("إغلاق") { pendingRecovery = false }
+                                      .foregroundColor(.vipPurple)
+                              }
+                          }
+                      }
+                  }
                   .alert("خطأ في التثبيت", isPresented: $showInstallError) {
                       Button("حسناً", role: .cancel) { }
                   } message: { Text(installErrorMsg) }
               }
-          
               func quickActionButton(title: String, icon: String, colors: [Color], action: @escaping () -> Void) -> some View {
                   Button(action: action) {
                       HStack(spacing: 8) {
@@ -3114,7 +3769,51 @@ jobs:
                       )
                   }
               }
-          
+              var tagsSection: some View {
+                  var tags: [String] {
+                      savedTagsCSV.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                  }
+                  return VStack(alignment: .trailing, spacing: 14) {
+                      HStack {
+                          Spacer()
+                          Text("العلامات المخصصة").font(.system(size: 15, weight: .bold))
+                          Image(systemName: "tag.fill").foregroundColor(.vipPurple)
+                      }
+                      HStack(spacing: 8) {
+                          Button(action: {
+                              let t = tagInput.trimmingCharacters(in: .whitespaces)
+                              guard !t.isEmpty else { return }
+                              var current = tags
+                              if !current.contains(t) { current.append(t) }
+                              savedTagsCSV = current.joined(separator: ",")
+                              tagInput = ""
+                              HapticManager.shared.impact(.light)
+                          }) {
+                              Image(systemName: "plus.circle.fill").font(.system(size: 24))
+                                  .foregroundStyle(LinearGradient(colors: [.vipPurple, .blue],
+                                                   startPoint: .top, endPoint: .bottom))
+                          }
+                          TextField("أضف علامة (مثال: مفضّل، عمل، ألعاب)", text: $tagInput)
+                              .font(.system(size: 14)).multilineTextAlignment(.trailing)
+                              .padding(.horizontal, 12).padding(.vertical, 10)
+                              .background(RoundedRectangle(cornerRadius: 12)
+                                  .fill(scheme == .dark ? Color(white: 0.12) : Color(white: 0.96)))
+                      }
+                      if tags.isEmpty {
+                          VStack(spacing: 8) {
+                              Image(systemName: "tag.slash").font(.system(size: 32)).foregroundColor(.gray.opacity(0.4))
+                              Text("لا توجد علامات بعد").font(.system(size: 12)).foregroundColor(.gray)
+                          }.frame(maxWidth: .infinity).padding(.vertical, 16)
+                      } else {
+                          FlexibleTagsView(tags: tags) { tag in
+                              var current = tags
+                              current.removeAll { $0 == tag }
+                              savedTagsCSV = current.joined(separator: ",")
+                          }
+                      }
+                  }
+                  .padding(16).glassCard(radius: 18)
+              }
               var emptyCertView: some View {
                   VStack(spacing: 16) {
                       Image(systemName: "signature").font(.system(size: 55)).foregroundColor(.gray.opacity(0.4))
@@ -3122,7 +3821,6 @@ jobs:
                       Text("أضف شهادة P12 من تبويب الإعدادات").font(.system(size: 13)).foregroundColor(.gray)
                   }.frame(maxWidth: .infinity).padding(.top, 60)
               }
-          
               var emptyFilesView: some View {
                   VStack(spacing: 16) {
                       Image(systemName: "doc.badge.plus").font(.system(size: 55)).foregroundColor(.gray.opacity(0.4))
@@ -3130,14 +3828,11 @@ jobs:
                       Text("حمّل تطبيقاً أو استورد ملف IPA").font(.system(size: 13)).foregroundColor(.gray)
                   }.frame(maxWidth: .infinity).padding(.top, 60)
               }
-          
               func handleInstall(file: IPAFile) { pendingInstallFile = file; showInstallSheet = true }
-          
               func performSigning(file: IPAFile, cert: CertificateInfoModel) {
                   let ipaURL = URL(fileURLWithPath: file.localPath)
                   signingProgress = 0.0
                   signingStatus   = "⚙️ جاري التوقيع..."
-          
                   certificateManager.signIPA(
                       ipaURL: ipaURL, with: cert,
                       progressHandler: { p, s in
@@ -3198,7 +3893,6 @@ jobs:
                       }
                   )
               }
-          
               func shareIPA(file: IPAFile) {
                   let url = URL(fileURLWithPath: file.signedPath ?? file.localPath)
                   let name = file.fileName.replacingOccurrences(of: ".ipa", with: "")
@@ -3228,7 +3922,6 @@ jobs:
                                   .rotationEffect(.degrees(-90))
                               Text("\(cert.healthScore)%").font(.system(size: 8, weight: .bold)).foregroundColor(cert.expiryStatusColor)
                           }.frame(width: 36, height: 36)
-          
                           VStack(alignment: .leading, spacing: 2) {
                               Text(cert.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                               Text(cert.expiryText).font(.system(size: 11)).foregroundColor(cert.expiryStatusColor)
@@ -3245,6 +3938,37 @@ jobs:
               }
           }
           
+          struct FlexibleTagsView: View {
+              let tags: [String]
+              let onRemove: (String) -> Void
+              var body: some View {
+                  VStack(alignment: .trailing, spacing: 8) {
+                      ForEach(stride(from: 0, to: tags.count, by: 3).map { Array(tags[$0..<min($0+3, tags.count)]) }, id: \.self) { row in
+                          HStack(spacing: 8) {
+                              Spacer(minLength: 0)
+                              ForEach(row, id: \.self) { tag in
+                                  HStack(spacing: 6) {
+                                      Button(action: { onRemove(tag) }) {
+                                          Image(systemName: "xmark.circle.fill")
+                                              .font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+                                      }
+                                      Text(tag).font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
+                                          .lineLimit(1)
+                                  }
+                                  .padding(.horizontal, 10).padding(.vertical, 6)
+                                  .background(
+                                      Capsule().fill(LinearGradient(
+                                          colors: [.vipPurple, .blue],
+                                          startPoint: .topLeading, endPoint: .bottomTrailing))
+                                  )
+                                  .shadow(color: .vipPurple.opacity(0.25), radius: 4, y: 2)
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          
           struct IPAFileCard: View {
               let file: IPAFile; let hasValidCert: Bool
               let onSign: () -> Void
@@ -3253,10 +3977,8 @@ jobs:
               let onDelete: () -> Void
               let onEdit: () -> Void
               @Environment(\.colorScheme) var scheme
-          
               var statusColor: Color { file.isInstalled ? .blue : file.isSigned ? .green : .orange }
               var statusLabel: String { file.isInstalled ? "مثبت" : file.isSigned ? "موقَّع" : "غير موقَّع" }
-          
               var body: some View {
                   VStack(spacing: 12) {
                       HStack(spacing: 12) {
@@ -3282,9 +4004,7 @@ jobs:
                               .padding(.horizontal, 10).padding(.vertical, 5)
                               .background(Capsule().fill(statusColor.opacity(0.15))).foregroundColor(statusColor)
                       }
-          
                       Divider().background(Color.gray.opacity(0.15))
-          
                       HStack(spacing: 8) {
                           iconBtn("square.and.arrow.up", color: .blue)  { onShare() }
                           iconBtn("wand.and.stars", color: .purple) { onEdit() }
@@ -3303,7 +4023,6 @@ jobs:
                       }
                   }.padding(14).glassCard(radius: 18)
               }
-          
               func iconBtn(_ icon: String, color: Color, action: @escaping () -> Void) -> some View {
                   Button(action: action) {
                       Image(systemName: icon).font(.system(size: 16)).foregroundColor(color)
@@ -3318,7 +4037,6 @@ jobs:
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.colorScheme) var scheme
               @State private var shimmerOffset: CGFloat = -200
-          
               var body: some View {
                   VStack(spacing: 14) {
                       HStack(spacing: 14) {
@@ -3350,7 +4068,6 @@ jobs:
                                   .rotationEffect(.degrees(-90))
                                   .animation(.linear(duration: 0.3), value: download.progress)
                           }
-          
                           VStack(alignment: .leading, spacing: 5) {
                               Text(download.appName)
                                   .font(.system(size: 15, weight: .bold)).lineLimit(1)
@@ -3413,7 +4130,6 @@ jobs:
                               }
                           }
                       }
-          
                       GeometryReader { geo in
                           ZStack(alignment: .leading) {
                               RoundedRectangle(cornerRadius: 7)
@@ -3444,7 +4160,6 @@ jobs:
                                   .clipShape(RoundedRectangle(cornerRadius: 7))
                           }
                       }.frame(height: 10)
-          
                       if let err = download.errorMessage {
                           HStack(spacing: 6) {
                               Image(systemName: "exclamationmark.circle.fill")
@@ -3483,13 +4198,11 @@ jobs:
               let progress: Double; let status: String
               @State private var logLines: [String] = []
               @State private var timer: Timer?
-          
               private let signingSteps = [
                   "🔍 فحص ملف IPA...", "📦 فك الضغط...", "🔑 تحميل الشهادة...",
                   "✍️ توقيع Mach-O headers...", "🔐 بناء CMS Signature...",
                   "📋 حقن Entitlements...", "🗜️ ضغط IPA الموقّع...", "✅ اكتمل التوقيع!"
               ]
-          
               var body: some View {
                   ZStack {
                       Color.black.opacity(0.75).edgesIgnoringSafeArea(.all)
@@ -3514,7 +4227,6 @@ jobs:
                               Spacer()
                           }
                           .padding(20)
-          
                           GeometryReader { geo in
                               ZStack(alignment: .leading) {
                                   RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.1)).frame(height: 4)
@@ -3524,7 +4236,6 @@ jobs:
                                       .animation(.easeInOut(duration: 0.4), value: progress)
                               }
                           }.frame(height: 4).padding(.horizontal, 20)
-          
                           ScrollView(showsIndicators: false) {
                               VStack(alignment: .leading, spacing: 4) {
                                   ForEach(Array(logLines.suffix(8).enumerated()), id: \.offset) { idx, line in
@@ -3553,7 +4264,6 @@ jobs:
                   .onAppear { startLogAnimation() }
                   .onDisappear { timer?.invalidate() }
               }
-          
               private func startLogAnimation() {
                   var stepIdx = 0
                   timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { t in
@@ -3569,7 +4279,6 @@ jobs:
               let selectedCertId: UUID?; let onSign: (CertificateInfoModel) -> Void
               @Environment(\.dismiss) var dismiss; @Environment(\.colorScheme) var scheme
               @State private var selectedCert: CertificateInfoModel?
-          
               var body: some View {
                   NavigationView {
                       VStack(spacing: 0) {
@@ -3579,7 +4288,6 @@ jobs:
                               Text(ipaFile.fileName).font(.system(size: 16, weight: .semibold)).lineLimit(1)
                               Text("اختر شهادة للتوقيع").font(.system(size: 13)).foregroundColor(.gray)
                           }.padding(.vertical, 20)
-          
                           if certificates.isEmpty {
                               VStack(spacing: 12) {
                                   Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 40)).foregroundColor(.orange)
@@ -3609,7 +4317,6 @@ jobs:
                                   }.buttonStyle(PlainButtonStyle())
                               }.frame(maxHeight: 340)
                           }
-          
                           GradientButton(
                               title: "توقيع بـ zsign",
                               icon: "signature",
@@ -3643,7 +4350,6 @@ jobs:
               @State private var isDownloading = false
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
-          
               var body: some View {
                   ZStack {
                       (scheme == .dark ? Color.vipDark : Color(red: 0.96, green: 0.96, blue: 1.0)).edgesIgnoringSafeArea(.all)
@@ -3659,11 +4365,17 @@ jobs:
                                   .font(.system(size: 17, weight: .bold))
                                   .lineLimit(1)
                               Spacer()
+                              if let dm = downloadManager {
+                                  Button(action: { dm.toggleFavorite(appName: app.name); HapticManager.shared.impact(.light) }) {
+                                      Image(systemName: dm.isFavorite(app.name) ? "heart.fill" : "heart")
+                                          .font(.title3)
+                                          .foregroundColor(dm.isFavorite(app.name) ? .red : .gray)
+                                  }
+                              }
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 12)
                           .padding(.bottom, 8)
-          
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 20) {
                                   ZStack(alignment: .bottom) {
@@ -3697,7 +4409,6 @@ jobs:
                                           .shadow(color: .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
                                           .shadow(color: .blue.opacity(0.25), radius: 30, x: 0, y: 18)
                                           .padding(.horizontal, 16)
-          
                                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                                           switch phase {
                                           case .success(let img):
@@ -3720,7 +4431,6 @@ jobs:
                                       .offset(y: 50)
                                   }
                                   .padding(.bottom, 50)
-          
                                   VStack(spacing: 6) {
                                       Text(app.name)
                                           .font(.system(size: 26, weight: .black))
@@ -3733,7 +4443,6 @@ jobs:
                                           if app.isPopular { PopularBadge() }
                                       }
                                   }
-          
                                   HStack(spacing: 0) {
                                       DetailStat(icon: "memorychip", value: app.formattedSize, label: "الحجم")
                                       Divider().frame(height: 40).background(Color.gray.opacity(0.2))
@@ -3744,13 +4453,11 @@ jobs:
                                   .padding(.vertical, 16)
                                   .glassCard(radius: 18)
                                   .padding(.horizontal)
-          
                                   HStack(spacing: 12) {
                                       InfoPill(label: "Bundle ID", value: app.bundleID)
                                       InfoPill(label: "الترخيص", value: app.subscriptionType)
                                   }
                                   .padding(.horizontal)
-          
                                   VStack(alignment: .trailing, spacing: 8) {
                                       HStack {
                                           Spacer()
@@ -3768,7 +4475,6 @@ jobs:
                                   .padding(16)
                                   .glassCard(radius: 16)
                                   .padding(.horizontal)
-          
                                   GradientButton(
                                       title: "تحميل IPA",
                                       icon: "arrow.down.circle.fill",
@@ -3786,7 +4492,7 @@ jobs:
                                   .padding(.bottom, 24)
                               }
                               .padding(.vertical, 16)
-                          }
+                          )
                       }
                   }
                   .preferredColorScheme(.none)
@@ -3827,7 +4533,6 @@ jobs:
           struct SettingsView: View {
               @ObservedObject var certificateManager: CertificateManager
               @ObservedObject var profileManager: UserProfileManager
-          
               @State private var showP12Picker        = false
               @State private var showProvPicker       = false
               @State private var p12Data:    Data?    = nil
@@ -3842,9 +4547,7 @@ jobs:
               @State private var showPassword         = false
               @State private var showAddCertForm      = false
               @Environment(\.colorScheme) var scheme
-          
               private let officialSource = "https://repository.apptesters.org/apps.json"
-          
               var p12Types: [UTType] {
                   var t: [UTType] = [.data]
                   if let t1 = UTType(filenameExtension: "p12")    { t.insert(t1, at: 0) }
@@ -3858,7 +4561,6 @@ jobs:
                   if let t2 = UTType(filenameExtension: "provisionprofile")   { t.insert(t2, at: 1) }
                   return t
               }
-          
               var body: some View {
                   VStack(spacing: 20) {
                       certificateSection
@@ -3895,7 +4597,6 @@ jobs:
                       Text(certificateManager.permissionMessage)
                   }
               }
-          
               var certificateSection: some View {
                   VStack(alignment: .trailing, spacing: 16) {
                       HStack {
@@ -3908,7 +4609,6 @@ jobs:
                           Text("\(certificateManager.certificates.count) شهادة")
                               .font(.system(size: 12)).foregroundColor(.gray)
                       }
-          
                       if !certificateManager.certificates.isEmpty {
                           VStack(spacing: 8) {
                               ForEach(certificateManager.certificates) { cert in
@@ -3934,9 +4634,7 @@ jobs:
                               Spacer()
                           }
                       }
-          
                       Divider()
-          
                       Button(action: {
                           withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                               showAddCertForm.toggle()
@@ -3968,12 +4666,10 @@ jobs:
                           .background(RoundedRectangle(cornerRadius: 14)
                               .fill(scheme == .dark ? Color(white: 0.12) : Color(white: 0.97)))
                       }
-          
                       if showAddCertForm {
                       VStack(alignment: .trailing, spacing: 12) {
                           Text("إضافة شهادة جديدة")
                               .font(.system(size: 14, weight: .semibold)).foregroundColor(.vipPurple)
-          
                           HStack(spacing: 10) {
                               Button(action: { showP12Picker = true }) {
                                   HStack(spacing: 8) {
@@ -4006,7 +4702,6 @@ jobs:
                                           : LinearGradient(colors: [.blue, .blue.opacity(0.7)],
                                               startPoint: .leading, endPoint: .trailing)))
                               }
-          
                               Button(action: { showProvPicker = true }) {
                                   HStack(spacing: 8) {
                                       Image(systemName: provData != nil ? "checkmark.circle.fill" : "doc.badge.gearshape.fill")
@@ -4039,7 +4734,6 @@ jobs:
                                               startPoint: .leading, endPoint: .trailing)))
                               }
                           }
-          
                           VStack(spacing: 10) {
                               HStack(spacing: 0) {
                                   Button(action: { showPassword.toggle() }) {
@@ -4066,7 +4760,6 @@ jobs:
                                   .overlay(RoundedRectangle(cornerRadius: 10)
                                       .stroke(certPassword.isEmpty ? Color.orange.opacity(0.5) : Color.green.opacity(0.5),
                                               lineWidth: 1.2)))
-          
                               HStack(spacing: 4) {
                                   Spacer()
                                   Image(systemName: certPassword.isEmpty ? "exclamationmark.circle" : "checkmark.circle")
@@ -4078,7 +4771,6 @@ jobs:
                                       .font(.system(size: 11))
                                       .foregroundColor(certPassword.isEmpty ? .orange : .green)
                               }
-          
                               TextField("اسم مخصص للشهادة (اختياري)", text: $certDisplayName)
                                   .font(.system(size: 14))
                                   .autocapitalization(.none)
@@ -4087,7 +4779,6 @@ jobs:
                                   .background(RoundedRectangle(cornerRadius: 10)
                                       .fill(scheme == .dark ? Color(white: 0.1) : Color(white: 0.96)))
                           }
-          
                           if p12Data != nil || provData != nil {
                               HStack(spacing: 16) {
                                   if let d = p12Data {
@@ -4107,7 +4798,6 @@ jobs:
                               .padding(.horizontal, 4)
                               .transition(.opacity.combined(with: .move(edge: .top)))
                           }
-          
                           Button(action: importCertificate) {
                               HStack(spacing: 10) {
                                   if isImporting {
@@ -4147,7 +4837,6 @@ jobs:
                   .animation(.spring(response: 0.3, dampingFraction: 0.8), value: provData != nil)
                   .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showAddCertForm)
               }
-          
               var importMissingHint: String {
                   if p12Data == nil && provData == nil { return "اختر P12 و Profile أولاً" }
                   if p12Data == nil                    { return "اختر ملف P12 أولاً" }
@@ -4155,12 +4844,10 @@ jobs:
                   if certPassword.isEmpty              { return "أدخل كلمة السر" }
                   return "استيراد الشهادة"
               }
-          
               var importEnabled: Bool {
                   guard let p = p12Data, let prov = provData else { return false }
                   return !p.isEmpty && !prov.isEmpty && !certPassword.isEmpty
               }
-          
               func importCertificate() {
                   guard let p12   = p12Data,
                         let prov  = provData else {
@@ -4173,9 +4860,7 @@ jobs:
                       showValidationError = true
                       return
                   }
-          
                   isImporting = true
-          
                   certificateManager.validateAndSaveCertificate(
                       p12Data:      p12,
                       provisionData: prov,
@@ -4197,7 +4882,6 @@ jobs:
                       }
                   }
               }
-          
               var sourceSection: some View {
                   VStack(alignment: .trailing, spacing: 14) {
                       HStack {
@@ -4213,7 +4897,6 @@ jobs:
                               .padding(.horizontal, 8).padding(.vertical, 3)
                               .background(Capsule().fill(Color.green.opacity(0.15)))
                       }
-          
                       HStack {
                           Spacer()
                           Image(systemName: "checkmark.circle.fill")
@@ -4227,7 +4910,6 @@ jobs:
                       .padding(10)
                       .background(RoundedRectangle(cornerRadius: 12)
                           .fill(scheme == .dark ? Color(white: 0.08) : Color(white: 0.97)))
-          
                       Text("يتم جلب التطبيقات من المصدر الرسمي فقط لضمان الأمان والجودة")
                           .font(.system(size: 11))
                           .foregroundColor(.gray)
@@ -4236,7 +4918,6 @@ jobs:
                   }
                   .padding(16).glassCard(radius: 20)
               }
-          
               var appInfoSection: some View {
                   VStack(spacing: 10) {
                       infoRow(icon: "info.circle",           label: "الإصدار",      value: "v\(AppConstants.appVersion)")
@@ -4246,7 +4927,6 @@ jobs:
                       infoRow(icon: "link",                   label: "تيليغرام",     value: "@ClickStoreipaios")
                   }.padding(16).glassCard(radius: 20)
               }
-          
               func infoRow(icon: String, label: String, value: String) -> some View {
                   HStack {
                       Image(systemName: icon).foregroundColor(.vipPurple).frame(width: 24)
@@ -4261,7 +4941,6 @@ jobs:
               let cert: CertificateInfoModel; let isSelected: Bool
               let onSelect: () -> Void; let onDelete: () -> Void
               @State private var showDetails = false; @Environment(\.colorScheme) var scheme
-          
               var body: some View {
                   VStack(alignment: .trailing, spacing: 8) {
                       HStack(spacing: 10) {
@@ -4282,7 +4961,6 @@ jobs:
                                   .font(.system(size: 22))
                           }
                       }
-          
                       if showDetails {
                           VStack(alignment: .trailing, spacing: 4) {
                               if let cName = cert.certificateName {
@@ -4317,7 +4995,6 @@ jobs:
           class IPAPatcher {
               static let shared = IPAPatcher()
               private let fm = FileManager.default
-          
               private let iconSizes: [(name: String, size: CGFloat)] = [
                   ("AppIcon20x20@1x.png",    20),  ("AppIcon20x20@2x.png",    40),
                   ("AppIcon20x20@3x.png",    60),  ("AppIcon29x29@1x.png",    29),
@@ -4328,7 +5005,6 @@ jobs:
                   ("AppIcon76x76@2x.png",   152),  ("AppIcon83.5x83.5@2x.png",167),
                   ("AppIcon1024x1024.png", 1024),
               ]
-          
               struct PatchOptions {
                   var newName:         String?
                   var newDisplayName:  String?
@@ -4336,7 +5012,6 @@ jobs:
                   var newIcon:         UIImage?
                   var duplicate:       Bool = false
               }
-          
               func patchIPA(
                   sourceURL: URL,
                   options: PatchOptions,
@@ -4355,7 +5030,6 @@ jobs:
                       }
                   }
               }
-          
               private func performPatch(
                   sourceURL: URL,
                   options: PatchOptions,
@@ -4365,13 +5039,10 @@ jobs:
                   let tmp = fm.temporaryDirectory.appendingPathComponent("patch_\(UUID().uuidString)")
                   try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
                   defer { try? fm.removeItem(at: tmp) }
-          
                   let extractDir = tmp.appendingPathComponent("extracted")
                   try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
-          
                   progress(0.05, "📦 فك ضغط IPA...")
                   try VIPZipHelper.extractAll(from: sourceURL, to: extractDir)
-          
                   progress(0.20, "🔍 البحث عن .app bundle...")
                   let payloadDir = extractDir.appendingPathComponent("Payload")
                   guard fm.fileExists(atPath: payloadDir.path),
@@ -4382,7 +5053,6 @@ jobs:
                       throw NSError(domain: "IPAPatcher", code: 1,
                                     userInfo: [NSLocalizedDescriptionKey: "لم يُعثر على .app داخل IPA"])
                   }
-          
                   if options.newName != nil || options.newDisplayName != nil || options.newBundleID != nil {
                       progress(0.30, "📝 تعديل Info.plist...")
                       let plistURL = appBundle.appendingPathComponent("Info.plist")
@@ -4399,7 +5069,6 @@ jobs:
                           }
                       }
                   }
-          
                   if let icon = options.newIcon {
                       progress(0.45, "🎨 تغيير الأيقونة...")
                       for spec in iconSizes {
@@ -4409,7 +5078,6 @@ jobs:
                           }
                       }
                   }
-          
                   progress(0.65, "🗜 إعادة ضغط IPA...")
                   let originalBase = sourceURL.deletingPathExtension().lastPathComponent
                   let suffix       = options.duplicate ? "_clone_\(Int.random(in: 1000...9999))" : "_patched"
@@ -4419,13 +5087,10 @@ jobs:
                   try? fm.createDirectory(at: outURL.deletingLastPathComponent(),
                                           withIntermediateDirectories: true)
                   if fm.fileExists(atPath: outURL.path) { try fm.removeItem(at: outURL) }
-          
                   try VIPZipHelper.createZip(from: extractDir, to: outURL)
-          
                   progress(1.0, "✅ اكتملت عملية التعديل!")
                   return outURL
               }
-          
               private func resizeIcon(_ image: UIImage, to size: CGFloat) -> Data? {
                   let s = CGSize(width: size, height: size)
                   UIGraphicsBeginImageContextWithOptions(s, false, 1.0)
@@ -4441,36 +5106,29 @@ jobs:
               @ObservedObject var downloadManager: IPADownloadManager
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
-          
               @State private var newName:        String = ""
               @State private var newDisplayName: String = ""
               @State private var newBundleID:    String = ""
               @State private var asDuplicate:    Bool   = false
-          
               @State private var isPatching      = false
               @State private var patchProgress:  Double?
               @State private var patchStatus     = ""
               @State private var patchResult:    String?
               @State private var patchSuccess    = false
-          
               var body: some View {
                   NavigationView {
                       ScrollView {
                           VStack(spacing: 20) {
-          
                               Spacer(minLength: 6)
-          
                               VStack(spacing: 14) {
                                   patchField(title: "اسم التطبيق (CFBundleName)",
                                              placeholder: "مثال: MyApp",
                                              text: $newName,
                                              icon: "textformat", color: .vipPurple)
-          
                                   patchField(title: "الاسم الظاهر على الشاشة",
                                              placeholder: "مثال: تطبيقي",
                                              text: $newDisplayName,
                                              icon: "tag.fill", color: .blue)
-          
                                   patchField(title: "Bundle ID",
                                              placeholder: "مثال: com.myteam.myapp",
                                              text: $newBundleID,
@@ -4478,7 +5136,6 @@ jobs:
                                              keyboard: .asciiCapable)
                               }
                               .padding(.horizontal)
-          
                               Toggle(isOn: $asDuplicate) {
                                   VStack(alignment: .leading, spacing: 2) {
                                       Text("حفظ كنسخة مكرّرة").font(.system(size: 14, weight: .semibold))
@@ -4489,7 +5146,6 @@ jobs:
                               .padding(14)
                               .glassCard(radius: 14)
                               .padding(.horizontal)
-          
                               if let p = patchProgress {
                                   VStack(spacing: 6) {
                                       ProgressView(value: p)
@@ -4497,7 +5153,6 @@ jobs:
                                       Text(patchStatus).font(.system(size: 11)).foregroundColor(.gray)
                                   }.padding(.horizontal)
                               }
-          
                               if let result = patchResult {
                                   Text(result)
                                       .font(.system(size: 13))
@@ -4505,7 +5160,6 @@ jobs:
                                       .multilineTextAlignment(.center)
                                       .padding(.horizontal)
                               }
-          
                               GradientButton(
                                   title: isPatching ? "جاري التعديل..." : (asDuplicate ? "تكرار وتعديل" : "تطبيق التعديلات"),
                                   icon: asDuplicate ? "doc.on.doc.fill" : "wand.and.stars",
@@ -4513,7 +5167,6 @@ jobs:
                                   action: applyPatch,
                                   isDisabled: isPatching || nothingChanged
                               ).padding(.horizontal)
-          
                               Spacer(minLength: 30)
                           }
                       }
@@ -4526,11 +5179,9 @@ jobs:
                       }
                   }
               }
-          
               var nothingChanged: Bool {
                   newName.isEmpty && newDisplayName.isEmpty && newBundleID.isEmpty
               }
-          
               @ViewBuilder
               func patchField(title: String, placeholder: String, text: Binding<String>,
                               icon: String, color: Color,
@@ -4556,13 +5207,11 @@ jobs:
                               .stroke(text.wrappedValue.isEmpty ? Color.gray.opacity(0.2) : color.opacity(0.5), lineWidth: 1)))
                   }
               }
-          
               func applyPatch() {
                   let srcURL = URL(fileURLWithPath: file.localPath)
                   isPatching   = true
                   patchProgress = 0
                   patchResult   = nil
-          
                   let opts = IPAPatcher.PatchOptions(
                       newName:         newName.isEmpty        ? nil : newName,
                       newDisplayName:  newDisplayName.isEmpty ? nil : newDisplayName,
@@ -4570,7 +5219,6 @@ jobs:
                       newIcon:         nil,
                       duplicate:       asDuplicate
                   )
-          
                   IPAPatcher.shared.patchIPA(sourceURL: srcURL, options: opts,
                       progressHandler: { p, s in
                           patchProgress = p; patchStatus = s
@@ -4596,6 +5244,75 @@ jobs:
           }
           VIPEOF
 
+      - name: Generate Source - VIP21StoreApp.swift
+        run: |
+          cat > VIP21StoreApp.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+          import UserNotifications
+          
+          @main
+          struct VIP21StoreApp: App {
+              @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+              @StateObject private var cloud = VIP21Cloud.shared
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                          .environmentObject(cloud)
+                          .onAppear {
+                              VIP21Cloud.shared.start()
+                          }
+                  }
+              }
+          }
+          
+          class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+              func application(_ application: UIApplication,
+                               didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+                  UNUserNotificationCenter.current().delegate = self
+                  UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                      if granted { NotificationManager.shared.scheduleDailyReminder() }
+                  }
+                  VIP21Cloud.shared.start()
+                  return true
+              }
+              func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                           willPresent notification: UNNotification,
+                                           withCompletionHandler handler: @escaping (UNNotificationPresentationOptions) -> Void) {
+                  handler([.banner, .sound, .badge])
+              }
+              func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                           didReceive response: UNNotificationResponse,
+                                           withCompletionHandler handler: @escaping () -> Void) {
+                  handler()
+              }
+          }
+          
+          final class VIP21Cloud: ObservableObject {
+              static let shared = VIP21Cloud()
+              @Published var isConnected: Bool = false
+              private var timer: Timer?
+              private init() {}
+              func start() {
+                  guard timer == nil else { return }
+                  timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                      self?.ping()
+                  }
+                  ping()
+              }
+              private func ping() {
+                  guard let url = URL(string: "https://repository.apptesters.org/apps.json") else { return }
+                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+                  req.setValue("VIP21Store/7.0", forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { [weak self] data, _, err in
+                      DispatchQueue.main.async {
+                          self?.isConnected = (data != nil && err == nil)
+                      }
+                  }.resume()
+              }
+          }
+          VIPEOF
+
       - name: Generate Source - NotificationManager.swift
         run: |
           cat > NotificationManager.swift << 'VIPEOF'
@@ -4606,7 +5323,6 @@ jobs:
           class NotificationManager {
               static let shared = NotificationManager()
               private init() {}
-          
               func send(title: String, body: String, identifier: String = UUID().uuidString,
                         iconURL: String? = nil, delay: TimeInterval = 0.5) {
                   UNUserNotificationCenter.current().getNotificationSettings { settings in
@@ -4625,7 +5341,6 @@ jobs:
                       }
                   }
               }
-          
               private func attachIcon(url: URL, content: UNMutableNotificationContent, completion: @escaping (UNMutableNotificationContent) -> Void) {
                   URLSession.shared.dataTask(with: url) { data, _, _ in
                       guard let data = data,
@@ -4639,13 +5354,11 @@ jobs:
                       completion(content)
                   }.resume()
               }
-          
               private func schedule(content: UNMutableNotificationContent, identifier: String, delay: TimeInterval) {
                   let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 0.5), repeats: false)
                   let req = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
                   UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
               }
-          
               func scheduleDailyReminder() {
                   let content = UNMutableNotificationContent()
                   content.title = "🏪 متجر 21s"
@@ -4656,101 +5369,21 @@ jobs:
                   let req = UNNotificationRequest(identifier: "daily_reminder", content: content, trigger: trigger)
                   UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
               }
-          
               func notifyDownloadComplete(appName: String, iconURL: String?) {
                   send(title: "✅ اكتمل التحميل", body: "\(appName) جاهز للتوقيع والتثبيت!",
                        identifier: "dl_\(appName)", iconURL: iconURL, delay: 0.5)
               }
-          
               func notifySigningComplete(appName: String, iconURL: String?) {
                   send(title: "✍️ تم التوقيع بنجاح", body: "\(appName) موقّع وجاهز للتثبيت!",
                        identifier: "sign_\(appName)", iconURL: iconURL, delay: 0.5)
               }
-          
               func notifyInstallComplete(appName: String, iconURL: String?) {
                   send(title: "📲 تم التثبيت", body: "\(appName) مثبّت على جهازك بنجاح 🎉",
                        identifier: "install_\(appName)", iconURL: iconURL, delay: 0.5)
               }
-          
               func notifyCertExpiry(certName: String, daysLeft: Int) {
                   send(title: "⚠️ تنبيه الشهادة", body: "شهادة \(certName) ستنتهي خلال \(daysLeft) يوم — جدّدها الآن",
                        identifier: "cert_expiry_\(certName)", delay: 1.0)
-              }
-          }
-          VIPEOF
-
-      - name: Generate Source - VIP21StoreApp.swift
-        run: |
-          cat > VIP21StoreApp.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import UserNotifications
-          
-          @main
-          struct VIP21StoreApp: App {
-              @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-              @StateObject private var cloud = VIP21Cloud.shared
-          
-              var body: some Scene {
-                  WindowGroup {
-                      ContentView()
-                          .environmentObject(cloud)
-                          .onAppear {
-                              VIP21Cloud.shared.start()
-                          }
-                  }
-              }
-          }
-          
-          class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-          
-              func application(_ application: UIApplication,
-                               didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-                  UNUserNotificationCenter.current().delegate = self
-                  UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                      if granted { NotificationManager.shared.scheduleDailyReminder() }
-                  }
-                  VIP21Cloud.shared.start()
-                  return true
-              }
-          
-              func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                           willPresent notification: UNNotification,
-                                           withCompletionHandler handler: @escaping (UNNotificationPresentationOptions) -> Void) {
-                  handler([.banner, .sound, .badge])
-              }
-          
-              func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                           didReceive response: UNNotificationResponse,
-                                           withCompletionHandler handler: @escaping () -> Void) {
-                  handler()
-              }
-          }
-          
-          final class VIP21Cloud: ObservableObject {
-              static let shared = VIP21Cloud()
-              @Published var isConnected: Bool = false
-              private var timer: Timer?
-          
-              private init() {}
-          
-              func start() {
-                  guard timer == nil else { return }
-                  timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                      self?.ping()
-                  }
-                  ping()
-              }
-          
-              private func ping() {
-                  guard let url = URL(string: "https://repository.apptesters.org/apps.json") else { return }
-                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
-                  req.setValue("VIP21Store/7.0", forHTTPHeaderField: "User-Agent")
-                  URLSession.shared.dataTask(with: req) { [weak self] data, _, err in
-                      DispatchQueue.main.async {
-                          self?.isConnected = (data != nil && err == nil)
-                      }
-                  }.resume()
               }
           }
           VIPEOF
@@ -4759,7 +5392,6 @@ jobs:
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
-          
           xcrun swiftc \
             Constants.swift \
             HapticManager.swift \
@@ -4777,14 +5409,12 @@ jobs:
             AppDetailView.swift \
             SettingsView.swift \
             IPAPatcher.swift \
-            NotificationManager.swift \
             VIP21StoreApp.swift \
+            NotificationManager.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
             -module-name VIP21Store \
-            -emit-executable \
-            -lobjc \
             -framework SwiftUI \
             -framework UIKit \
             -framework Foundation \
@@ -4796,7 +5426,6 @@ jobs:
             -framework UniformTypeIdentifiers \
             -framework LocalAuthentication \
             -o VIP21Store
-          
           file VIP21Store
 
       - name: Create IPA Package
