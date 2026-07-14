@@ -414,6 +414,7 @@ jobs:
         run: |
           cat > SigningEngine.swift << 'VIPEOF'
           import Foundation
+          import UIKit
           
           enum SigningError: LocalizedError {
               case appBundleNotFound
@@ -476,7 +477,6 @@ jobs:
                   cert: CertificateInfoModel,
                   progress: @escaping (Double, String) -> Void
               ) throws -> URL {
-                  // 1. Create temporary directories
                   progress(0.05, "📦 تجهيز الملفات...")
                   let tmp = fm.temporaryDirectory.appendingPathComponent("sign_\(UUID().uuidString)")
                   try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -485,7 +485,6 @@ jobs:
                   let extractDir = tmp.appendingPathComponent("extracted")
                   try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
           
-                  // 2. Extract IPA using ZIPFoundation
                   progress(0.15, "📦 فك ضغط IPA...")
                   let zipHelper = """
                   import Foundation
@@ -514,12 +513,9 @@ jobs:
                   process.waitUntilExit()
                   
                   guard process.terminationStatus == 0 else {
-                      let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                      let errorString = String(data: errorData, encoding: .utf8) ?? "خطأ غير معروف"
                       throw SigningError.extractionFailed
                   }
           
-                  // 3. Find .app bundle
                   progress(0.25, "🔍 تحديد .app bundle...")
                   let payload = extractDir.appendingPathComponent("Payload")
                   guard fm.fileExists(atPath: payload.path),
@@ -528,14 +524,12 @@ jobs:
                         ))?.first(where: { $0.pathExtension == "app" })
                   else { throw SigningError.appBundleNotFound }
           
-                  // 4. Save certificate files
                   progress(0.30, "📝 تحضير الشهادة...")
                   let p12Path = tmp.appendingPathComponent("cert.p12")
                   let provPath = tmp.appendingPathComponent("embedded.mobileprovision")
                   try cert.p12Data.write(to: p12Path)
                   try cert.mobileProvisionData.write(to: provPath)
           
-                  // 5. Run zsign
                   progress(0.40, "✍️ توقيع باستخدام zsign...")
                   let signedIpaPath = tmp.appendingPathComponent("signed.ipa")
                   
@@ -558,14 +552,11 @@ jobs:
                   zsignProcess.waitUntilExit()
                   
                   guard zsignProcess.terminationStatus == 0 else {
-                      let errorData = zsignError.fileHandleForReading.readDataToEndOfFile()
-                      let errorString = String(data: errorData, encoding: .utf8) ?? "خطأ غير معروف"
                       throw SigningError.signingFailed(zsignProcess.terminationStatus)
                   }
           
                   progress(0.90, "✅ اكتمل التوقيع!")
                   
-                  // 6. Copy signed IPA to output directory
                   let outDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
                       .appendingPathComponent("Signed")
                   try? fm.createDirectory(at: outDir, withIntermediateDirectories: true)
@@ -601,8 +592,7 @@ jobs:
                   progressHandler: @escaping (Double, String) -> Void,
                   completion: @escaping (Result<Void, Error>) -> Void
               ) {
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
+                  DispatchQueue.global(qos: .userInitiated).async {
                       guard FileManager.default.fileExists(atPath: ipaURL.path) else {
                           DispatchQueue.main.async { completion(.failure(VIP21InstallError.invalidIPA)) }
                           return
@@ -873,7 +863,6 @@ jobs:
               @Published var downloadError: String?
               @Published var downloadProgress: [UUID: Double] = [:]
               @Published var installHistory: [InstallRecord] = []
-              @Published var favoriteAppNames: Set<String> = []
               @Published var showPermissionAlert = false
               @Published var permissionMessage = ""
               private var urlSession: URLSession!
@@ -886,7 +875,7 @@ jobs:
                   config.timeoutIntervalForRequest  = 180
                   config.timeoutIntervalForResource = 1200
                   urlSession = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
-                  loadIPAFiles(); loadInstallHistory(); loadFavorites()
+                  loadIPAFiles(); loadInstallHistory()
               }
               private func loadIPAFiles() {
                   let url = documentsPath.appendingPathComponent("ipa_files_v6.json")
@@ -915,16 +904,6 @@ jobs:
                   if installHistory.count > 100 { installHistory = Array(installHistory.prefix(50)) }
                   saveInstallHistory()
               }
-              private func loadFavorites() {
-                  let arr = UserDefaults.standard.stringArray(forKey: "favoriteApps") ?? []
-                  favoriteAppNames = Set(arr)
-              }
-              func toggleFavorite(appName: String) {
-                  if favoriteAppNames.contains(appName) { favoriteAppNames.remove(appName) }
-                  else { favoriteAppNames.insert(appName); HapticManager.shared.impact(.light) }
-                  UserDefaults.standard.set(Array(favoriteAppNames), forKey: "favoriteApps")
-              }
-              func isFavorite(_ appName: String) -> Bool { favoriteAppNames.contains(appName) }
               func startDownload(app: AppItem) {
                   if activeDownloads.contains(where: { $0.appName == app.name &&
                       ($0.status == .downloading || $0.status == .waiting) }) {
@@ -1397,10 +1376,8 @@ jobs:
                               case 1:
                                   AppsTabView(appsManager: appsManager, downloadManager: downloadManager)
                               case 2:
-                                  FavoritesTabView(appsManager: appsManager, downloadManager: downloadManager)
-                              case 3:
                                   SigningTabView(downloadManager: downloadManager, certificateManager: certificateManager)
-                              case 4:
+                              case 3:
                                   SettingsView(certificateManager: certificateManager)
                               default:
                                   HomeTabView(appsManager: appsManager, downloadManager: downloadManager, certificateManager: certificateManager)
@@ -1414,11 +1391,9 @@ jobs:
                   HStack(spacing: 0) {
                       XcodeTabItem(icon: "house.fill", title: "الرئيسية", index: 0, selectedTab: $selectedTab)
                       XcodeTabItem(icon: "square.grid.2x2.fill", title: "التطبيقات", index: 1, selectedTab: $selectedTab)
-                      XcodeTabItem(icon: "heart.fill", title: "المفضلة", index: 2, selectedTab: $selectedTab,
-                                   badge: downloadManager.favoriteAppNames.count)
-                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 3, selectedTab: $selectedTab,
+                      XcodeTabItem(icon: "wand.and.stars", title: "التوقيع", index: 2, selectedTab: $selectedTab,
                                    badge: downloadManager.ipaFiles.count + downloadManager.activeDownloads.count)
-                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 4, selectedTab: $selectedTab)
+                      XcodeTabItem(icon: "gearshape.fill", title: "الإعدادات", index: 3, selectedTab: $selectedTab)
                   }
                   .padding(.horizontal, 12).padding(.vertical, 8)
                   .background(
@@ -1623,9 +1598,7 @@ jobs:
                           }
                           sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                           ForEach(newest, id: \.id) { app in
-                              AppCardView(app: app, downloadManager: downloadManager,
-                                          isFavorite: downloadManager.isFavorite(app.name),
-                                          onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
+                              AppCardView(app: app, downloadManager: downloadManager)
                                   .contentShape(Rectangle())
                                   .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
                                   .padding(.horizontal)
@@ -1876,7 +1849,6 @@ jobs:
           struct AppCardView: View {
               let app: AppItem
               @ObservedObject var downloadManager: IPADownloadManager
-              var isFavorite: Bool; let onFavorite: () -> Void
               @Environment(\.colorScheme) var scheme
               var body: some View {
                   HStack(spacing: 14) {
@@ -1907,10 +1879,6 @@ jobs:
                           }.foregroundColor(.gray.opacity(0.7))
                       }
                       Spacer()
-                      Button(action: onFavorite) {
-                          Image(systemName: isFavorite ? "heart.fill" : "heart")
-                              .font(.system(size: 20)).foregroundColor(isFavorite ? .red : .gray)
-                      }
                   }
                   .padding(14).glassCard(radius: 18)
               }
@@ -2168,72 +2136,6 @@ jobs:
                       .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 3))
                   .overlay(RoundedRectangle(cornerRadius: 18)
                       .stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
-              }
-          }
-          
-          struct FavoritesTabView: View {
-              @ObservedObject var appsManager: AppsManager
-              @ObservedObject var downloadManager: IPADownloadManager
-              @State private var selectedApp: AppItem?
-              @State private var showDetail = false
-              var favoriteApps: [AppItem] { appsManager.apps.filter { downloadManager.isFavorite($0.name) } }
-              var body: some View {
-                  VStack(spacing: 20) {
-                      HStack {
-                          Spacer()
-                          VStack(alignment: .trailing, spacing: 2) {
-                              Text("المفضلة").font(.system(size: 22, weight: .bold))
-                              Text("\(favoriteApps.count) تطبيق محفوظ").font(.system(size: 12)).foregroundColor(.gray)
-                          }
-                          Image(systemName: "heart.fill").font(.system(size: 26))
-                              .foregroundStyle(LinearGradient(colors: [.red, .pink], startPoint: .top, endPoint: .bottom))
-                      }.padding(.horizontal)
-                      if favoriteApps.isEmpty {
-                          VStack(spacing: 16) {
-                              Image(systemName: "heart.slash").font(.system(size: 60)).foregroundColor(.gray.opacity(0.4))
-                              Text("لا توجد تطبيقات مفضلة").font(.system(size: 18, weight: .medium))
-                              Text("اضغط على ❤️ على أي تطبيق لإضافته هنا").font(.system(size: 13)).foregroundColor(.gray).multilineTextAlignment(.center)
-                          }.frame(maxWidth: .infinity).padding(.top, 80)
-                      } else {
-                          LazyVStack(spacing: 12) {
-                              ForEach(favoriteApps, id: \.id) { app in
-                                  AppCardView(app: app, downloadManager: downloadManager,
-                                              isFavorite: true,
-                                              onFavorite: { downloadManager.toggleFavorite(appName: app.name) })
-                                      .onTapGesture { selectedApp = app; showDetail = true }
-                                      .padding(.horizontal)
-                              }
-                          }
-                      }
-                      if !downloadManager.installHistory.isEmpty {
-                          VStack(alignment: .trailing, spacing: 12) {
-                              HStack { Spacer(); Text("سجل التثبيت").font(.system(size: 18, weight: .bold)) }.padding(.horizontal)
-                              ForEach(downloadManager.installHistory.prefix(5)) { record in InstallRecordRow(record: record) }
-                          }
-                      }
-                  }
-                  .sheet(isPresented: $showDetail) {
-                      if let app = selectedApp { AppDetailView(app: app, downloadManager: downloadManager) }
-                  }
-              }
-          }
-          
-          struct InstallRecordRow: View {
-              let record: InstallRecord; @Environment(\.colorScheme) var scheme
-              var body: some View {
-                  HStack(spacing: 12) {
-                      Image(systemName: "checkmark.seal.fill").font(.system(size: 20)).foregroundColor(.green)
-                          .frame(width: 40, height: 40)
-                          .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
-                      VStack(alignment: .trailing, spacing: 2) {
-                          Text(record.appName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                          Text(record.installMethod).font(.system(size: 11)).foregroundColor(.blue)
-                      }
-                      Spacer()
-                      Text({ let df = DateFormatter(); df.dateFormat = "dd/MM HH:mm"; return df.string(from: record.installDate) }() as String)
-                          .font(.system(size: 10)).foregroundColor(.gray)
-                  }
-                  .padding(12).glassCard(radius: 14).padding(.horizontal)
               }
           }
           VIPEOF
@@ -3117,13 +3019,6 @@ jobs:
                                   .font(.system(size: 17, weight: .bold))
                                   .lineLimit(1)
                               Spacer()
-                              if let dm = downloadManager {
-                                  Button(action: { dm.toggleFavorite(appName: app.name); HapticManager.shared.impact(.light) }) {
-                                      Image(systemName: dm.isFavorite(app.name) ? "heart.fill" : "heart")
-                                          .font(.title3)
-                                          .foregroundColor(dm.isFavorite(app.name) ? .red : .gray)
-                                  }
-                              }
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 12)
@@ -4199,15 +4094,7 @@ jobs:
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
           
-          # Build with ZIPFoundation
-          cd Sources/ZIPFoundation
-          swift build -c release -Xswiftc -module-name -Xswiftc ZIPFoundation
-          cd ../..
-          
           xcrun swiftc \
-            -I Sources/ZIPFoundation/.build/release \
-            -L Sources/ZIPFoundation/.build/release \
-            -lZIPFoundation \
             Constants.swift \
             HapticManager.swift \
             Models.swift \
