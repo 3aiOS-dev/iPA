@@ -154,7 +154,6 @@ jobs:
               static let glassBorder = Color.white.opacity(0.15)
           }
           VIPEOF
-          echo "Constants.swift: $(wc -l < Constants.swift) lines"
 
       - name: Generate Source - HapticManager.swift
         run: |
@@ -162,15 +161,6 @@ jobs:
           import SwiftUI
           import UIKit
           import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Haptic Manager
           class HapticManager {
@@ -210,23 +200,12 @@ jobs:
               }
           }
           VIPEOF
-          echo "HapticManager.swift: $(wc -l < HapticManager.swift) lines"
 
       - name: Generate Source - Models.swift
         run: |
           cat > Models.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
           import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - IPA File Model
           struct IPAFile: Identifiable, Codable {
@@ -542,159 +521,40 @@ jobs:
           // MARK: - Install Method
           enum InstallMethod { case ota; case direct; case local }
           VIPEOF
-          echo "Models.swift: $(wc -l < Models.swift) lines"
 
       - name: Generate Source - VIPZipHelper.swift
         run: |
           cat > VIPZipHelper.swift << 'VIPEOF'
           import Foundation
-          import Compression
+          import ZIPFoundation
           
-          // MARK: - ZIP Utilities (Pure Swift)
-          private let kLocalFileSig:    UInt32 = 0x04034b50
-          private let kCentralDirSig:   UInt32 = 0x02014b50
-          private let kEndOfCentralSig: UInt32 = 0x06054b50
-          
-          private extension Data {
-              func readU16(at off: Int) -> UInt16 {
-                  guard off + 2 <= count else { return 0 }
-                  return subdata(in: off..<off+2).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian }
-              }
-              func readU32(at off: Int) -> UInt32 {
-                  guard off + 4 <= count else { return 0 }
-                  return subdata(in: off..<off+4).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
-              }
-          }
-          
-          private func le16(_ v: UInt16) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 2) }
-          private func le32(_ v: UInt32) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 4) }
-          
-          private func crc32ofData(_ data: Data) -> UInt32 {
-              var crc: UInt32 = 0xffffffff
-              for byte in data {
-                  crc ^= UInt32(byte)
-                  for _ in 0..<8 { crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1 }
-              }
-              return crc ^ 0xffffffff
-          }
-          
-          // MARK: - VIPZipReader
-          final class VIPZipReader {
-              private let data: Data
-              init?(url: URL) {
-                  guard let d = try? Data(contentsOf: url) else { return nil }
-                  self.data = d
-              }
-              func extractAll(to destination: URL) throws {
-                  let fm = FileManager.default
-                  try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-                  var offset = 0
-                  while offset + 30 <= data.count {
-                      guard data.readU32(at: offset) == kLocalFileSig else { offset += 1; continue }
-                      let method     = Int(data.readU16(at: offset + 8))
-                      let compSize   = Int(data.readU32(at: offset + 18))
-                      let uncompSize = Int(data.readU32(at: offset + 22))
-                      let nameLen    = Int(data.readU16(at: offset + 26))
-                      let extraLen   = Int(data.readU16(at: offset + 28))
-                      guard offset + 30 + nameLen <= data.count else { break }
-                      let name = String(data: data[offset+30..<offset+30+nameLen], encoding: .utf8) ?? ""
-                      let dataStart = offset + 30 + nameLen + extraLen
-                      guard dataStart + compSize <= data.count else { break }
-                      if !name.isEmpty && !name.hasSuffix("/") {
-                          let dest = destination.appendingPathComponent(name)
-                          try fm.createDirectory(at: dest.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-                          let raw = Data(data[dataStart..<dataStart + compSize])
-                          let out: Data
-                          if method == 0 { out = raw }
-                          else if method == 8 { out = try inflate(raw, expected: uncompSize) }
-                          else { throw NSError(domain: "VIPZipReader", code: method) }
-                          try out.write(to: dest)
-                      }
-                      offset = dataStart + compSize
+          // MARK: - Streaming ZIP Utilities using ZIPFoundation
+          enum VIPZipHelper {
+              static func extractAll(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
+                  try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+                  do {
+                      _ = try FileManager.default.contentsOfDirectory(at: destinationURL, includingPropertiesForKeys: nil)
+                  } catch {
+                      // Directory is empty or doesn't exist, which is fine.
                   }
+                  try FileManager.default.unzipItem(at: sourceURL, to: destinationURL, skipCRC32: false, progress: progress)
               }
-              private func inflate(_ src: Data, expected: Int) throws -> Data {
-                  let cap = max(expected, src.count * 6, 4096)
-                  var dst = Data(count: cap)
-                  let n = src.withUnsafeBytes { s -> Int in dst.withUnsafeMutableBytes { d -> Int in
-                      compression_decode_buffer(
-                          d.baseAddress!.assumingMemoryBound(to: UInt8.self), cap,
-                          s.baseAddress!.assumingMemoryBound(to: UInt8.self), s.count,
-                          nil, COMPRESSION_ZLIB)
-                  } }
-                  guard n > 0 else { throw NSError(domain: "VIPZipReader", code: -2) }
-                  return dst.prefix(n)
-              }
-          }
           
-          // MARK: - VIPZipWriter
-          final class VIPZipWriter {
-              static func createZip(from directory: URL) throws -> Data {
-                  let fm = FileManager.default
-                  guard let enumerator = fm.enumerator(
-                      at: directory, includingPropertiesForKeys: [.isDirectoryKey],
-                      options: [.skipsHiddenFiles]) else {
-                      throw NSError(domain: "VIPZipWriter", code: -1)
+              static func createZip(from sourceURL: URL, to destinationURL: URL, progress: Progress? = nil) throws {
+                  if FileManager.default.fileExists(atPath: destinationURL.path) {
+                      try FileManager.default.removeItem(at: destinationURL)
                   }
-                  var localData = Data(); var centralData = Data(); var count: UInt16 = 0
-                  for case let url as URL in enumerator {
-                      let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                      var rel = String(url.path.dropFirst(directory.path.count))
-                      if rel.hasPrefix("/") { rel = String(rel.dropFirst()) }
-                      guard !rel.isEmpty else { continue }
-                      let entryName = isDir ? rel + "/" : rel
-                      let nameData  = entryName.data(using: .utf8) ?? Data()
-                      let fileData  = isDir ? Data() : ((try? Data(contentsOf: url)) ?? Data())
-                      let crc = crc32ofData(fileData); let sz = UInt32(fileData.count)
-                      let localOff = UInt32(localData.count)
-                      var lhdr = Data()
-                      lhdr += le32(kLocalFileSig)
-                      lhdr += le16(20); lhdr += le16(0); lhdr += le16(0)
-                      lhdr += le16(0);  lhdr += le16(0)
-                      lhdr += le32(crc); lhdr += le32(sz); lhdr += le32(sz)
-                      lhdr += le16(UInt16(nameData.count)); lhdr += le16(0)
-                      lhdr += nameData; lhdr += fileData
-                      localData += lhdr
-                      var cd = Data()
-                      cd += le32(kCentralDirSig)
-                      cd += le16(20); cd += le16(20); cd += le16(0); cd += le16(0)
-                      cd += le16(0);  cd += le16(0)
-                      cd += le32(crc); cd += le32(sz); cd += le32(sz)
-                      cd += le16(UInt16(nameData.count))
-                      cd += le16(0); cd += le16(0); cd += le16(0)
-                      cd += le16(0); cd += le32(0); cd += le32(localOff)
-                      cd += nameData
-                      centralData += cd; count += 1
-                  }
-                  var eocd = Data()
-                  eocd += le32(kEndOfCentralSig)
-                  eocd += le16(0); eocd += le16(0)
-                  eocd += le16(count); eocd += le16(count)
-                  eocd += le32(UInt32(centralData.count))
-                  eocd += le32(UInt32(localData.count))
-                  eocd += le16(0)
-                  return localData + centralData + eocd
+                  try FileManager.default.zipItem(at: sourceURL, to: destinationURL, shouldKeepParent: false, progress: progress)
               }
           }
           VIPEOF
-          echo "VIPZipHelper.swift: $(wc -l < VIPZipHelper.swift) lines"
 
       - name: Generate Source - SigningEngine.swift
         run: |
           cat > SigningEngine.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
           import Foundation
-          import Combine
           import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
+          import ZIPFoundation
           
           // MARK: - Signing Error
           enum SigningError: LocalizedError {
@@ -704,6 +564,8 @@ jobs:
               case repackFailed(Error)
               case extractionFailed
               case cmsSignatureFailed(String)
+              case fileReadError
+              case fileWriteError
           
               var errorDescription: String? {
                   switch self {
@@ -713,6 +575,8 @@ jobs:
                   case .repackFailed(let e):        return "❌ فشل إعادة الضغط: \(e.localizedDescription)"
                   case .extractionFailed:           return "❌ فشل فك ضغط IPA — تأكد من صحة الملف"
                   case .cmsSignatureFailed(let m):  return "❌ فشل توقيع CMS: \(m)"
+                  case .fileReadError:              return "❌ خطأ في قراءة الملف"
+                  case .fileWriteError:             return "❌ خطأ في كتابة الملف"
                   }
               }
           }
@@ -721,6 +585,8 @@ jobs:
           class SigningEngine {
               static let shared = SigningEngine()
               private let fm = FileManager.default
+              private let queue = DispatchQueue(label: "com.vip21.signing.queue", attributes: .concurrent)
+              private var isSigning = false
           
               func sign(
                   ipaURL: URL,
@@ -728,7 +594,16 @@ jobs:
                   progressHandler: @escaping (Double, String) -> Void,
                   completion: @escaping (Result<URL, Error>) -> Void
               ) {
-                  DispatchQueue.global(qos: .userInitiated).async {
+                  queue.async {
+                      guard !self.isSigning else {
+                          DispatchQueue.main.async {
+                              completion(.failure(NSError(domain: "SigningEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "توقيع آخر قيد التنفيذ"])))
+                          }
+                          return
+                      }
+                      self.isSigning = true
+                      defer { self.isSigning = false }
+          
                       do {
                           let out = try self._sign(ipaURL: ipaURL, cert: certificate, progress: progressHandler)
                           DispatchQueue.main.async { completion(.success(out)) }
@@ -750,8 +625,11 @@ jobs:
           
                   let extractDir = tmp.appendingPathComponent("extracted")
                   try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
-                  guard let reader = try? VIPZipReader(url: ipaURL) else { throw SigningError.extractionFailed }
-                  try reader.extractAll(to: extractDir)
+                  do {
+                      try VIPZipHelper.extractAll(from: ipaURL, to: extractDir)
+                  } catch {
+                      throw SigningError.extractionFailed
+                  }
           
                   progress(0.20, "🔍 تحديد .app bundle...")
                   let payload = extractDir.appendingPathComponent("Payload")
@@ -782,26 +660,25 @@ jobs:
                   let infoPlistData = try? Data(contentsOf: appBundle.appendingPathComponent("Info.plist"))
                   progress(0.50, "✍️ توقيع \(binaries.count) ملف ثنائي...")
           
-                  let lock = NSLock()
                   var signError: Error?
                   var completed = 0
                   let total = max(binaries.count, 1)
-                  DispatchQueue.concurrentPerform(iterations: binaries.count) { i in
-                      if signError != nil { return }
-                      let bin = binaries[i]
-                      do {
-                          try self.signMachOFile(at: bin, identity: identity,
-                                                 entitlements: entData, bundleID: bundleID,
-                                                 infoPlist: infoPlistData)
-                      } catch {
-                          lock.lock(); if signError == nil { signError = error }; lock.unlock()
+          
+                  for (i, bin) in binaries.enumerated() {
+                      if signError != nil { break }
+                      autoreleasepool {
+                          do {
+                              try self.signMachOFile(at: bin, identity: identity,
+                                                     entitlements: entData, bundleID: bundleID,
+                                                     infoPlist: infoPlistData)
+                          } catch {
+                              signError = error
+                          }
+                          completed += 1
+                          let pct = 0.50 + 0.30 * Double(completed) / Double(total)
+                          let name = bin.lastPathComponent
+                          DispatchQueue.main.async { progress(pct, "✍️ \(name) (\(completed)/\(total))") }
                       }
-                      lock.lock()
-                      completed += 1
-                      let pct = 0.50 + 0.30 * Double(completed) / Double(total)
-                      let name = bin.lastPathComponent
-                      lock.unlock()
-                      DispatchQueue.main.async { progress(pct, "✍️ \(name) (\(completed)/\(total))") }
                   }
                   if let err = signError { throw err }
           
@@ -813,12 +690,11 @@ jobs:
                   let outURL = outDir.appendingPathComponent("\(base)_signed.ipa")
                   if fm.fileExists(atPath: outURL.path) { try fm.removeItem(at: outURL) }
           
-                  guard let zipData = try? VIPZipWriter.createZip(from: extractDir) else {
-                      throw SigningError.repackFailed(
-                          NSError(domain: "ZipCreate", code: -1,
-                                  userInfo: [NSLocalizedDescriptionKey: "فشل إنشاء IPA الموقَّع"]))
+                  do {
+                      try VIPZipHelper.createZip(from: extractDir, to: outURL)
+                  } catch {
+                      throw SigningError.repackFailed(error)
                   }
-                  try zipData.write(to: outURL, options: Data.WritingOptions.atomic)
                   progress(1.0, "✅ اكتمل التوقيع!")
                   return outURL
               }
@@ -842,7 +718,12 @@ jobs:
                   at url: URL, identity: SecIdentity,
                   entitlements: Data?, bundleID: String, infoPlist: Data? = nil
               ) throws {
-                  var data = try Data(contentsOf: url)
+                  guard let fileHandle = try? FileHandle(forUpdating: url) else {
+                      throw SigningError.fileReadError
+                  }
+                  defer { try? fileHandle.close() }
+          
+                  var data = try fileHandle.readToEnd() ?? Data()
                   guard data.count >= 4 else { return }
                   let magic = readU32(data, at: 0)
                   if magic == 0xCAFEBABE || magic == 0xBEBAFECA {
@@ -855,9 +736,9 @@ jobs:
                                     entitlements: entitlements, bundleID: bundleID,
                                     infoPlist: infoPlist)
                   }
-                  let perms = (try? fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? 0o755
-                  try data.write(to: url, options: .atomic)
-                  try? fm.setAttributes([.posixPermissions: perms], ofItemAtPath: url.path)
+                  try fileHandle.truncate(atOffset: 0)
+                  try fileHandle.write(contentsOf: data)
+                  try fileHandle.synchronize()
               }
           
               private func signFATBinary(
@@ -1310,7 +1191,7 @@ jobs:
               }
           }
           
-          // MARK: - Install Engine (OTA Only)
+          // MARK: - Install Engine
           enum VIP21InstallError: LocalizedError {
               case invalidIPA
               case installFailed(String)
@@ -1385,7 +1266,6 @@ jobs:
               }
           }
           VIPEOF
-          echo "SigningEngine.swift: $(wc -l < SigningEngine.swift) lines"
 
       - name: Generate Source - Managers.swift
         run: |
@@ -1394,14 +1274,7 @@ jobs:
           import UIKit
           import Foundation
           import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
+          import ZIPFoundation
           
           // MARK: - Certificate Manager
           class CertificateManager: ObservableObject {
@@ -1737,7 +1610,6 @@ jobs:
                       )
                       ipaFiles.insert(ipaFile, at: 0); saveIPAFiles()
                       HapticManager.shared.notification(.success)
-                      // Show permission message
                       showPermissionAlert = true
                       permissionMessage = "✅ تم استيراد الملف بنجاح:\n\(url.lastPathComponent)"
                   } catch {
@@ -1853,23 +1725,12 @@ jobs:
               }
           }
           VIPEOF
-          echo "Managers.swift: $(wc -l < Managers.swift) lines"
 
       - name: Generate Source - AppsManager.swift
         run: |
           cat > AppsManager.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
           import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Apps Manager
           class AppsManager: ObservableObject {
@@ -1984,23 +1845,13 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppsManager.swift: $(wc -l < AppsManager.swift) lines"
 
       - name: Generate Source - SharedComponents.swift
         run: |
           cat > SharedComponents.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
           import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Cached Async Image
           struct CachedAsyncImage<Content: View>: View {
@@ -2213,23 +2064,13 @@ jobs:
               }
           }
           VIPEOF
-          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
       - name: Generate Source - ContentView.swift
         run: |
           cat > ContentView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
           import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Main Content View - Xcode Style Tabs
           struct ContentView: View {
@@ -2515,23 +2356,11 @@ jobs:
               }
           }
           VIPEOF
-          echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
 
       - name: Generate Source - HomeTabView.swift
         run: |
           cat > HomeTabView.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Home Tab
           struct HomeTabView: View {
@@ -2947,23 +2776,11 @@ jobs:
               }
           }
           VIPEOF
-          echo "HomeTabView.swift: $(wc -l < HomeTabView.swift) lines"
 
       - name: Generate Source - AppsTabView.swift
         run: |
           cat > AppsTabView.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Apps Tab
           struct AppsTabView: View {
@@ -3304,13 +3121,11 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
 
       - name: Generate Source - InstallSupportViews.swift
         run: |
           cat > InstallSupportViews.swift << 'VIPEOF'
           import SwiftUI
-          import Foundation
           import UIKit
           
           // MARK: - VIP21FullInstallView
@@ -3527,23 +3342,12 @@ jobs:
               }
           }
           VIPEOF
-          echo "InstallSupportViews.swift: $(wc -l < InstallSupportViews.swift) lines"
 
       - name: Generate Source - SigningTabView.swift
         run: |
           cat > SigningTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Signing Tab
           struct SigningTabView: View {
@@ -4310,23 +4114,11 @@ jobs:
               }
           }
           VIPEOF
-          echo "SigningTabView.swift: $(wc -l < SigningTabView.swift) lines"
 
       - name: Generate Source - AppDetailView.swift
         run: |
           cat > AppDetailView.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - App Detail View - Enhanced
           struct AppDetailView: View {
@@ -4524,23 +4316,12 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppDetailView.swift: $(wc -l < AppDetailView.swift) lines"
 
       - name: Generate Source - SettingsView.swift
         run: |
           cat > SettingsView.swift << 'VIPEOF'
           import SwiftUI
-          import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
           import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Settings View (Xcode Style)
           struct SettingsView: View {
@@ -5028,23 +4809,13 @@ jobs:
               }
           }
           VIPEOF
-          echo "SettingsView.swift: $(wc -l < SettingsView.swift) lines"
 
       - name: Generate Source - IPAPatcher.swift
         run: |
           cat > IPAPatcher.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
-          import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
+          import ZIPFoundation
           
           // MARK: - IPA Patcher Engine
           class IPAPatcher {
@@ -5103,7 +4874,7 @@ jobs:
                   try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
           
                   progress(0.05, "📦 فك ضغط IPA...")
-                  try shellExtract(from: sourceURL, to: extractDir)
+                  try VIPZipHelper.extractAll(from: sourceURL, to: extractDir)
           
                   progress(0.20, "🔍 البحث عن .app bundle...")
                   let payloadDir = extractDir.appendingPathComponent("Payload")
@@ -5153,26 +4924,10 @@ jobs:
                                           withIntermediateDirectories: true)
                   if fm.fileExists(atPath: outURL.path) { try fm.removeItem(at: outURL) }
           
-                  try shellCreateZip(from: extractDir, to: outURL)
+                  try VIPZipHelper.createZip(from: extractDir, to: outURL)
           
                   progress(1.0, "✅ اكتملت عملية التعديل!")
                   return outURL
-              }
-          
-              private func shellExtract(from zipURL: URL, to destDir: URL) throws {
-                  guard let reader = try? VIPZipReader(url: zipURL) else {
-                      throw NSError(domain: "IPAPatcher", code: 2,
-                                    userInfo: [NSLocalizedDescriptionKey: "فشل فك ضغط IPA — تأكد من اكتمال الملف"])
-                  }
-                  try reader.extractAll(to: destDir)
-              }
-          
-              private func shellCreateZip(from sourceDir: URL, to zipURL: URL) throws {
-                  guard let zipData = try? VIPZipWriter.createZip(from: sourceDir) else {
-                      throw NSError(domain: "IPAPatcher", code: 3,
-                                    userInfo: [NSLocalizedDescriptionKey: "فشل إنشاء IPA المعدَّل"])
-                  }
-                  try zipData.write(to: zipURL, options: Data.WritingOptions.atomic)
               }
           
               private func resizeIcon(_ image: UIImage, to size: CGFloat) -> Data? {
@@ -5345,23 +5100,13 @@ jobs:
               }
           }
           VIPEOF
-          echo "IPAPatcher.swift: $(wc -l < IPAPatcher.swift) lines"
 
       - name: Generate Source - VIP21StoreApp.swift
         run: |
           cat > VIP21StoreApp.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
           import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - App Entry Point
           @main
@@ -5433,23 +5178,13 @@ jobs:
               }
           }
           VIPEOF
-          echo "VIP21StoreApp.swift: $(wc -l < VIP21StoreApp.swift) lines"
 
       - name: Generate Source - NotificationManager.swift
         run: |
           cat > NotificationManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
-          import Foundation
-          import Combine
-          import Security
-          import CryptoKit
-          import PhotosUI
           import UserNotifications
-          import CoreHaptics
-          import Network
-          import UniformTypeIdentifiers
-          import LocalAuthentication
           
           // MARK: - Notification Manager
           class NotificationManager {
@@ -5527,7 +5262,6 @@ jobs:
               }
           }
           VIPEOF
-          echo "NotificationManager.swift: $(wc -l < NotificationManager.swift) lines"
 
       - name: Build Application
         run: |
@@ -5566,6 +5300,7 @@ jobs:
             -framework PhotosUI \
             -framework UniformTypeIdentifiers \
             -framework LocalAuthentication \
+            -I libs/ZIPFoundation-main/Sources \
             -o VIP21Store
           file VIP21Store
 
