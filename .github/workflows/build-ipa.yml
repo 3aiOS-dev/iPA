@@ -1288,31 +1288,149 @@ jobs:
                   return d
               }
 
+              // MARK: - CMS via SecKey (iOS-compatible)
+              // ❌ CMSEncoder* APIs غير متاحة على iOS (macOS فقط)
+              // ✅ البديل: نبني PKCS#7 SignedData DER يدوياً حول RSA-SHA256 signature
               private func makeCMSSignature(codeHash: Data, identity: SecIdentity) throws -> Data {
-                  let attrs: [String: Any] = [
-                      kSecCMSAttributes as String: [
-                          kSecCMSSignHashAlgorithm as String: kSecCMSHashAlgorithmSHA256,
-                          kSecCMSContentType as String: "2.16.840.1.101.3.4.2.1"
-                      ]
-                  ]
-                  var encoder: CMSEncoder?
-                  var status = CMSEncoderCreate(&encoder)
-                  guard status == errSecSuccess, let enc = encoder else {
-                      throw SigningError.cmsFailed("CMS create: \(status)")
+                  var keyOpt: SecKey?
+                  let keyStatus = SecIdentityCopyPrivateKey(identity, &keyOpt)
+                  guard keyStatus == errSecSuccess, let privKey = keyOpt else {
+                      throw SigningError.cmsFailed("SecIdentityCopyPrivateKey failed: \(keyStatus)")
                   }
-                  CMSEncoderAddSigners(enc, identity as CFTypeRef)
-                  CMSEncoderSetSignerAlgorithm(enc, kCMSEncoderDigestAlgorithmSHA256)
-                  CMSEncoderSetHasDetachedContent(enc, true)
-                  CMSEncoderSetCertificateChainMode(enc, .chainNone)
-                  CMSEncoderAddSignedAttributes(enc, [.attrSigningTime])
+                  var error: Unmanaged<CFError>?
+                  guard let sig = SecKeyCreateSignature(
+                      privKey,
+                      .rsaSignatureMessagePKCS1v15SHA256,
+                      codeHash as CFData,
+                      &error
+                  ) as Data? else {
+                      let msg = (error?.takeRetainedValue() as Error?)?.localizedDescription ?? "unknown"
+                      throw SigningError.cmsFailed("SecKeyCreateSignature: \(msg)")
+                  }
+                  var certOpt: SecCertificate?
+                  let certStatus = SecIdentityCopyCertificate(identity, &certOpt)
+                  guard certStatus == errSecSuccess, let cert = certOpt else {
+                      throw SigningError.cmsFailed("SecIdentityCopyCertificate failed: \(certStatus)")
+                  }
+                  let certData = SecCertificateCopyData(cert) as Data
+                  return buildSignedDataDER(signature: sig, certificate: certData, messageDigest: codeHash)
+              }
 
-                  var der: CFData?
-                  status = CMSEncoderUpdateContent(enc, codeHash as CFData)
-                  if status == errSecSuccess { status = CMSEncoderFinalizeMessage(enc, &der) }
-                  guard status == errSecSuccess, let signed = der else {
-                      throw SigningError.cmsFailed("CMS encode: \(status)")
+              // MARK: - بناء PKCS#7 SignedData DER من الصفر
+              private func buildSignedDataDER(signature: Data, certificate: Data, messageDigest: Data) -> Data {
+                  // digestAlgorithms: SEQUENCE { AlgorithmIdentifier(SHA-256) }
+                  let sha256AlgID: Data = Data([
+                      0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00
+                  ])
+                  let digestAlgs = asn1Sequence(sha256AlgID)
+                  // encapContentInfo: SEQUENCE { OID(id-data), [0] EXPLICIT OCTET STRING(empty) }
+                  let encapContentInfo = asn1Sequence(
+                      Data([0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01])
+                      + Data([0xA0, 0x04, 0x04, 0x02, 0x00, 0x00])
+                  )
+                  // certificates [0] EXPLICIT
+                  let certsContext = Data([0xA0]) + asn1Length(certificate.count) + certificate
+                  // SignerInfo
+                  let issuerAndSerial = buildIssuerAndSerial(from: certificate)
+                  let contentTypeOID: Data = Data([0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x03])
+                  let messageDigestOID: Data = Data([0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x04])
+                  let mdAttr = asn1Set(asn1Sequence(messageDigestOID + asn1OctetString(messageDigest)))
+                  let ctAttr = asn1Set(asn1Sequence(contentTypeOID))
+                  let signedAttrs = asn1ContextSpecific(0, ctAttr + mdAttr)
+                  let sha256RSAOID: Data = Data([
+                      0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B
+                  ])
+                  let sigAlgID = asn1Sequence(sha256RSAOID + Data([0x05, 0x00]))
+                  let sigOctet = asn1OctetString(signature)
+                  let signerInfo = asn1Sequence(
+                      Data([0x02, 0x01, 0x01])
+                      + issuerAndSerial
+                      + sha256AlgID
+                      + signedAttrs
+                      + sigAlgID
+                      + sigOctet
+                  )
+                  let signerInfos = asn1Set(signerInfo)
+                  // SignedData
+                  let signedDataContent = asn1Sequence(
+                      Data([0x02, 0x01, 0x01])
+                      + digestAlgs
+                      + encapContentInfo
+                      + certsContext
+                      + signerInfos
+                  )
+                  // ContentInfo
+                  let signedDataOID: Data = Data([0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02])
+                  let contentInfo = asn1Sequence(
+                      signedDataOID
+                      + Data([0xA0]) + asn1Length(signedDataContent.count) + signedDataContent
+                  )
+                  return contentInfo
+              }
+
+              // MARK: - ASN.1 primitives
+              private func asn1Length(_ len: Int) -> Data {
+                  if len < 0x80 { return Data([UInt8(len)]) }
+                  var bytes: [UInt8] = []
+                  var l = len
+                  while l > 0 { bytes.insert(UInt8(l & 0xFF), at: 0); l >>= 8 }
+                  return Data([0x80 | UInt8(bytes.count)] + bytes)
+              }
+              private func asn1Sequence(_ content: Data) -> Data {
+                  return Data([0x30]) + asn1Length(content.count) + content
+              }
+              private func asn1Set(_ content: Data) -> Data {
+                  return Data([0x31]) + asn1Length(content.count) + content
+              }
+              private func asn1OctetString(_ content: Data) -> Data {
+                  return Data([0x04]) + asn1Length(content.count) + content
+              }
+              private func asn1ContextSpecific(_ tag: UInt8, _ content: Data) -> Data {
+                  return Data([0xA0 | (tag & 0x1F)]) + asn1Length(content.count) + content
+              }
+
+              // MARK: - استخراج issuer + serialNumber من شهادة X.509
+              private func buildIssuerAndSerial(from certDER: Data) -> Data {
+                  guard let (issuer, serial) = parseCertIssuerSerial(certDER) else {
+                      return asn1Sequence(Data([0x02, 0x01, 0x01]) + asn1Sequence(Data()))
                   }
-                  return signed as Data
+                  return asn1Sequence(serial + issuer)
+              }
+
+              private func parseCertIssuerSerial(_ cert: Data) -> (issuer: Data, serial: Data)? {
+                  guard let outer = readTLV(cert, at: 0), outer.tag == 0x30 else { return nil }
+                  var off = outer.headerLen + outer.length
+                  guard let tbs = readTLV(cert, at: off), tbs.tag == 0x30 else { return nil }
+                  var p = off + tbs.headerLen
+                  if p < cert.count, cert[p] == 0xA0 {
+                      guard let v = readTLV(cert, at: p) else { return nil }
+                      p += v.headerLen + v.length
+                  }
+                  guard let ser = readTLV(cert, at: p), ser.tag == 0x02 else { return nil }
+                  let serialBytes = Data(cert[(p + ser.headerLen)..<(p + ser.headerLen + ser.length)])
+                  p += ser.headerLen + ser.length
+                  guard let sa = readTLV(cert, at: p), sa.tag == 0x30 else { return nil }
+                  p += sa.headerLen + sa.length
+                  guard let iss = readTLV(cert, at: p), iss.tag == 0x30 else { return nil }
+                  let issuerBytes = Data(cert[(p + iss.headerLen)..<(p + iss.headerLen + iss.length)])
+                  return (issuerBytes, asn1Sequence(serialBytes))
+              }
+
+              // قارئ TLV بسيط
+              private func readTLV(_ data: Data, at offset: Int) -> (tag: UInt8, length: Int, headerLen: Int)? {
+                  guard offset + 2 <= data.count else { return nil }
+                  let tag = data[offset]
+                  var len = Int(data[offset + 1])
+                  var headerLen = 2
+                  if len & 0x80 != 0 {
+                      let n = len & 0x7F
+                      guard offset + 2 + n <= data.count else { return nil }
+                      len = 0
+                      for i in 0..<n { len = (len << 8) | Int(data[offset + 2 + i]) }
+                      headerLen = 2 + n
+                  }
+                  guard offset + headerLen + len <= data.count else { return nil }
+                  return (tag, len, headerLen)
               }
 
               private func makeSlot(magic: UInt32, data: Data) -> Data {
@@ -2932,7 +3050,6 @@ jobs:
       # ============================================================
       - name: Compile iOS Executable
         run: |
-          set -e
           SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
           TARGET="arm64-apple-ios16.0"
 
@@ -2965,13 +3082,11 @@ jobs:
             VIP21StoreApp.swift \
             2>&1 | tail -50
 
-          echo "✅ Compile status: $?"
           file VIP21Store
           ls -lh VIP21Store
 
       - name: Build .app Bundle
         run: |
-          set -e
           APP_NAME="21s"
           APP_DIR="${APP_NAME}.app"
 
@@ -3001,7 +3116,6 @@ jobs:
 
       - name: Create IPA Package
         run: |
-          set -e
           APP_NAME="21s"
           APP_DIR="${APP_NAME}.app"
           IPA_OUT="/tmp/VIP21Store.ipa"
