@@ -1,3 +1,4 @@
+# .github/workflows/build_21s_swiftui.yml
 name: Build_21s_SwiftUI
 
 on:
@@ -64,7 +65,7 @@ jobs:
             "apps": []
           }
           JEOF
-          python3 -c "import json; json.load(open('Resources/apps_data.json')); print('OK')"
+          python3 -c "import json; json.load(open('Resources/apps_data.json')); echo 'OK'"
 
       - name: Generate Info.plist
         run: |
@@ -516,7 +517,6 @@ jobs:
                   let dec = JSONDecoder()
                   dec.dateDecodingStrategy = .iso8601
                   if let list = try? dec.decode([LocalIPA].self, from: data) {
-                      // تأكد من تطابق isInstalled مع الواقع
                       let verified = list.map { ipa -> LocalIPA in
                           var copy = ipa
                           if let p = ipa.extractedPath, let app = ipa.payloadAppName {
@@ -557,7 +557,6 @@ jobs:
                   queue.async { [weak self] in
                       guard let self = self else { return }
                       do {
-                          // نسخ ذكي (يستخدم FileCoordinator داخلياً ويدعم ملفات كبيرة)
                           if FileManager.default.fileExists(atPath: dest.path) {
                               try FileManager.default.removeItem(at: dest)
                           }
@@ -567,7 +566,6 @@ jobs:
                           self.tick(progress: 0.30, msg: "جاري قراءة البيانات…")
                           let sha = Self.quickHash(of: dest)
 
-                          // استخراج streaming من الـ IPA
                           let extractDest = self.extractedRoot.appendingPathComponent(
                               safeName.replacingOccurrences(of: ".ipa", with: "", options: .caseInsensitive)
                           )
@@ -575,9 +573,9 @@ jobs:
                           try FileManager.default.createDirectory(at: extractDest, withIntermediateDirectories: true)
 
                           self.tick(progress: 0.32, msg: "جاري فك الضغط…")
-                          let result = (try? self.streamingUnzip(src: dest, into: extractDest) { p in
+                          _ = try? self.streamingUnzip(src: dest, into: extractDest) { p in
                               self.tick(progress: 0.32 + p * 0.55, msg: "جاري فك الضغط… (\(Int(p*100))%)")
-                          }) ?? nil
+                          }
 
                           self.tick(progress: 0.88, msg: "قراءة المعلومات…")
                           var payloadAppName: String? = nil
@@ -587,7 +585,7 @@ jobs:
                           var minOS    = "16.0"
                           var display  = (safeName as NSString).deletingPathExtension
 
-                          if let appURL = result?.appURL,
+                          if let appURL = self.findAppInPayload(in: extractDest),
                              let plist = self.readInfoPlist(in: appURL) {
                               bundleID = plist.bundleID ?? bundleID
                               version  = plist.version  ?? version
@@ -595,15 +593,6 @@ jobs:
                               display  = plist.displayName ?? display
                               payloadAppName = plist.executableName ?? appURL.lastPathComponent
                               iconRel = plist.iconName
-                          } else if let appURL = self.findAppInPayload(in: extractDest) {
-                              if let plist = self.readInfoPlist(in: appURL) {
-                                  bundleID = plist.bundleID ?? bundleID
-                                  version  = plist.version  ?? version
-                                  minOS    = plist.minOS    ?? minOS
-                                  display  = plist.displayName ?? display
-                                  payloadAppName = plist.executableName ?? appURL.lastPathComponent
-                                  iconRel = plist.iconName
-                              }
                           }
 
                           let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -647,17 +636,14 @@ jobs:
                   let attrs = try fm.attributesOfItem(atPath: src.path)
                   let total = (attrs[.size] as? NSNumber)?.int64Value ?? 0
                   if total < 8 * 1024 * 1024 {
-                      // ملفات صغيرة: نسخ عادي يكفي
                       try fm.copyItem(at: src, to: dst)
                       progress(1.0)
                       return
                   }
-                  // ملفات كبيرة: نسخ streaming عبر FileHandle
                   if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
                   fm.createFile(atPath: dst.path, contents: nil)
                   guard let inH  = try? FileHandle(forReadingFrom: src),
                         let outH = try? FileHandle(forWritingTo: dst) else {
-                      // fallback
                       try fm.copyItem(at: src, to: dst)
                       progress(1.0)
                       return
@@ -679,7 +665,7 @@ jobs:
                   progress(1.0)
               }
 
-              // MARK: - Quick hash (متوافق مع جميع إصدارات Swift)
+              // MARK: - Quick hash
               static func quickHash(of url: URL) -> String {
                   guard let h = try? FileHandle(forReadingFrom: url) else {
                       return UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -715,7 +701,7 @@ jobs:
                   return apps.first(where: { $0.pathExtension == "app" })
               }
 
-              // MARK: - Streaming Unzip (فك ضغط مع progress، بدون تحميل الملف كامل في الذاكرة)
+              // MARK: - Streaming Unzip
               struct UnzipResult {
                   let appURL: URL?
                   let fileCount: Int
@@ -747,17 +733,14 @@ jobs:
                       try file.seek(toOffset: entry.dataOffset)
 
                       if entry.method == 0 {
-                          // Stored
                           let data = (try file.read(upToCount: Int(entry.compressedSize))) ?? Data()
                           if !data.isEmpty { try data.write(to: outURL, options: .atomic) }
                       } else if entry.method == 8 {
-                          // Deflate — فك ضغط streaming لكل ملف على حدة
                           let compressed = (try file.read(upToCount: Int(entry.compressedSize))) ?? Data()
                           if !compressed.isEmpty {
                               if let raw = StreamingInflate.inflate(compressed) {
                                   try raw.write(to: outURL, options: .atomic)
                               } else {
-                                  // fallback: اكتب البيانات كما هي
                                   try compressed.write(to: outURL, options: .atomic)
                               }
                           }
@@ -815,9 +798,6 @@ jobs:
               }
 
               // MARK: - استرداد (إستخراج Payload/.app إلى مجلد Installed)
-              // هذا الاسترداد الجديد: يستخرج الـ Payload فقط كنسخة كاملة من الـ .app
-              // ويضعها في مجلد IPAs_Installed/. يعمل بكفاءة على جميع الأجهزة (iPhone/iPad)
-              // وبدون إعادة ضغط الـ IPA كاملاً (الذي كان يُعطّل الملفات الكبيرة)
               func recoverIPA(_ ipa: LocalIPA,
                               progress: @escaping (Double, String) -> Void,
                               completion: @escaping (Result<URL, Error>) -> Void) {
@@ -833,7 +813,6 @@ jobs:
 
                       let src = ipa.extractedPath?.appendingPathComponent("Payload").appendingPathComponent(appName)
                       guard let src = src, FileManager.default.fileExists(atPath: src.path) else {
-                          // أعد الاستخراج من الصفر
                           DispatchQueue.main.async { progress(0.0, "إعادة الاستخراج…") }
                           do {
                               let extractDest = self.extractedRoot.appendingPathComponent(
@@ -875,7 +854,6 @@ jobs:
                       try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
 
                       DispatchQueue.main.async { progress(0.55, "جاري نسخ الملفات…") }
-                      // نسخ شجرة .app كاملة بكفاءة
                       let fm = FileManager.default
                       let enumerator = fm.enumerator(at: src, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
                       var allFiles: [URL] = []
@@ -890,14 +868,12 @@ jobs:
                           let rel = file.path.replacingOccurrences(of: src.path + "/", with: "")
                           let out = dest.appendingPathComponent(rel)
                           try fm.createDirectory(at: out.deletingLastPathComponent(), withIntermediateDirectories: true)
-                          // نسخ كل ملف
                           try fm.copyItem(at: file, to: out)
                           done += 1
                           let p = 0.55 + (done / total) * 0.40
                           DispatchQueue.main.async { progress(p, "جاري نسخ الملفات… (\(Int(p*100))%)") }
                       }
 
-                      // حفظ الحالة
                       DispatchQueue.main.async { progress(0.97, "إنهاء…") }
                       if let idx = self.ipas.firstIndex(where: { $0.id == ipa.id }) {
                           self.ipas[idx].isInstalled = true
@@ -953,11 +929,7 @@ jobs:
               }
           }
 
-          // MARK: - StreamingInflate (DEFLATE عبر libz باستدعاء C مباشر)
-          // نستخدم @_silgen_name لاستدعاء inflate_/inflateInit2_/inflateEnd_ بدون الحاجة لـ import zlib
-          // (الـ underscore-suffixed functions هي الأساسية خلف الـ macros)
-          // libz مربوط تلقائياً على iOS (متاح عبر libSystem)
-
+          // MARK: - StreamingInflate (DEFLATE عبر libz)
           @_silgen_name("inflateInit2_")
           private func _inflateInit2(_ strm: UnsafeMutablePointer<z_stream_raw>,
                                      _ windowBits: Int32,
@@ -970,7 +942,6 @@ jobs:
           @_silgen_name("inflateEnd")
           private func _inflateEnd(_ strm: UnsafeMutablePointer<z_stream_raw>) -> Int32
 
-          // نسخة مبسطة من z_stream (نحتاج الحقول الأساسية فقط)
           private struct z_stream_raw {
               var next_in: UnsafePointer<UInt8>?
               var avail_in: UInt32
@@ -996,8 +967,6 @@ jobs:
 
           enum StreamingInflate {
               static func inflate(_ data: Data) -> Data? {
-                  // ZIP DEFLATE entries: raw DEFLATE → نمرّر windowBits سالب
-                  // نمرّر -MAX_WBITS_RAW = -15
                   let negMax = -MAX_WBITS_RAW
                   return tryInflate(data, windowBits: negMax)
               }
@@ -1007,7 +976,6 @@ jobs:
                   defer { dst.deallocate() }
 
                   var stream = z_stream_raw()
-                  // تهيئة الحقول الضرورية
                   let initRet = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int32 in
                       guard let base = rawBuf.baseAddress else { return Z_DATA_ERROR }
                       let src = base.assumingMemoryBound(to: UInt8.self)
@@ -1015,7 +983,7 @@ jobs:
                       stream.avail_in = UInt32(data.count)
                       stream.next_out = dst
                       stream.avail_out = UInt32(expectedMax)
-                      let zlibVer = "1.2.12"  // ZLIB_VERSION ثابت في iOS
+                      let zlibVer = "1.2.12"
                       return zlibVer.withCString { verPtr in
                           _inflateInit2(&stream, windowBits, verPtr, Int32(MemoryLayout<z_stream_raw>.size))
                       }
@@ -1714,7 +1682,6 @@ jobs:
                   return cats
               }
 
-              // عناصر مدمجة: متجر + محلية
               enum AnySource: Identifiable {
                   case store(AppItem)
                   case local(LocalIPA)
@@ -1874,7 +1841,6 @@ jobs:
                                       }.transition(.opacity)
                                   }
 
-                                  // Source filter
                                   HStack(spacing: 8) {
                                       ForEach(SourceFilter.allCases, id: \.self) { s in
                                           Button(action: { withAnimation(.spring()) { sourceFilter = s } }) {
@@ -1896,7 +1862,6 @@ jobs:
                                       Spacer()
                                   }.padding(.horizontal)
 
-                                  // Category Filter
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(categories, id: \.self) { cat in
@@ -1968,7 +1933,7 @@ jobs:
               }
           }
 
-          // MARK: - Local IPA Card (يظهر في تبويب التطبيقات كصف عادي)
+          // MARK: - Local IPA Card
           struct LocalIPACard: View {
               let ipa: LocalIPA
               @Environment(\.colorScheme) var scheme
@@ -2157,7 +2122,7 @@ jobs:
           import UIKit
           import UniformTypeIdentifiers
 
-          // MARK: - IPA Files Tab (استيراد + استخراج + استرداد + مشاركة)
+          // MARK: - IPA Files Tab
           struct IPAFilesTabView: View {
               @ObservedObject var ipaManager: IPAManager
               @State private var showImporter = false
@@ -2232,7 +2197,6 @@ jobs:
                   }
               }
 
-              // MARK: - Header
               private var header: some View {
                   HStack(spacing: 12) {
                       ZStack {
@@ -2252,7 +2216,6 @@ jobs:
                   }.padding(.horizontal).padding(.top, 6)
               }
 
-              // MARK: - Search
               private var searchBar: some View {
                   HStack(spacing: 10) {
                       Image(systemName: "magnifyingglass").foregroundColor(.gray)
@@ -2270,7 +2233,6 @@ jobs:
                   .padding(.horizontal)
               }
 
-              // MARK: - List
               private var list: some View {
                   LazyVStack(spacing: 10) {
                       ForEach(filtered) { ipa in
@@ -2290,7 +2252,6 @@ jobs:
                   }
               }
 
-              // MARK: - Empty State
               private var emptyState: some View {
                   VStack(spacing: 18) {
                       Image(systemName: "tray.and.arrow.down.fill")
@@ -2303,7 +2264,6 @@ jobs:
                   .padding(40).frame(maxWidth: .infinity).padding(.top, 60)
               }
 
-              // MARK: - Import Button
               private var importButton: some View {
                   Button {
                       HapticManager.shared.impact(.medium)
@@ -2322,7 +2282,6 @@ jobs:
                   .padding(.bottom, 18)
               }
 
-              // MARK: - Import progress card
               private var importProgressCard: some View {
                   VStack(spacing: 10) {
                       HStack {
@@ -2345,7 +2304,6 @@ jobs:
                   .transition(.move(edge: .bottom).combined(with: .opacity))
               }
 
-              // MARK: - Recover progress
               private var recoverOverlay: some View {
                   VStack(spacing: 14) {
                       ProgressView(value: recoverProgress)
@@ -2363,7 +2321,6 @@ jobs:
                   .shadow(color: .black.opacity(0.4), radius: 20)
               }
 
-              // MARK: - Recover action
               private func recover(_ ipa: LocalIPA) {
                   isRecovering = true
                   recoverProgress = 0
@@ -2377,7 +2334,6 @@ jobs:
                       case .success(let url):
                           recoverMessage = "تم الاسترداد ✓"
                           HapticManager.shared.notification(.success)
-                          // شارك تلقائياً
                           DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                               shareURL = url
                               showShare = true
@@ -2664,7 +2620,6 @@ jobs:
                   .padding(.horizontal)
               }
 
-              // MARK: - Recover
               private func recover() {
                   isRecovering = true
                   recoverProgress = 0
