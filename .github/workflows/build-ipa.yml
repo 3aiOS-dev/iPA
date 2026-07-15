@@ -89,13 +89,23 @@ jobs:
               <array><string>arm64</string></array>
               <key>UISupportedInterfaceOrientations</key>
               <array><string>UIInterfaceOrientationPortrait</string></array>
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
               <key>UILaunchScreen</key><dict/>
               <key>NSPhotoLibraryUsageDescription</key>
               <string>لاستيراد أيقونات التطبيقات</string>
               <key>NSFaceIDUsageDescription</key>
               <string>لحماية إعدادات التطبيق</string>
-              <key>UIFileSharingEnabled</key><true/>
+              <key>NSDocumentsFolderUsageDescription</key>
+              <string>للوصول لملفات IPA المستوردة</string>
               <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+              <key>UIFileSharingEnabled</key><true/>
+              <key>UISupportsDocumentBrowser</key><true/>
           </dict>
           </plist>
           PEOF
@@ -261,392 +271,37 @@ jobs:
               let name: String; let icon: String; let gradient: [Color]
           }
 
-          // MARK: - IPA File Model
-          struct IPAFile: Identifiable, Codable {
-              var id = UUID()
+          // MARK: - Local IPA Model
+          struct LocalIPA: Identifiable, Codable, Equatable {
+              var id: String              { sha256 }
               let fileName: String
-              let localPath: String
-              let fileSize: String
-              let fileSizeBytes: Int64
-              let date: String
-              var isExtracted: Bool = false
-              var extractedPath: String?
-          
-              enum CodingKeys: String, CodingKey {
-                  case id, fileName, localPath, fileSize, fileSizeBytes, date, isExtracted, extractedPath
+              let displayName: String
+              let bundleID: String
+              let version: String
+              let minOS: String
+              let sizeBytes: Int64
+              let importedAt: Date
+              let sourceURL: URL
+              let extractedPath: URL?
+              let payloadAppName: String?
+              let iconRelativePath: String?
+              let sha256: String
+              var isInstalled: Bool
+
+              var formattedSize: String {
+                  ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
               }
+
+              var formattedDate: String {
+                  let f = DateFormatter()
+                  f.dateFormat = "yyyy-MM-dd HH:mm"
+                  return f.string(from: importedAt)
+              }
+
+              static func == (lhs: LocalIPA, rhs: LocalIPA) -> Bool { lhs.id == rhs.id }
           }
           VIPEOF
           echo "Models.swift: $(wc -l < Models.swift) lines"
-
-      - name: Generate Source - ZIPEngine.swift
-        run: |
-          cat > ZIPEngine.swift << 'VIPEOF'
-          import Foundation
-          import Compression
-
-          // MARK: - ZIP Constants
-          private let kLocalFileSig:    UInt32 = 0x04034b50
-          private let kCentralDirSig:   UInt32 = 0x02014b50
-          private let kEndOfCentralSig: UInt32 = 0x06054b50
-
-          private extension Data {
-              func readU16(at off: Int) -> UInt16 {
-                  guard off + 2 <= count else { return 0 }
-                  return subdata(in: off..<off+2).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian }
-              }
-              func readU32(at off: Int) -> UInt32 {
-                  guard off + 4 <= count else { return 0 }
-                  return subdata(in: off..<off+4).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
-              }
-          }
-
-          private func le16(_ v: UInt16) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 2) }
-          private func le32(_ v: UInt32) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 4) }
-
-          private func crc32ofData(_ data: Data) -> UInt32 {
-              var crc: UInt32 = 0xffffffff
-              for byte in data {
-                  crc ^= UInt32(byte)
-                  for _ in 0..<8 { crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1 }
-              }
-              return crc ^ 0xffffffff
-          }
-
-          // MARK: - ZIPReader
-          final class ZIPReader {
-              private let data: Data
-              private let fm = FileManager.default
-              
-              init?(url: URL) {
-                  guard let d = try? Data(contentsOf: url) else { return nil }
-                  self.data = d
-              }
-              
-              init?(data: Data) {
-                  self.data = data
-              }
-              
-              func extractAll(to destination: URL) throws {
-                  try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-                  var offset = 0
-                  while offset + 30 <= data.count {
-                      guard data.readU32(at: offset) == kLocalFileSig else { offset += 1; continue }
-                      let method     = Int(data.readU16(at: offset + 8))
-                      let compSize   = Int(data.readU32(at: offset + 18))
-                      let uncompSize = Int(data.readU32(at: offset + 22))
-                      let nameLen    = Int(data.readU16(at: offset + 26))
-                      let extraLen   = Int(data.readU16(at: offset + 28))
-                      guard offset + 30 + nameLen <= data.count else { break }
-                      let name = String(data: data[offset+30..<offset+30+nameLen], encoding: .utf8) ?? ""
-                      let dataStart = offset + 30 + nameLen + extraLen
-                      guard dataStart + compSize <= data.count else { break }
-                      if !name.isEmpty && !name.hasSuffix("/") {
-                          let dest = destination.appendingPathComponent(name)
-                          try fm.createDirectory(at: dest.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-                          let raw = Data(data[dataStart..<dataStart + compSize])
-                          let out: Data
-                          if method == 0 { out = raw }
-                          else if method == 8 { out = try inflate(raw, expected: uncompSize) }
-                          else { throw NSError(domain: "ZIPReader", code: method) }
-                          try out.write(to: dest)
-                      }
-                      offset = dataStart + compSize
-                  }
-              }
-              
-              private func inflate(_ src: Data, expected: Int) throws -> Data {
-                  let cap = max(expected, src.count * 6, 4096)
-                  var dst = Data(count: cap)
-                  let n = src.withUnsafeBytes { s -> Int in dst.withUnsafeMutableBytes { d -> Int in
-                      compression_decode_buffer(
-                          d.baseAddress!.assumingMemoryBound(to: UInt8.self), cap,
-                          s.baseAddress!.assumingMemoryBound(to: UInt8.self), s.count,
-                          nil, COMPRESSION_ZLIB)
-                  } }
-                  guard n > 0 else { throw NSError(domain: "ZIPReader", code: -2) }
-                  return dst.prefix(n)
-              }
-              
-              func listContents() -> [String] {
-                  var files: [String] = []
-                  var offset = 0
-                  while offset + 30 <= data.count {
-                      guard data.readU32(at: offset) == kLocalFileSig else { offset += 1; continue }
-                      let nameLen = Int(data.readU16(at: offset + 26))
-                      let extraLen = Int(data.readU16(at: offset + 28))
-                      guard offset + 30 + nameLen <= data.count else { break }
-                      let name = String(data: data[offset+30..<offset+30+nameLen], encoding: .utf8) ?? ""
-                      if !name.isEmpty && !name.hasSuffix("/") {
-                          files.append(name)
-                      }
-                      let compSize = Int(data.readU32(at: offset + 18))
-                      let dataStart = offset + 30 + nameLen + extraLen
-                      offset = dataStart + compSize
-                  }
-                  return files
-              }
-          }
-
-          // MARK: - ZIPWriter
-          final class ZIPWriter {
-              static func createZip(from directory: URL) throws -> Data {
-                  let fm = FileManager.default
-                  guard let enumerator = fm.enumerator(
-                      at: directory, includingPropertiesForKeys: [.isDirectoryKey],
-                      options: [.skipsHiddenFiles]) else {
-                      throw NSError(domain: "ZIPWriter", code: -1)
-                  }
-                  var localData = Data(); var centralData = Data(); var count: UInt16 = 0
-                  for case let url as URL in enumerator {
-                      let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                      var rel = String(url.path.dropFirst(directory.path.count))
-                      if rel.hasPrefix("/") { rel = String(rel.dropFirst()) }
-                      guard !rel.isEmpty else { continue }
-                      let entryName = isDir ? rel + "/" : rel
-                      let nameData  = entryName.data(using: .utf8) ?? Data()
-                      let fileData  = isDir ? Data() : ((try? Data(contentsOf: url)) ?? Data())
-                      let crc = crc32ofData(fileData); let sz = UInt32(fileData.count)
-                      let localOff = UInt32(localData.count)
-                      var lhdr = Data()
-                      lhdr += le32(kLocalFileSig)
-                      lhdr += le16(20); lhdr += le16(0); lhdr += le16(0)
-                      lhdr += le16(0);  lhdr += le16(0)
-                      lhdr += le32(crc); lhdr += le32(sz); lhdr += le32(sz)
-                      lhdr += le16(UInt16(nameData.count)); lhdr += le16(0)
-                      lhdr += nameData; lhdr += fileData
-                      localData += lhdr
-                      var cd = Data()
-                      cd += le32(kCentralDirSig)
-                      cd += le16(20); cd += le16(20); cd += le16(0); cd += le16(0)
-                      cd += le16(0);  cd += le16(0)
-                      cd += le32(crc); cd += le32(sz); cd += le32(sz)
-                      cd += le16(UInt16(nameData.count))
-                      cd += le16(0); cd += le16(0); cd += le16(0)
-                      cd += le16(0); cd += le32(0); cd += le32(localOff)
-                      cd += nameData
-                      centralData += cd; count += 1
-                  }
-                  var eocd = Data()
-                  eocd += le32(kEndOfCentralSig)
-                  eocd += le16(0); eocd += le16(0)
-                  eocd += le16(count); eocd += le16(count)
-                  eocd += le32(UInt32(centralData.count))
-                  eocd += le32(UInt32(localData.count))
-                  eocd += le16(0)
-                  return localData + centralData + eocd
-              }
-          }
-
-          // MARK: - IPAManager
-          class IPAManager: ObservableObject {
-              @Published var ipaFiles: [IPAFile] = []
-              @Published var isLoading = false
-              @Published var statusMessage = ""
-              @Published var errorMessage: String?
-              
-              private let fm = FileManager.default
-              private let documentsPath: URL
-              
-              init() {
-                  documentsPath = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                  loadIPAFiles()
-              }
-              
-              private func loadIPAFiles() {
-                  let url = documentsPath.appendingPathComponent("ipa_files.json")
-                  guard let data = try? Data(contentsOf: url),
-                        let decoded = try? JSONDecoder().decode([IPAFile].self, from: data)
-                  else { return }
-                  ipaFiles = decoded.filter { fm.fileExists(atPath: $0.localPath) }
-              }
-              
-              func saveIPAFiles() {
-                  let url = documentsPath.appendingPathComponent("ipa_files.json")
-                  if let data = try? JSONEncoder().encode(ipaFiles) { try? data.write(to: url) }
-              }
-              
-              func importIPA(from url: URL) {
-                  let dest = documentsPath.appendingPathComponent("IPA")
-                  try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
-                  let destFile = dest.appendingPathComponent(url.lastPathComponent)
-                  do {
-                      if fm.fileExists(atPath: destFile.path) { try fm.removeItem(at: destFile) }
-                      try fm.copyItem(at: url, to: destFile)
-                      let attrs = try fm.attributesOfItem(atPath: destFile.path)
-                      let size = attrs[.size] as? Int64 ?? 0
-                      let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm"
-                      let ipaFile = IPAFile(
-                          fileName: url.lastPathComponent,
-                          localPath: destFile.path,
-                          fileSize: ByteCountFormatter.string(fromByteCount: size, countStyle: .file),
-                          fileSizeBytes: size,
-                          date: df.string(from: Date()),
-                          isExtracted: false,
-                          extractedPath: nil
-                      )
-                      ipaFiles.insert(ipaFile, at: 0)
-                      saveIPAFiles()
-                      HapticManager.shared.notification(.success)
-                      statusMessage = "✅ تم استيراد \(url.lastPathComponent)"
-                  } catch {
-                      errorMessage = "❌ فشل الاستيراد: \(error.localizedDescription)"
-                  }
-              }
-              
-              func extractIPA(_ file: IPAFile) {
-                  guard let idx = ipaFiles.firstIndex(where: { $0.id == file.id }) else { return }
-                  isLoading = true
-                  statusMessage = "📦 جاري فك ضغط \(file.fileName)..."
-                  
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
-                      do {
-                          let ipaURL = URL(fileURLWithPath: file.localPath)
-                          let extractDir = self.documentsPath.appendingPathComponent("Extracted")
-                              .appendingPathComponent(file.fileName.replacingOccurrences(of: ".ipa", with: ""))
-                          try self.fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
-                          
-                          guard let reader = ZIPReader(url: ipaURL) else {
-                              throw NSError(domain: "IPAManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "فشل قراءة ملف IPA"])
-                          }
-                          
-                          // Show contents before extracting
-                          let contents = reader.listContents()
-                          DispatchQueue.main.async {
-                              self.statusMessage = "📋 تم العثور على \(contents.count) ملف/مجلد"
-                          }
-                          
-                          try reader.extractAll(to: extractDir)
-                          
-                          DispatchQueue.main.async {
-                              self.ipaFiles[idx].isExtracted = true
-                              self.ipaFiles[idx].extractedPath = extractDir.path
-                              self.saveIPAFiles()
-                              self.isLoading = false
-                              self.statusMessage = "✅ تم فك الضغط بنجاح إلى: \(extractDir.lastPathComponent)"
-                              HapticManager.shared.notification(.success)
-                          }
-                      } catch {
-                          DispatchQueue.main.async {
-                              self.isLoading = false
-                              self.errorMessage = "❌ فشل فك الضغط: \(error.localizedDescription)"
-                              self.statusMessage = "❌ فشل فك الضغط"
-                          }
-                      }
-                  }
-              }
-              
-              func createIPA(from directory: URL, fileName: String) {
-                  isLoading = true
-                  statusMessage = "🗜 جاري تجميع IPA من \(directory.lastPathComponent)..."
-                  
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
-                      do {
-                          let ipaDir = self.documentsPath.appendingPathComponent("IPA")
-                          try self.fm.createDirectory(at: ipaDir, withIntermediateDirectories: true)
-                          
-                          let outputName = fileName.hasSuffix(".ipa") ? fileName : fileName + ".ipa"
-                          let outputURL = ipaDir.appendingPathComponent(outputName)
-                          
-                          if self.fm.fileExists(atPath: outputURL.path) {
-                              try self.fm.removeItem(at: outputURL)
-                          }
-                          
-                          let zipData = try ZIPWriter.createZip(from: directory)
-                          try zipData.write(to: outputURL, options: .atomicWrite)
-                          
-                          let attrs = try self.fm.attributesOfItem(atPath: outputURL.path)
-                          let size = attrs[.size] as? Int64 ?? 0
-                          let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm"
-                          let ipaFile = IPAFile(
-                              fileName: outputName,
-                              localPath: outputURL.path,
-                              fileSize: ByteCountFormatter.string(fromByteCount: size, countStyle: .file),
-                              fileSizeBytes: size,
-                              date: df.string(from: Date()),
-                              isExtracted: false,
-                              extractedPath: nil
-                          )
-                          
-                          DispatchQueue.main.async {
-                              self.ipaFiles.insert(ipaFile, at: 0)
-                              self.saveIPAFiles()
-                              self.isLoading = false
-                              self.statusMessage = "✅ تم تجميع \(outputName) بنجاح!"
-                              HapticManager.shared.notification(.success)
-                          }
-                      } catch {
-                          DispatchQueue.main.async {
-                              self.isLoading = false
-                              self.errorMessage = "❌ فشل التجميع: \(error.localizedDescription)"
-                              self.statusMessage = "❌ فشل التجميع"
-                          }
-                      }
-                  }
-              }
-              
-              func deleteIPAFile(_ file: IPAFile) {
-                  try? fm.removeItem(atPath: file.localPath)
-                  if let extracted = file.extractedPath {
-                      try? fm.removeItem(atPath: extracted)
-                  }
-                  ipaFiles.removeAll { $0.id == file.id }
-                  saveIPAFiles()
-                  statusMessage = "🗑️ تم حذف \(file.fileName)"
-              }
-              
-              func recoverIPAFiles() {
-                  isLoading = true
-                  statusMessage = "🔍 جاري البحث عن ملفات IPA..."
-                  
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
-                      var found = 0
-                      let ipaDir = self.documentsPath.appendingPathComponent("IPA")
-                      if let files = try? self.fm.contentsOfDirectory(at: ipaDir, includingPropertiesForKeys: nil) {
-                          for url in files where url.pathExtension.lowercased() == "ipa" {
-                              if !self.ipaFiles.contains(where: { $0.localPath == url.path }) {
-                                  let attrs = try? self.fm.attributesOfItem(atPath: url.path)
-                                  let size = attrs?[.size] as? Int64 ?? 0
-                                  let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm"
-                                  let ipaFile = IPAFile(
-                                      fileName: url.lastPathComponent,
-                                      localPath: url.path,
-                                      fileSize: ByteCountFormatter.string(fromByteCount: size, countStyle: .file),
-                                      fileSizeBytes: size,
-                                      date: df.string(from: Date()),
-                                      isExtracted: false,
-                                      extractedPath: nil
-                                  )
-                                  DispatchQueue.main.async {
-                                      self.ipaFiles.insert(ipaFile, at: 0)
-                                      found += 1
-                                  }
-                              }
-                          }
-                      }
-                      DispatchQueue.main.async {
-                          self.saveIPAFiles()
-                          self.isLoading = false
-                          self.statusMessage = found > 0 ? "✅ تم استرداد \(found) ملف" : "ℹ️ لا توجد ملفات جديدة"
-                          if found > 0 { HapticManager.shared.notification(.success) }
-                      }
-                  }
-              }
-              
-              func getExtractedContents(_ file: IPAFile) -> [URL]? {
-                  guard let path = file.extractedPath,
-                        let urls = try? fm.contentsOfDirectory(at: URL(fileURLWithPath: path),
-                                                               includingPropertiesForKeys: nil)
-                  else { return nil }
-                  return urls
-              }
-          }
-          VIPEOF
-          echo "ZIPEngine.swift: $(wc -l < ZIPEngine.swift) lines"
 
       - name: Generate Source - AppsManager.swift
         run: |
@@ -810,76 +465,605 @@ jobs:
                   .background(Capsule().fill(LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)))
               }
           }
+          VIPEOF
+          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
-          // MARK: - Document Picker
-          struct DocumentPicker: UIViewControllerRepresentable {
-              let types: [UTType]
-              let onPick: (URL) -> Void
+      - name: Generate Source - IPAManager.swift
+        run: |
+          cat > IPAManager.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+          import Foundation
 
-              func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+          // MARK: - IPA Manager (استخراج Streaming + استرداد بدون ضغط)
+          final class IPAManager: ObservableObject {
+              static let shared = IPAManager()
 
-              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
-                  picker.delegate = context.coordinator
-                  picker.allowsMultipleSelection = false
-                  return picker
+              @Published var ipas: [LocalIPA] = []
+              @Published var isImporting: Bool = false
+              @Published var importProgress: Double = 0.0
+              @Published var importMessage: String = ""
+              @Published var lastError: String?
+
+              private let queue = DispatchQueue(label: "ipa.manager.queue", qos: .userInitiated)
+              private let metadataFile: URL
+              private let ipasRoot: URL
+              private let extractedRoot: URL
+              private let installedRoot: URL
+
+              private init() {
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                  ipasRoot        = docs.appendingPathComponent("IPAs", isDirectory: true)
+                  extractedRoot   = docs.appendingPathComponent("IPAs_Extracted", isDirectory: true)
+                  installedRoot   = docs.appendingPathComponent("IPAs_Installed", isDirectory: true)
+                  metadataFile    = docs.appendingPathComponent("ipas_index.json")
+                  try? FileManager.default.createDirectory(at: ipasRoot, withIntermediateDirectories: true)
+                  try? FileManager.default.createDirectory(at: extractedRoot, withIntermediateDirectories: true)
+                  try? FileManager.default.createDirectory(at: installedRoot, withIntermediateDirectories: true)
+                  load()
               }
 
-              func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+              // MARK: - Storage Paths
+              static var documentsDirectory: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
+              static var ipasDirectory: URL      { IPAManager.shared.ipasRoot }
+              static var extractedDirectory: URL { IPAManager.shared.extractedRoot }
+              static var installedDirectory: URL { IPAManager.shared.installedRoot }
 
-              class Coordinator: NSObject, UIDocumentPickerDelegate {
-                  let onPick: (URL) -> Void
-                  init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+              // MARK: - Index
+              private func load() {
+                  guard FileManager.default.fileExists(atPath: metadataFile.path),
+                        let data = try? Data(contentsOf: metadataFile) else { return }
+                  let dec = JSONDecoder()
+                  dec.dateDecodingStrategy = .iso8601
+                  if let list = try? dec.decode([LocalIPA].self, from: data) {
+                      // تأكد من تطابق isInstalled مع الواقع
+                      let verified = list.map { ipa -> LocalIPA in
+                          var copy = ipa
+                          if let p = ipa.extractedPath, let app = ipa.payloadAppName {
+                              let inst = installedRoot.appendingPathComponent(app)
+                              copy.isInstalled = FileManager.default.fileExists(atPath: inst.path)
+                                          && (try? inst.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                              _ = p
+                          }
+                          return copy
+                      }
+                      DispatchQueue.main.async { self.ipas = verified.sorted { $0.importedAt > $1.importedAt } }
+                  }
+              }
 
-                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                      guard let url = urls.first else { return }
-                      let accessed = url.startAccessingSecurityScopedResource()
-                      defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+              private func save() {
+                  let enc = JSONEncoder()
+                  enc.dateEncodingStrategy = .iso8601
+                  enc.outputFormatting = .prettyPrinted
+                  if let data = try? enc.encode(ipas) {
+                      try? data.write(to: metadataFile, options: .atomic)
+                  }
+              }
 
-                      let ext = url.pathExtension.isEmpty ? "bin" : url.pathExtension
-                      let tmp = FileManager.default.temporaryDirectory
-                          .appendingPathComponent(UUID().uuidString + "." + ext)
+              // MARK: - Import (نسخ + استخراج streaming)
+              func importIPA(from sourceURL: URL, completion: ((Result<LocalIPA, Error>) -> Void)? = nil) {
+                  isImporting = true
+                  importProgress = 0.0
+                  importMessage  = "جاري نسخ الملف…"
+                  lastError      = nil
 
-                      if let data = try? Data(contentsOf: url), (try? data.write(to: tmp)) != nil {
-                          onPick(tmp)
-                      } else if (try? FileManager.default.copyItem(at: url, to: tmp)) != nil {
-                          onPick(tmp)
-                      } else {
-                          onPick(url)
+                  let needsScope = sourceURL.startAccessingSecurityScopedResource()
+                  defer { if needsScope { sourceURL.stopAccessingSecurityScopedResource() } }
+
+                  let originalName = sourceURL.lastPathComponent
+                  let safeName = sanitize(originalName)
+                  let dest = ipasRoot.appendingPathComponent(safeName)
+
+                  queue.async { [weak self] in
+                      guard let self = self else { return }
+                      do {
+                          // نسخ ذكي (يستخدم FileCoordinator داخلياً ويدعم ملفات كبيرة)
+                          if FileManager.default.fileExists(atPath: dest.path) {
+                              try FileManager.default.removeItem(at: dest)
+                          }
+                          try self.copyLargeFile(from: sourceURL, to: dest) { p in
+                              self.tick(progress: 0.0 + p * 0.30, msg: "جاري نسخ الملف…")
+                          }
+                          self.tick(progress: 0.30, msg: "جاري قراءة البيانات…")
+                          let sha = Self.quickHash(of: dest)
+
+                          // استخراج streaming من الـ IPA
+                          let extractDest = self.extractedRoot.appendingPathComponent(
+                              safeName.replacingOccurrences(of: ".ipa", with: "", options: .caseInsensitive)
+                          )
+                          try? FileManager.default.removeItem(at: extractDest)
+                          try FileManager.default.createDirectory(at: extractDest, withIntermediateDirectories: true)
+
+                          self.tick(progress: 0.32, msg: "جاري فك الضغط…")
+                          let result = (try? self.streamingUnzip(src: dest, into: extractDest) { p in
+                              self.tick(progress: 0.32 + p * 0.55, msg: "جاري فك الضغط… (\(Int(p*100))%)")
+                          }) ?? nil
+
+                          self.tick(progress: 0.88, msg: "قراءة المعلومات…")
+                          var payloadAppName: String? = nil
+                          var iconRel: String? = nil
+                          var bundleID = (safeName as NSString).deletingPathExtension
+                          var version  = "1.0"
+                          var minOS    = "16.0"
+                          var display  = (safeName as NSString).deletingPathExtension
+
+                          if let appURL = result?.appURL,
+                             let plist = self.readInfoPlist(in: appURL) {
+                              bundleID = plist.bundleID ?? bundleID
+                              version  = plist.version  ?? version
+                              minOS    = plist.minOS    ?? minOS
+                              display  = plist.displayName ?? display
+                              payloadAppName = plist.executableName ?? appURL.lastPathComponent
+                              iconRel = plist.iconName
+                          } else if let appURL = self.findAppInPayload(in: extractDest) {
+                              if let plist = self.readInfoPlist(in: appURL) {
+                                  bundleID = plist.bundleID ?? bundleID
+                                  version  = plist.version  ?? version
+                                  minOS    = plist.minOS    ?? minOS
+                                  display  = plist.displayName ?? display
+                                  payloadAppName = plist.executableName ?? appURL.lastPathComponent
+                                  iconRel = plist.iconName
+                              }
+                          }
+
+                          let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value ?? 0
+                          let model = LocalIPA(
+                              fileName: safeName,
+                              displayName: display,
+                              bundleID: bundleID,
+                              version: version,
+                              minOS: minOS,
+                              sizeBytes: size,
+                              importedAt: Date(),
+                              sourceURL: dest,
+                              extractedPath: extractDest,
+                              payloadAppName: payloadAppName,
+                              iconRelativePath: iconRel,
+                              sha256: sha,
+                              isInstalled: false
+                          )
+                          DispatchQueue.main.async {
+                              self.ipas.insert(model, at: 0)
+                              self.save()
+                              self.tick(progress: 1.0, msg: "تم الاستيراد")
+                              HapticManager.shared.notification(.success)
+                              self.isImporting = false
+                              completion?(.success(model))
+                          }
+                      } catch {
+                          DispatchQueue.main.async {
+                              self.isImporting = false
+                              self.lastError = "فشل الاستيراد: \(error.localizedDescription)"
+                              HapticManager.shared.notification(.error)
+                              completion?(.failure(error))
+                          }
                       }
                   }
               }
-          }
 
-          // MARK: - Directory Picker
-          struct DirectoryPicker: UIViewControllerRepresentable {
-              let onPick: (URL) -> Void
-
-              func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-                  picker.delegate = context.coordinator
-                  picker.allowsMultipleSelection = false
-                  return picker
+              // MARK: - نسخ ملفات كبيرة بدون انهيار (بـ 1MB chunks)
+              private func copyLargeFile(from src: URL, to dst: URL, progress: (Double) -> Void) throws {
+                  let fm = FileManager.default
+                  let attrs = try fm.attributesOfItem(atPath: src.path)
+                  let total = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                  if total < 8 * 1024 * 1024 {
+                      // ملفات صغيرة: نسخ عادي يكفي
+                      try fm.copyItem(at: src, to: dst)
+                      progress(1.0)
+                      return
+                  }
+                  // ملفات كبيرة: نسخ streaming عبر FileHandle
+                  if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+                  fm.createFile(atPath: dst.path, contents: nil)
+                  guard let inH  = try? FileHandle(forReadingFrom: src),
+                        let outH = try? FileHandle(forWritingTo: dst) else {
+                      // fallback
+                      try fm.copyItem(at: src, to: dst)
+                      progress(1.0)
+                      return
+                  }
+                  defer { try? inH.close(); try? outH.close() }
+                  let chunkSize: Int = 4 * 1024 * 1024
+                  var written: Int64 = 0
+                  while true {
+                      let chunk = (try? inH.read(upToCount: chunkSize)) ?? Data()
+                      if chunk.isEmpty { break }
+                      outH.write(chunk)
+                      written += Int64(chunk.count)
+                      if total > 0 {
+                          progress(Double(written) / Double(total))
+                      } else {
+                          progress(min(1.0, Double(written) / (64 * 1024 * 1024)))
+                      }
+                  }
+                  progress(1.0)
               }
 
-              func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+              // MARK: - Quick hash
+              static func quickHash(of url: URL) -> String {
+                  guard let h = try? FileHandle(forReadingFrom: url) else { return UUID().uuidString }
+                  defer { try? h.close() }
+                  var hasher = Hasher()
+                  // عينة من بداية + منتصف + نهاية الملف
+                  let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
+                  let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                  if let head = try? h.read(upToCount: 4096) { hasher.combine(head) }
+                  if size > 10_000_000 {
+                      try? h.seek(toOffset: UInt64(size / 2))
+                      if let mid = try? h.read(upToCount: 4096) { hasher.combine(mid) }
+                      try? h.seek(toOffset: UInt64(max(0, size - 4096)))
+                      if let tail = try? h.read(upToCount: 4096) { hasher.combine(tail) }
+                  }
+                  hasher.combine(size)
+                  hasher.combine(url.lastPathComponent)
+                  return String(hasher.finalize, radix: 16, uppercase: false)
+              }
 
-              class Coordinator: NSObject, UIDocumentPickerDelegate {
-                  let onPick: (URL) -> Void
-                  init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+              private func tick(progress: Double, msg: String) {
+                  DispatchQueue.main.async {
+                      self.importProgress = progress
+                      self.importMessage  = msg
+                  }
+              }
 
-                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                      guard let url = urls.first else { return }
-                      let accessed = url.startAccessingSecurityScopedResource()
-                      defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                      onPick(url)
+              // MARK: - Find .app in Payload
+              private func findAppInPayload(in extractDest: URL) -> URL? {
+                  let payload = extractDest.appendingPathComponent("Payload")
+                  guard let apps = try? FileManager.default.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil) else { return nil }
+                  return apps.first(where: { $0.pathExtension == "app" })
+              }
+
+              // MARK: - Streaming Unzip (فك ضغط مع progress، بدون تحميل الملف كامل في الذاكرة)
+              struct UnzipResult {
+                  let appURL: URL?
+                  let fileCount: Int
+              }
+
+              private func streamingUnzip(src: URL,
+                                           into dest: URL,
+                                           progress: (Double) -> Void) throws -> UnzipResult {
+                  let file = try FileHandle(forReadingFrom: src)
+                  defer { try? file.close() }
+
+                  guard let eocd = CentralDirectoryReader.locateEOCD(in: file) else {
+                      throw NSError(domain: "IPA", code: 1, userInfo: [NSLocalizedDescriptionKey: "ملف ZIP غير صالح"])
+                  }
+                  let entries = eocd.entries.filter { !$0.isDirectory }
+                  let total = Double(max(entries.count, 1))
+                  var processed: Double = 0
+                  var firstApp: URL? = nil
+                  let fm = FileManager.default
+
+                  for entry in entries {
+                      processed += 1
+                      progress(processed / total)
+
+                      let outURL = dest.appendingPathComponent(entry.path)
+                      let parent = outURL.deletingLastPathComponent()
+                      try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+
+                      try file.seek(toOffset: entry.dataOffset)
+
+                      if entry.method == 0 {
+                          // Stored
+                          let data = (try file.read(upToCount: Int(entry.compressedSize))) ?? Data()
+                          if !data.isEmpty { try data.write(to: outURL, options: .atomic) }
+                      } else if entry.method == 8 {
+                          // Deflate — فك ضغط streaming لكل ملف على حدة
+                          let compressed = (try file.read(upToCount: Int(entry.compressedSize))) ?? Data()
+                          if !compressed.isEmpty {
+                              if let raw = StreamingInflate.inflate(compressed) {
+                                  try raw.write(to: outURL, options: .atomic)
+                              } else {
+                                  // fallback: اكتب البيانات كما هي
+                                  try compressed.write(to: outURL, options: .atomic)
+                              }
+                          }
+                      } else {
+                          continue
+                      }
+
+                      if entry.path.contains("Payload/") && entry.path.hasSuffix(".app/") {
+                          if firstApp == nil { firstApp = outURL }
+                      }
+                  }
+
+                  if firstApp == nil {
+                      firstApp = findAppInPayload(in: dest)
+                  }
+                  return UnzipResult(appURL: firstApp, fileCount: entries.count)
+              }
+
+              // MARK: - Info.plist Reader
+              struct PlistInfo {
+                  let bundleID: String?
+                  let version: String?
+                  let minOS: String?
+                  let displayName: String?
+                  let executableName: String?
+                  let iconName: String?
+              }
+
+              func readInfoPlist(in payloadApp: URL) -> PlistInfo? {
+                  let plistURL = payloadApp.appendingPathComponent("Info.plist")
+                  guard let data = try? Data(contentsOf: plistURL) else { return nil }
+                  guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else { return nil }
+
+                  let bundleID = plist["CFBundleIdentifier"] as? String
+                  let version  = plist["CFBundleShortVersionString"] as? String
+                  let minOS    = plist["MinimumOSVersion"] as? String
+                  let display  = (plist["CFBundleDisplayName"] as? String) ?? (plist["CFBundleName"] as? String)
+                  let exec     = plist["CFBundleExecutable"] as? String
+
+                  var iconName: String? = nil
+                  if let icons = plist["CFBundleIcons"] as? [String: Any],
+                     let cf2 = icons["CFBundlePrimaryIcon"] as? [String: Any],
+                     let files = cf2["CFBundleIconFiles"] as? [String], let last = files.last {
+                      iconName = last
+                  } else if let icons = plist["CFBundleIcons~ipad"] as? [String: Any],
+                            let cf2 = icons["CFBundlePrimaryIcon"] as? [String: Any],
+                            let files = cf2["CFBundleIconFiles"] as? [String], let last = files.last {
+                      iconName = last
+                  } else if let files = plist["CFBundleIconFiles"] as? [String], let last = files.last {
+                      iconName = last
+                  }
+
+                  return PlistInfo(bundleID: bundleID, version: version, minOS: minOS,
+                                   displayName: display, executableName: exec, iconName: iconName)
+              }
+
+              // MARK: - استرداد (إستخراج Payload/.app إلى مجلد Installed)
+              // هذا الاسترداد الجديد: يستخرج الـ Payload فقط كنسخة كاملة من الـ .app
+              // ويضعها في مجلد IPAs_Installed/. يعمل بكفاءة على جميع الأجهزة (iPhone/iPad)
+              // وبدون إعادة ضغط الـ IPA كاملاً (الذي كان يُعطّل الملفات الكبيرة)
+              func recoverIPA(_ ipa: LocalIPA,
+                              progress: @escaping (Double, String) -> Void,
+                              completion: @escaping (Result<URL, Error>) -> Void) {
+                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                      guard let self = self else { return }
+                      guard let appName = ipa.payloadAppName else {
+                          DispatchQueue.main.async {
+                              completion(.failure(NSError(domain: "IPA", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey: "لا يوجد Payload صالح في الملف"])))
+                          }
+                          return
+                      }
+
+                      let src = ipa.extractedPath?.appendingPathComponent("Payload").appendingPathComponent(appName)
+                      guard let src = src, FileManager.default.fileExists(atPath: src.path) else {
+                          // أعد الاستخراج من الصفر
+                          DispatchQueue.main.async { progress(0.0, "إعادة الاستخراج…") }
+                          do {
+                              let extractDest = self.extractedRoot.appendingPathComponent(
+                                  ipa.fileName.replacingOccurrences(of: ".ipa", with: "", options: .caseInsensitive)
+                              )
+                              try? FileManager.default.removeItem(at: extractDest)
+                              try FileManager.default.createDirectory(at: extractDest, withIntermediateDirectories: true)
+                              _ = try self.streamingUnzip(src: ipa.sourceURL, into: extractDest) { p in
+                                  DispatchQueue.main.async { progress(p * 0.5, "جاري فك الضغط…") }
+                              }
+                              let payloadSrc = extractDest.appendingPathComponent("Payload").appendingPathComponent(appName)
+                              self.installApp(from: payloadSrc, ipa: ipa, progress: progress, completion: completion)
+                          } catch {
+                              DispatchQueue.main.async { completion(.failure(error)) }
+                          }
+                          return
+                      }
+                      self.installApp(from: src, ipa: ipa, progress: progress, completion: completion)
+                  }
+              }
+
+              private func installApp(from src: URL,
+                                      ipa: LocalIPA,
+                                      progress: @escaping (Double, String) -> Void,
+                                      completion: @escaping (Result<URL, Error>) -> Void) {
+                  guard let appName = ipa.payloadAppName else {
+                      DispatchQueue.main.async {
+                          completion(.failure(NSError(domain: "IPA", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "اسم التطبيق غير معروف"])))
+                      }
+                      return
+                  }
+                  let dest = installedRoot.appendingPathComponent(appName)
+
+                  do {
+                      if FileManager.default.fileExists(atPath: dest.path) {
+                          try FileManager.default.removeItem(at: dest)
+                      }
+                      try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+
+                      DispatchQueue.main.async { progress(0.55, "جاري نسخ الملفات…") }
+                      // نسخ شجرة .app كاملة بكفاءة
+                      let fm = FileManager.default
+                      let enumerator = fm.enumerator(at: src, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
+                      var allFiles: [URL] = []
+                      while let next = enumerator?.nextObject() as? URL {
+                          let vals = try? next.resourceValues(forKeys: [.isRegularFileKey])
+                          if vals?.isRegularFile == true { allFiles.append(next) }
+                      }
+                      let total = Double(max(allFiles.count, 1))
+                      var done: Double = 0
+
+                      for file in allFiles {
+                          let rel = file.path.replacingOccurrences(of: src.path + "/", with: "")
+                          let out = dest.appendingPathComponent(rel)
+                          try fm.createDirectory(at: out.deletingLastPathComponent(), withIntermediateDirectories: true)
+                          // نسخ كل ملف
+                          try fm.copyItem(at: file, to: out)
+                          done += 1
+                          let p = 0.55 + (done / total) * 0.40
+                          DispatchQueue.main.async { progress(p, "جاري نسخ الملفات… (\(Int(p*100))%)") }
+                      }
+
+                      // حفظ الحالة
+                      DispatchQueue.main.async { progress(0.97, "إنهاء…") }
+                      if let idx = self.ipas.firstIndex(where: { $0.id == ipa.id }) {
+                          self.ipas[idx].isInstalled = true
+                          self.save()
+                      }
+
+                      DispatchQueue.main.async {
+                          progress(1.0, "تم الاسترداد")
+                          HapticManager.shared.notification(.success)
+                          completion(.success(dest))
+                      }
+                  } catch {
+                      DispatchQueue.main.async {
+                          completion(.failure(error))
+                      }
+                  }
+              }
+
+              // MARK: - جلب ملف IPA الأصلي (للمشاركة)
+              func sharedIPAFile(_ ipa: LocalIPA) -> URL { ipa.sourceURL }
+
+              // MARK: - جلب التطبيق المُستخرج
+              func installedAppURL(for ipa: LocalIPA) -> URL? {
+                  guard let appName = ipa.payloadAppName else { return nil }
+                  let p = installedRoot.appendingPathComponent(appName)
+                  return FileManager.default.fileExists(atPath: p.path) ? p : nil
+              }
+
+              // MARK: - حذف
+              func delete(_ ipa: LocalIPA) {
+                  try? FileManager.default.removeItem(at: ipa.sourceURL)
+                  if let p = ipa.extractedPath { try? FileManager.default.removeItem(at: p) }
+                  if let appName = ipa.payloadAppName {
+                      try? FileManager.default.removeItem(at: installedRoot.appendingPathComponent(appName))
+                  }
+                  ipas.removeAll { $0.id == ipa.id }
+                  save()
+              }
+
+              func uninstall(_ ipa: LocalIPA) {
+                  guard let appName = ipa.payloadAppName else { return }
+                  try? FileManager.default.removeItem(at: installedRoot.appendingPathComponent(appName))
+                  if let idx = ipas.firstIndex(where: { $0.id == ipa.id }) {
+                      ipas[idx].isInstalled = false
+                      save()
+                  }
+              }
+
+              // MARK: - Helpers
+              private func sanitize(_ name: String) -> String {
+                  let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+                  return name.components(separatedBy: invalid).joined(separator: "_")
+              }
+          }
+
+          // MARK: - StreamingInflite (DEFLATE via Compression، يدعم ملفات كبيرة)
+          enum StreamingInflate {
+              static func inflate(_ data: Data) -> Data? {
+                  if let r = tryInflate(data, skipHeader: true)  { return r }
+                  if let r = tryInflate(data, skipHeader: false) { return r }
+                  return nil
+              }
+              private static func tryInflate(_ data: Data, skipHeader: Bool) -> Data? {
+                  // نتوقع حجم المخرَج — DEFLATE يقدر يفجّر لحجم أكبر بـ 1000x
+                  let expectedMax = max(data.count * 1000, 16 * 1024 * 1024)
+                  let dst = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedMax)
+                  defer { dst.deallocate() }
+
+                  let srcOffset = skipHeader ? 2 : 0
+                  guard data.count > srcOffset else { return nil }
+                  let written = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int in
+                      guard let base = rawBuf.baseAddress else { return 0 }
+                      let src = base.assumingMemoryBound(to: UInt8.self).advanced(by: srcOffset)
+                      let srcCount = data.count - srcOffset
+                      return compression_decode_buffer(dst, expectedMax, src, srcCount, nil, COMPRESSION_ZLIB)
+                  }
+                  guard written > 0 else { return nil }
+                  return Data(bytes: dst, count: written)
+              }
+          }
+
+          // MARK: - ZIP Central Directory Reader
+          enum CentralDirectoryReader {
+              struct Entry {
+                  let path: String
+                  let compressedSize: UInt32
+                  let method: UInt16
+                  let dataOffset: UInt64
+                  let isDirectory: Bool
+              }
+              struct EOCD {
+                  let totalEntries: Int
+                  let entries: [Entry]
+              }
+
+              static func locateEOCD(in file: FileHandle) -> EOCD? {
+                  let maxBack: UInt64 = 65557
+                  do {
+                      let totalSize = (try file.seekToEnd())
+                      let back = min(maxBack, totalSize)
+                      try file.seek(toOffset: totalSize - back)
+                      let tail = try file.read(upToCount: Int(back)) ?? Data()
+                      guard let sigIdx = tail.range(of: Data([0x50, 0x4b, 0x05, 0x06]), options: .backwards) else { return nil }
+                      let eocdOffset = totalSize - back + UInt64(sigIdx.lowerBound)
+                      try file.seek(toOffset: eocdOffset)
+                      let eocd = try file.read(upToCount: 22) ?? Data()
+                      guard eocd.count >= 22 else { return nil }
+                      let totalEntries = Int(eocd.readU16(at: 10))
+                      _              = eocd.readU32(at: 12)
+                      let cdOffset     = eocd.readU32(at: 16)
+
+                      var entries: [Entry] = []
+                      var pos: UInt64 = UInt64(cdOffset)
+                      for _ in 0..<totalEntries {
+                          try file.seek(toOffset: pos)
+                          let header = try file.read(upToCount: 46) ?? Data()
+                          guard header.count >= 46 else { break }
+                          guard header[0] == 0x50, header[1] == 0x4b, header[2] == 0x01, header[3] == 0x02 else { break }
+                          let method     = header.readU16(at: 10)
+                          let compSize   = header.readU32(at: 20)
+                          let nameLen    = Int(header.readU16(at: 28))
+                          let extraLen   = Int(header.readU16(at: 30))
+                          let commentLen = Int(header.readU16(at: 32))
+                          let localOff   = header.readU32(at: 42)
+                          try file.seek(toOffset: pos + 46)
+                          let nameData = (try file.read(upToCount: nameLen)) ?? Data()
+                          let path = String(data: nameData, encoding: .utf8) ?? ""
+                          let isDir = path.hasSuffix("/")
+                          try file.seek(toOffset: UInt64(localOff))
+                          let lh = (try file.read(upToCount: 30)) ?? Data()
+                          let lNameLen = lh.count >= 30 ? Int(lh.readU16(at: 26)) : 0
+                          let lExtraLen = lh.count >= 30 ? Int(lh.readU16(at: 28)) : 0
+                          let dataOffset = UInt64(localOff) + 30 + UInt64(lNameLen) + UInt64(lExtraLen)
+                          entries.append(Entry(path: path, compressedSize: compSize,
+                                               method: method, dataOffset: dataOffset, isDirectory: isDir))
+                          pos += 46 + UInt64(nameLen) + UInt64(extraLen) + UInt64(commentLen)
+                      }
+                      return EOCD(totalEntries: totalEntries, entries: entries)
+                  } catch {
+                      return nil
                   }
               }
           }
+
+          extension Data {
+              func readU16(at offset: Int) -> UInt16 {
+                  guard offset + 2 <= count else { return 0 }
+                  return UInt16(self[offset]) | (UInt16(self[offset+1]) << 8)
+              }
+              func readU32(at offset: Int) -> UInt32 {
+                  guard offset + 4 <= count else { return 0 }
+                  return UInt32(self[offset])
+                      | (UInt32(self[offset+1]) << 8)
+                      | (UInt32(self[offset+2]) << 16)
+                      | (UInt32(self[offset+3]) << 24)
+              }
+          }
+
+          // MARK: - Share Sheet
+          struct ShareSheet: UIViewControllerRepresentable {
+              let items: [Any]
+              func makeUIViewController(context: Context) -> UIActivityViewController {
+                  UIActivityViewController(activityItems: items, applicationActivities: nil)
+              }
+              func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+          }
           VIPEOF
-          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
+          echo "IPAManager.swift: $(wc -l < IPAManager.swift) lines"
 
       - name: Generate Source - ContentView.swift
         run: |
@@ -893,13 +1077,13 @@ jobs:
           enum AppTab: String, CaseIterable {
               case home = "الرئيسية"
               case apps = "التطبيقات"
-              case ipaManager = "إدارة IPA"
-              
+              case ipas = "ملفات IPA"
+
               var icon: String {
                   switch self {
                   case .home: return "house"
                   case .apps: return "square.stack.3d.up"
-                  case .ipaManager: return "doc.badge.gearshape"
+                  case .ipas: return "archivebox.fill"
                   }
               }
           }
@@ -909,27 +1093,21 @@ jobs:
               @State private var selectedTab: AppTab = .home
               @Environment(\.colorScheme) var scheme
               @StateObject private var appsManager = AppsManager()
-              @StateObject private var ipaManager = IPAManager()
+              @StateObject private var ipaManager  = IPAManager.shared
 
               var body: some View {
                   TabView(selection: $selectedTab) {
                       HomeTabView(appsManager: appsManager)
-                          .tabItem {
-                              Label("الرئيسية", systemImage: AppTab.home.icon)
-                          }
+                          .tabItem { Label("الرئيسية", systemImage: AppTab.home.icon) }
                           .tag(AppTab.home)
-                      
-                      AppsTabView(appsManager: appsManager)
-                          .tabItem {
-                              Label("التطبيقات", systemImage: AppTab.apps.icon)
-                          }
+
+                      AppsTabView(appsManager: appsManager, ipaManager: ipaManager)
+                          .tabItem { Label("التطبيقات", systemImage: AppTab.apps.icon) }
                           .tag(AppTab.apps)
-                      
-                      IPAManagerTabView(ipaManager: ipaManager)
-                          .tabItem {
-                              Label("إدارة IPA", systemImage: AppTab.ipaManager.icon)
-                          }
-                          .tag(AppTab.ipaManager)
+
+                      IPAFilesTabView(ipaManager: ipaManager)
+                          .tabItem { Label("ملفات IPA", systemImage: AppTab.ipas.icon) }
+                          .tag(AppTab.ipas)
                   }
                   .preferredColorScheme(.none)
                   .onAppear {
@@ -1007,9 +1185,7 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
-                                  StoreHeroBanner()
-                                      .padding(.top, 6)
-
+                                  StoreHeroBanner().padding(.top, 6)
                                   AdImageCarousel(images: AppConstants.adBanners)
 
                                   if !popular.isEmpty {
@@ -1094,8 +1270,7 @@ jobs:
               var body: some View {
                   HStack(spacing: 0) {
                       ZStack {
-                          Circle()
-                              .fill(Color.white.opacity(0.15))
+                          Circle().fill(Color.white.opacity(0.15))
                               .frame(width: 68, height: 68)
                               .scaleEffect(pulse ? 1.08 : 1.0)
                               .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: pulse)
@@ -1123,7 +1298,6 @@ jobs:
                           Text("متجر VIP21")
                               .font(.system(size: 19, weight: .black, design: .rounded))
                               .foregroundColor(.white)
-
                           Text("آخر التطبيقات المحدثة")
                               .font(.system(size: 12, weight: .medium))
                               .foregroundColor(.white.opacity(0.82))
@@ -1135,22 +1309,15 @@ jobs:
 
                       VStack(spacing: 4) {
                           HStack(spacing: 3) {
-                              Image(systemName: "crown.fill")
-                                  .font(.system(size: 9))
-                                  .foregroundColor(.vipGold)
-                              Text("VIP")
-                                  .font(.system(size: 10, weight: .black))
-                                  .foregroundColor(.vipGold)
+                              Image(systemName: "crown.fill").font(.system(size: 9)).foregroundColor(.vipGold)
+                              Text("VIP").font(.system(size: 10, weight: .black)).foregroundColor(.vipGold)
                           }
                           .padding(.horizontal, 10).padding(.vertical, 4)
                           .background(
                               Capsule().fill(Color.white.opacity(0.18))
                                   .overlay(Capsule().stroke(Color.vipGold.opacity(0.5), lineWidth: 1))
                           )
-
-                          Text("2026")
-                              .font(.system(size: 10, weight: .semibold))
-                              .foregroundColor(.white.opacity(0.65))
+                          Text("2026").font(.system(size: 10, weight: .semibold)).foregroundColor(.white.opacity(0.65))
                       }
                       .padding(.trailing, 20)
                   }
@@ -1166,17 +1333,13 @@ jobs:
                               startPoint: .topLeading,
                               endPoint: .bottomTrailing
                           )
-                          Circle().fill(Color.white.opacity(0.07))
-                              .frame(width: 140).offset(x: 60, y: -40)
-                          Circle().fill(Color.white.opacity(0.05))
-                              .frame(width: 100).offset(x: -80, y: 30)
+                          Circle().fill(Color.white.opacity(0.07)).frame(width: 140).offset(x: 60, y: -40)
+                          Circle().fill(Color.white.opacity(0.05)).frame(width: 100).offset(x: -80, y: 30)
                       }
                   )
                   .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 20, style: .continuous)
-                          .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                  )
+                  .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                      .stroke(Color.white.opacity(0.12), lineWidth: 1))
                   .shadow(color: Color(red: 0.35, green: 0.10, blue: 0.85).opacity(0.50), radius: 16, x: 0, y: 7)
                   .shadow(color: .blue.opacity(0.22), radius: 24, x: 0, y: 12)
                   .padding(.horizontal, 16)
@@ -1196,8 +1359,7 @@ jobs:
                           ForEach(Array(images.enumerated()), id: \.offset) { idx, item in
                               CachedAsyncImage(url: URL(string: item.image)) { phase in
                                   switch phase {
-                                  case .success(let img):
-                                      img.resizable().aspectRatio(contentMode: .fill)
+                                  case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
                                   default:
                                       ZStack {
                                           LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
@@ -1206,14 +1368,10 @@ jobs:
                                       }
                                   }
                               }
-                              .frame(maxWidth: .infinity)
-                              .frame(height: 90)
-                              .clipped()
+                              .frame(maxWidth: .infinity).frame(height: 90).clipped()
                               .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                      .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                              )
+                              .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                  .stroke(Color.white.opacity(0.18), lineWidth: 1))
                               .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
                               .contentShape(Rectangle())
                               .onTapGesture {
@@ -1233,8 +1391,7 @@ jobs:
 
                       HStack(spacing: 6) {
                           ForEach(0..<images.count, id: \.self) { idx in
-                              Capsule()
-                                  .fill(idx == current ? Color.vipPurple : Color.gray.opacity(0.35))
+                              Capsule().fill(idx == current ? Color.vipPurple : Color.gray.opacity(0.35))
                                   .frame(width: idx == current ? 18 : 6, height: 6)
                                   .animation(.spring(response: 0.35), value: current)
                           }
@@ -1251,24 +1408,17 @@ jobs:
                   ZStack(alignment: .bottomLeading) {
                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                           switch phase {
-                          case .success(let img):
-                              img.resizable().aspectRatio(contentMode: .fill)
-                          default:
-                              LinearGradient(colors: [.vipPurple, .blue],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing)
+                          case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
+                          default: LinearGradient(colors: [.vipPurple, .blue],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing)
                           }
                       }
-                      .frame(width: 220, height: 130)
-                      .clipped()
-                      .overlay(
-                          LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.75)],
-                                         startPoint: .top, endPoint: .bottom)
-                      )
+                      .frame(width: 220, height: 130).clipped()
+                      .overlay(LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.75)],
+                                              startPoint: .top, endPoint: .bottom))
                       VStack(alignment: .leading, spacing: 3) {
-                          Text(app.name).font(.system(size: 14, weight: .bold))
-                              .foregroundColor(.white).lineLimit(1)
-                          Text(app.formattedSize).font(.system(size: 10))
-                              .foregroundColor(.white.opacity(0.85))
+                          Text(app.name).font(.system(size: 14, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                          Text(app.formattedSize).font(.system(size: 10)).foregroundColor(.white.opacity(0.85))
                       }.padding(10)
                   }
                   .frame(width: 220, height: 130)
@@ -1308,54 +1458,37 @@ jobs:
                                                  startPoint: .topLeading, endPoint: .bottomTrailing)
                               }
                           }
-                          .frame(width: 160, height: 110)
-                          .clipped()
-                          .overlay(
-                              LinearGradient(colors: [.clear, .black.opacity(0.55)],
-                                             startPoint: .top, endPoint: .bottom)
-                          )
+                          .frame(width: 160, height: 110).clipped()
+                          .overlay(LinearGradient(colors: [.clear, .black.opacity(0.55)],
+                                                  startPoint: .top, endPoint: .bottom))
 
                           ZStack {
-                              Circle()
-                                  .fill(LinearGradient(colors: rankGradient,
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                              Circle().fill(LinearGradient(colors: rankGradient,
+                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
                                   .frame(width: 32, height: 32)
                                   .shadow(color: rankGradient.first!.opacity(0.6), radius: 6, y: 2)
-                              Text("\(rank)")
-                                  .font(.system(size: 13, weight: .black))
-                                  .foregroundColor(.white)
-                          }
-                          .padding(8)
+                              Text("\(rank)").font(.system(size: 13, weight: .black)).foregroundColor(.white)
+                          }.padding(8)
                       }
                       .frame(width: 160, height: 110)
 
                       VStack(alignment: .leading, spacing: 4) {
-                          Text(app.name)
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.primary)
-                              .lineLimit(1)
-
-                          Text(shortDesc)
-                              .font(.system(size: 10))
-                              .foregroundColor(.secondary)
-                              .lineLimit(2)
-                              .multilineTextAlignment(.leading)
-
+                          Text(app.name).font(.system(size: 13, weight: .bold))
+                              .foregroundColor(.primary).lineLimit(1)
+                          Text(shortDesc).font(.system(size: 10))
+                              .foregroundColor(.secondary).lineLimit(2).multilineTextAlignment(.leading)
                           HStack(spacing: 4) {
                               if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 8, weight: .semibold))
+                                  Text(cat).font(.system(size: 8, weight: .semibold))
                                       .foregroundColor(.vipPurple)
                                       .padding(.horizontal, 5).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                               }
                               Spacer()
-                              Text(app.formattedSize)
-                                  .font(.system(size: 9)).foregroundColor(.gray)
+                              Text(app.formattedSize).font(.system(size: 9)).foregroundColor(.gray)
                           }
                       }
-                      .padding(.horizontal, 10)
-                      .padding(.vertical, 8)
+                      .padding(.horizontal, 10).padding(.vertical, 8)
                       .frame(width: 160, alignment: .leading)
                       .background(scheme == .dark ? Color(white: 0.11) : Color.white)
                   }
@@ -1467,20 +1600,16 @@ jobs:
                           font: .system(size: 12.5, weight: .semibold),
                           color: .white,
                           speed: 36
-                      )
-                      .layoutPriority(1)
+                      ).layoutPriority(1)
                       Image(systemName: "megaphone.fill")
                           .font(.system(size: 12, weight: .bold))
                           .foregroundColor(.white)
                           .padding(6)
                           .background(Circle().fill(Color.white.opacity(0.18)))
                   }
-                  .padding(.vertical, 6)
-                  .padding(.horizontal, 10)
-                  .background(
-                      LinearGradient(colors: [.pink, .vipPurple, .blue],
-                                     startPoint: .leading, endPoint: .trailing)
-                  )
+                  .padding(.vertical, 6).padding(.horizontal, 10)
+                  .background(LinearGradient(colors: [.pink, .vipPurple, .blue],
+                                             startPoint: .leading, endPoint: .trailing))
                   .clipShape(Capsule())
                   .shadow(color: .vipPurple.opacity(0.30), radius: 8, x: 0, y: 3)
                   .padding(.horizontal, 12)
@@ -1499,19 +1628,27 @@ jobs:
           import UIKit
           import Foundation
 
-          // MARK: - Apps Tab
+          // MARK: - Apps Tab (يعرض تطبيقات المتجر + الـ IPAs المستردة)
           struct AppsTabView: View {
               @ObservedObject var appsManager: AppsManager
+              @ObservedObject var ipaManager: IPAManager
               @State private var selectedApp: AppItem?
+              @State private var selectedLocal: LocalIPA?
               @State private var showDetail = false
               @State private var searchText = ""
               @State private var isSearchFocused = false
               @State private var selectedCategory: String = "الكل"
               @State private var sortMode: AppSortMode = .newest
+              @State private var sourceFilter: SourceFilter = .all
               @Environment(\.colorScheme) var scheme
 
               enum AppSortMode: String, CaseIterable {
                   case newest = "الأحدث"; case popular = "الأشهر"; case name = "الاسم"; case size = "الحجم"
+              }
+              enum SourceFilter: String, CaseIterable {
+                  case all = "الكل"
+                  case store = "المتجر"
+                  case local = "المحلية"
               }
 
               var categories: [String] {
@@ -1521,23 +1658,76 @@ jobs:
                   return cats
               }
 
-              var filteredApps: [AppItem] {
-                  var base = appsManager.apps
+              // عناصر مدمجة: متجر + محلية
+              enum AnySource: Identifiable {
+                  case store(AppItem)
+                  case local(LocalIPA)
+                  var id: String {
+                      switch self {
+                      case .store(let a): return "S-\(a.id)"
+                      case .local(let l): return "L-\(l.id)"
+                      }
+                  }
+              }
+
+              var merged: [AnySource] {
+                  var list: [AnySource] = []
+                  switch sourceFilter {
+                  case .all:    list.append(contentsOf: ipaManager.ipas.map { .local($0) })
+                  case .local:  list.append(contentsOf: ipaManager.ipas.map { .local($0) })
+                  case .store:  break
+                  }
+                  if sourceFilter != .local {
+                      list.append(contentsOf: appsManager.apps.map { .store($0) })
+                  }
+                  return list
+              }
+
+              var filtered: [AnySource] {
+                  var base = merged
                   if selectedCategory != "الكل" {
-                      base = base.filter { $0.category == selectedCategory }
+                      base = base.filter { item in
+                          switch item {
+                          case .store(let a): return a.category == selectedCategory
+                          case .local: return false
+                          }
+                      }
                   }
                   if !searchText.isEmpty {
-                      base = base.filter {
-                          $0.name.localizedCaseInsensitiveContains(searchText) ||
-                          $0.localizedDescription.localizedCaseInsensitiveContains(searchText) ||
-                          $0.developerName.localizedCaseInsensitiveContains(searchText)
+                      base = base.filter { item in
+                          switch item {
+                          case .store(let a):
+                              return a.name.localizedCaseInsensitiveContains(searchText)
+                                  || a.localizedDescription.localizedCaseInsensitiveContains(searchText)
+                                  || a.developerName.localizedCaseInsensitiveContains(searchText)
+                          case .local(let l):
+                              return l.displayName.localizedCaseInsensitiveContains(searchText)
+                                  || l.bundleID.localizedCaseInsensitiveContains(searchText)
+                          }
                       }
                   }
                   switch sortMode {
                   case .newest:  return base
-                  case .popular: return base.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }
-                  case .name:    return base.sorted { $0.name < $1.name }
-                  case .size:    return base.sorted { $0.size > $1.size }
+                  case .popular: return base.sorted { (downOf($0)) > (downOf($1)) }
+                  case .name:    return base.sorted { nameOf($0) < nameOf($1) }
+                  case .size:    return base.sorted { sizeOf($0) > sizeOf($1) }
+                  }
+              }
+
+              func downOf(_ x: AnySource) -> Int {
+                  if case .store(let a) = x { return Int(a.down) ?? 0 }
+                  return 0
+              }
+              func nameOf(_ x: AnySource) -> String {
+                  switch x {
+                  case .store(let a): return a.name
+                  case .local(let l): return l.displayName
+                  }
+              }
+              func sizeOf(_ x: AnySource) -> Int {
+                  switch x {
+                  case .store(let a): return a.size
+                  case .local(let l): return Int(l.sizeBytes)
                   }
               }
 
@@ -1545,9 +1735,9 @@ jobs:
                   NavigationView {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 14) {
-                              if appsManager.isLoading && appsManager.apps.isEmpty {
+                              if appsManager.isLoading && appsManager.apps.isEmpty && ipaManager.ipas.isEmpty {
                                   LoadingView()
-                              } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
+                              } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty && ipaManager.ipas.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
                                   HStack(spacing: 12) {
@@ -1561,7 +1751,7 @@ jobs:
                                       }
                                       VStack(alignment: .trailing, spacing: 2) {
                                           Text("كل التطبيقات").font(.system(size: 18, weight: .heavy))
-                                          Text("\(appsManager.apps.count) تطبيق متوفر")
+                                          Text("\(ipaManager.ipas.count) محلي  •  \(appsManager.apps.count) متجر")
                                               .font(.system(size: 11)).foregroundColor(.gray)
                                       }
                                       Spacer()
@@ -1576,10 +1766,8 @@ jobs:
                                           }
                                       } label: {
                                           HStack(spacing: 4) {
-                                              Image(systemName: "arrow.up.arrow.down")
-                                                  .font(.system(size: 12, weight: .semibold))
-                                              Text(sortMode.rawValue)
-                                                  .font(.system(size: 12, weight: .semibold))
+                                              Image(systemName: "arrow.up.arrow.down").font(.system(size: 12, weight: .semibold))
+                                              Text(sortMode.rawValue).font(.system(size: 12, weight: .semibold))
                                           }
                                           .foregroundColor(.vipPurple)
                                           .padding(.horizontal, 10).padding(.vertical, 6)
@@ -1630,6 +1818,29 @@ jobs:
                                       }.transition(.opacity)
                                   }
 
+                                  // Source filter
+                                  HStack(spacing: 8) {
+                                      ForEach(SourceFilter.allCases, id: \.self) { s in
+                                          Button(action: { withAnimation(.spring()) { sourceFilter = s } }) {
+                                              HStack(spacing: 4) {
+                                                  Image(systemName: s == .local ? "internaldrive" : (s == .store ? "storefront" : "square.grid.2x2"))
+                                                      .font(.system(size: 10, weight: .bold))
+                                                  Text(s.rawValue).font(.system(size: 12, weight: sourceFilter == s ? .bold : .regular))
+                                              }
+                                              .foregroundColor(sourceFilter == s ? .white : .primary)
+                                              .padding(.horizontal, 12).padding(.vertical, 6)
+                                              .background(
+                                                  Capsule().fill(sourceFilter == s
+                                                      ? LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing)
+                                                      : LinearGradient(colors: [scheme == .dark ? Color(white: 0.15) : Color(white: 0.93), scheme == .dark ? Color(white: 0.15) : Color(white: 0.93)], startPoint: .leading, endPoint: .trailing)
+                                                  )
+                                              )
+                                          }
+                                      }
+                                      Spacer()
+                                  }.padding(.horizontal)
+
+                                  // Category Filter
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(categories, id: \.self) { cat in
@@ -1651,24 +1862,29 @@ jobs:
 
                                   HStack {
                                       Spacer()
-                                      Text("\(filteredApps.count) نتيجة")
+                                      Text("\(filtered.count) نتيجة")
                                           .font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
                                   }
 
-                                  if filteredApps.isEmpty {
+                                  if filtered.isEmpty {
                                       VStack(spacing: 16) {
-                                          Image(systemName: "magnifyingglass")
-                                              .font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
-                                          Text("لا توجد نتائج لـ \"\(searchText)\"")
-                                              .font(.system(size: 16))
+                                          Image(systemName: "magnifyingglass").font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
+                                          Text("لا توجد نتائج لـ \"\(searchText)\"").font(.system(size: 16))
                                           Text("جرب بحثاً آخر").font(.system(size: 13)).foregroundColor(.gray)
                                       }.frame(maxWidth: .infinity).padding(.top, 60)
                                   } else {
                                       LazyVStack(spacing: 10) {
-                                          ForEach(filteredApps, id: \.id) { app in
-                                              EnhancedAppCard(app: app)
-                                                  .onTapGesture { selectedApp = app; showDetail = true }
-                                                  .padding(.horizontal)
+                                          ForEach(filtered) { item in
+                                              switch item {
+                                              case .store(let a):
+                                                  EnhancedAppCard(app: a)
+                                                      .onTapGesture { selectedApp = a; showDetail = true }
+                                                      .padding(.horizontal)
+                                              case .local(let l):
+                                                  LocalIPACard(ipa: l)
+                                                      .onTapGesture { selectedLocal = l }
+                                                      .padding(.horizontal)
+                                              }
                                           }
                                       }
                                   }
@@ -1687,6 +1903,107 @@ jobs:
                   }
                   .sheet(isPresented: $showDetail) {
                       if let app = selectedApp { AppDetailView(app: app) }
+                  }
+                  .sheet(item: $selectedLocal) { ipa in
+                      IPADetailView(ipa: ipa, ipaManager: ipaManager) { url in
+                          // للمشاركة إن لزم
+                      }
+                  }
+              }
+          }
+
+          // MARK: - Local IPA Card (يظهر في تبويب التطبيقات كصف عادي)
+          struct LocalIPACard: View {
+              let ipa: LocalIPA
+              @Environment(\.colorScheme) var scheme
+
+              var body: some View {
+                  HStack(spacing: 14) {
+                      ZStack(alignment: .bottomTrailing) {
+                          iconImage
+                              .frame(width: 58, height: 58)
+                              .clipShape(RoundedRectangle(cornerRadius: 14))
+                          if ipa.isInstalled {
+                              Image(systemName: "checkmark.seal.fill")
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.green)
+                                  .background(Circle().fill(Color.white).frame(width: 18, height: 18))
+                                  .offset(x: 4, y: 4)
+                          }
+                      }
+                      VStack(alignment: .trailing, spacing: 5) {
+                          HStack(spacing: 6) {
+                              Text("محلي")
+                                  .font(.system(size: 9, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 6).padding(.vertical, 2)
+                                  .background(Capsule().fill(LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)))
+                              if ipa.isInstalled {
+                                  Text("مسترد")
+                                      .font(.system(size: 9, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 6).padding(.vertical, 2)
+                                      .background(Capsule().fill(Color.green))
+                              }
+                              Spacer()
+                              Text(ipa.displayName).font(.system(size: 15, weight: .bold)).lineLimit(1)
+                          }
+                          Text(ipa.bundleID)
+                              .font(.system(size: 10)).foregroundColor(.gray).lineLimit(1)
+                              .frame(maxWidth: .infinity, alignment: .trailing)
+                          HStack(spacing: 8) {
+                              Spacer()
+                              Label(ipa.formattedSize, systemImage: "internaldrive").font(.system(size: 10)).foregroundColor(.gray)
+                              Label("v\(ipa.version)", systemImage: "tag").font(.system(size: 10)).foregroundColor(.gray)
+                              Text(ipa.formattedDate).font(.system(size: 9)).foregroundColor(.gray)
+                          }
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 18)
+                      .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
+                      .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 3))
+                  .overlay(RoundedRectangle(cornerRadius: 18)
+                      .stroke(Color.orange.opacity(ipa.isInstalled ? 0.3 : 0.1), lineWidth: ipa.isInstalled ? 1.5 : 1))
+              }
+
+              @ViewBuilder
+              private var iconImage: some View {
+                  let payloadDir = ipa.extractedPath?.appendingPathComponent("Payload").appendingPathComponent(ipa.payloadAppName ?? "")
+                  if let app = payloadDir {
+                      let candidates = ["@3x.png", "@2x.png", ".png"]
+                      var found: UIImage? = nil
+                      if let icon = ipa.iconRelativePath, !icon.isEmpty {
+                          for c in candidates {
+                              let p = app.appendingPathComponent("\(icon)\(c)")
+                              if let d = try? Data(contentsOf: p), let img = UIImage(data: d) {
+                                  found = img; break
+                              }
+                          }
+                      }
+                      if found == nil {
+                          let p = app.appendingPathComponent("AppIcon60x60@2x.png")
+                          if let d = try? Data(contentsOf: p), let img = UIImage(data: d) {
+                              found = img
+                          }
+                      }
+                      if let img = found {
+                          Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                      } else {
+                          ZStack {
+                              RoundedRectangle(cornerRadius: 14)
+                                  .fill(LinearGradient(colors: [.orange.opacity(0.3), .red.opacity(0.2)],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                              Image(systemName: "app.fill").font(.system(size: 22)).foregroundColor(.orange.opacity(0.6))
+                          }
+                      }
+                  } else {
+                      ZStack {
+                          RoundedRectangle(cornerRadius: 14)
+                              .fill(LinearGradient(colors: [.orange.opacity(0.3), .red.opacity(0.2)],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                          Image(systemName: "app.fill").font(.system(size: 22)).foregroundColor(.orange.opacity(0.6))
+                      }
                   }
               }
           }
@@ -1727,12 +2044,10 @@ jobs:
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
                               if app.isPopular {
-                                  Image(systemName: "flame.fill")
-                                      .font(.system(size: 10)).foregroundColor(.orange)
+                                  Image(systemName: "flame.fill").font(.system(size: 10)).foregroundColor(.orange)
                               }
                               Spacer()
-                              Text(app.name)
-                                  .font(.system(size: 15, weight: .bold)).lineLimit(1)
+                              Text(app.name).font(.system(size: 15, weight: .bold)).lineLimit(1)
                           }
                           Text(app.developerName)
                               .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
@@ -1744,8 +2059,7 @@ jobs:
                               Label(app.formattedDate, systemImage: "calendar")
                                   .font(.system(size: 10)).foregroundColor(.gray)
                               if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 9, weight: .medium))
+                                  Text(cat).font(.system(size: 9, weight: .medium))
                                       .foregroundColor(.vipPurple)
                                       .padding(.horizontal, 6).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
@@ -1768,7 +2082,6 @@ jobs:
                               }
                           }
                       }
-
                   }
                   .padding(12)
                   .background(RoundedRectangle(cornerRadius: 18)
@@ -1781,6 +2094,559 @@ jobs:
           VIPEOF
           echo "AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
 
+      - name: Generate Source - IPAFilesTabView.swift
+        run: |
+          cat > IPAFilesTabView.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+          import UniformTypeIdentifiers
+
+          // MARK: - IPA Files Tab (استيراد + استخراج + استرداد + مشاركة)
+          struct IPAFilesTabView: View {
+              @ObservedObject var ipaManager: IPAManager
+              @State private var showImporter = false
+              @State private var selectedIPA: LocalIPA?
+              @State private var searchText = ""
+              @State private var recoverProgress: Double = 0
+              @State private var recoverMessage: String = ""
+              @State private var isRecovering = false
+              @State private var showShare = false
+              @State private var shareURL: URL? = nil
+              @Environment(\.colorScheme) var scheme
+
+              var filtered: [LocalIPA] {
+                  guard !searchText.isEmpty else { return ipaManager.ipas }
+                  return ipaManager.ipas.filter {
+                      $0.displayName.localizedCaseInsensitiveContains(searchText) ||
+                      $0.bundleID.localizedCaseInsensitiveContains(searchText) ||
+                      $0.fileName.localizedCaseInsensitiveContains(searchText)
+                  }
+              }
+
+              var body: some View {
+                  NavigationView {
+                      ZStack(alignment: .bottom) {
+                          (scheme == .dark ? Color.vipDark : Color(red: 0.96, green: 0.96, blue: 1.0))
+                              .ignoresSafeArea()
+
+                          ScrollView(showsIndicators: false) {
+                              VStack(spacing: 14) {
+                                  header
+                                  searchBar
+                                  if ipaManager.ipas.isEmpty { emptyState } else { list }
+                              }
+                              .padding(.bottom, 110)
+                          }
+
+                          if ipaManager.isImporting { importProgressCard }
+                          if isRecovering { recoverOverlay }
+
+                          VStack {
+                              Spacer()
+                              importButton
+                          }
+                      }
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) {
+                              Text("ملفات IPA")
+                                  .font(.system(size: 20, weight: .bold))
+                                  .foregroundColor(.vipPurple)
+                          }
+                      }
+                  }
+                  .fileImporter(isPresented: $showImporter,
+                                allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data, .zip, .data],
+                                allowsMultipleSelection: true) { result in
+                      switch result {
+                      case .success(let urls):
+                          for url in urls { ipaManager.importIPA(from: url) }
+                      case .failure(let err):
+                          ipaManager.lastError = err.localizedDescription
+                      }
+                  }
+                  .sheet(item: $selectedIPA) { ipa in
+                      IPADetailView(ipa: ipa, ipaManager: ipaManager) { outURL in
+                          shareURL = outURL
+                          showShare = true
+                      }
+                  }
+                  .sheet(isPresented: $showShare) {
+                      if let url = shareURL { ShareSheet(items: [url]) }
+                  }
+              }
+
+              // MARK: - Header
+              private var header: some View {
+                  HStack(spacing: 12) {
+                      ZStack {
+                          RoundedRectangle(cornerRadius: 14)
+                              .fill(LinearGradient(colors: [Color(red: 1.0, green: 0.45, blue: 0.2), .pink],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                              .frame(width: 46, height: 46)
+                              .shadow(color: .orange.opacity(0.4), radius: 6, y: 3)
+                          Image(systemName: "archivebox.fill").foregroundColor(.white)
+                      }
+                      VStack(alignment: .trailing, spacing: 2) {
+                          Text("مكتبة IPA").font(.system(size: 18, weight: .heavy))
+                          Text("\(ipaManager.ipas.count) ملف  •  \(ipaManager.ipas.filter{$0.isInstalled}.count) مسترد")
+                              .font(.system(size: 11)).foregroundColor(.gray)
+                      }
+                      Spacer()
+                  }.padding(.horizontal).padding(.top, 6)
+              }
+
+              // MARK: - Search
+              private var searchBar: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: "magnifyingglass").foregroundColor(.gray)
+                      TextField("ابحث في الملفات...", text: $searchText).multilineTextAlignment(.trailing)
+                      if !searchText.isEmpty {
+                          Button(action: { searchText = "" }) {
+                              Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                          }
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 14)
+                      .fill(scheme == .dark ? Color.cardDark : Color.white)
+                      .shadow(color: .black.opacity(0.05), radius: 6))
+                  .padding(.horizontal)
+              }
+
+              // MARK: - List
+              private var list: some View {
+                  LazyVStack(spacing: 10) {
+                      ForEach(filtered) { ipa in
+                          IPARow(ipa: ipa) {
+                              selectedIPA = ipa
+                          } onDelete: {
+                              withAnimation { ipaManager.delete(ipa) }
+                              HapticManager.shared.notification(.warning)
+                          } onRecover: {
+                              recover(ipa)
+                          } onShare: {
+                              shareURL = ipa.sourceURL
+                              showShare = true
+                          }
+                          .padding(.horizontal)
+                      }
+                  }
+              }
+
+              // MARK: - Empty State
+              private var emptyState: some View {
+                  VStack(spacing: 18) {
+                      Image(systemName: "tray.and.arrow.down.fill")
+                          .font(.system(size: 60))
+                          .foregroundStyle(LinearGradient(colors: [.vipPurple, .blue], startPoint: .top, endPoint: .bottom))
+                      Text("لا توجد ملفات بعد").font(.system(size: 18, weight: .bold))
+                      Text("اضغط زر + أدناه لاستيراد ملف IPA\nسيتم فك الضغط وقراءة البيانات تلقائياً")
+                          .font(.system(size: 12)).foregroundColor(.gray).multilineTextAlignment(.center)
+                  }
+                  .padding(40).frame(maxWidth: .infinity).padding(.top, 60)
+              }
+
+              // MARK: - Import Button
+              private var importButton: some View {
+                  Button {
+                      HapticManager.shared.impact(.medium)
+                      showImporter = true
+                  } label: {
+                      HStack(spacing: 10) {
+                          Image(systemName: "plus.circle.fill").font(.system(size: 22, weight: .bold))
+                          Text("استيراد ملف IPA").font(.system(size: 16, weight: .bold))
+                      }
+                      .foregroundColor(.white)
+                      .padding(.horizontal, 22).padding(.vertical, 14)
+                      .background(LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing))
+                      .clipShape(Capsule())
+                      .shadow(color: .vipPurple.opacity(0.5), radius: 14, x: 0, y: 8)
+                  }
+                  .padding(.bottom, 18)
+              }
+
+              // MARK: - Import progress card
+              private var importProgressCard: some View {
+                  VStack(spacing: 10) {
+                      HStack {
+                          Image(systemName: "archivebox").foregroundColor(.white)
+                          Text(ipaManager.importMessage).foregroundColor(.white)
+                              .font(.system(size: 13, weight: .semibold))
+                          Spacer()
+                          Text("\(Int(ipaManager.importProgress * 100))%")
+                              .foregroundColor(.white).font(.system(size: 12, weight: .bold))
+                      }
+                      ProgressView(value: ipaManager.importProgress)
+                          .progressViewStyle(LinearProgressViewStyle(tint: .white))
+                  }
+                  .padding(14)
+                  .background(LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing))
+                  .cornerRadius(16)
+                  .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
+                  .padding(.horizontal, 20)
+                  .padding(.bottom, 90)
+                  .transition(.move(edge: .bottom).combined(with: .opacity))
+              }
+
+              // MARK: - Recover progress
+              private var recoverOverlay: some View {
+                  VStack(spacing: 14) {
+                      ProgressView(value: recoverProgress)
+                          .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                          .scaleEffect(1.4)
+                      Text(recoverMessage).foregroundColor(.white)
+                          .font(.system(size: 14, weight: .semibold))
+                          .multilineTextAlignment(.center)
+                      Text("\(Int(recoverProgress * 100))%")
+                          .foregroundColor(.white).font(.system(size: 24, weight: .black))
+                  }
+                  .padding(30)
+                  .background(LinearGradient(colors: [.vipPurple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                  .cornerRadius(20)
+                  .shadow(color: .black.opacity(0.4), radius: 20)
+              }
+
+              // MARK: - Recover action
+              private func recover(_ ipa: LocalIPA) {
+                  isRecovering = true
+                  recoverProgress = 0
+                  recoverMessage = "جاري استرداد \(ipa.displayName)…"
+                  ipaManager.recoverIPA(ipa, progress: { p, msg in
+                      recoverProgress = p
+                      recoverMessage = msg
+                  }) { result in
+                      isRecovering = false
+                      switch result {
+                      case .success(let url):
+                          recoverMessage = "تم الاسترداد ✓"
+                          HapticManager.shared.notification(.success)
+                          // شارك تلقائياً
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                              shareURL = url
+                              showShare = true
+                          }
+                      case .failure(let err):
+                          recoverMessage = "فشل: \(err.localizedDescription)"
+                          HapticManager.shared.notification(.error)
+                      }
+                  }
+              }
+          }
+
+          // MARK: - IPA Row
+          struct IPARow: View {
+              let ipa: LocalIPA
+              let onTap: () -> Void
+              let onDelete: () -> Void
+              let onRecover: () -> Void
+              let onShare: () -> Void
+              @Environment(\.colorScheme) var scheme
+
+              var iconURL: URL? {
+                  guard let app = ipa.extractedPath?.appendingPathComponent("Payload").appendingPathComponent(ipa.payloadAppName ?? "") else { return nil }
+                  if let iconName = ipa.iconRelativePath, !iconName.isEmpty {
+                      for c in ["@3x.png", "@2x.png", ".png"] {
+                          let p = app.appendingPathComponent("\(iconName)\(c)")
+                          if FileManager.default.fileExists(atPath: p.path) { return p }
+                      }
+                  }
+                  return nil
+              }
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      Group {
+                          if let url = iconURL, let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
+                              Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                          } else {
+                              ZStack {
+                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2), .pink.opacity(0.2)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
+                                  Image(systemName: "app.fill").font(.system(size: 22)).foregroundColor(.white.opacity(0.7))
+                              }
+                          }
+                      }
+                      .frame(width: 54, height: 54)
+                      .clipShape(RoundedRectangle(cornerRadius: 13))
+                      .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.white.opacity(0.15), lineWidth: 1))
+
+                      VStack(alignment: .trailing, spacing: 4) {
+                          HStack(spacing: 6) {
+                              if ipa.isInstalled {
+                                  Text("مسترد")
+                                      .font(.system(size: 9, weight: .bold)).foregroundColor(.white)
+                                      .padding(.horizontal, 6).padding(.vertical, 2)
+                                      .background(Capsule().fill(Color.green))
+                              }
+                              Spacer()
+                              Text(ipa.displayName).font(.system(size: 14, weight: .bold)).lineLimit(1)
+                          }
+                          Text(ipa.bundleID).font(.system(size: 10)).foregroundColor(.gray).lineLimit(1)
+                          HStack(spacing: 8) {
+                              Label(ipa.formattedSize, systemImage: "internaldrive").font(.system(size: 9)).foregroundColor(.gray)
+                              Label("v\(ipa.version)", systemImage: "tag").font(.system(size: 9)).foregroundColor(.gray)
+                              Text(ipa.formattedDate).font(.system(size: 9)).foregroundColor(.gray)
+                          }
+                      }
+                      Spacer()
+
+                      VStack(spacing: 6) {
+                          Button(action: onRecover) {
+                              Image(systemName: ipa.isInstalled ? "arrow.clockwise.circle.fill" : "arrow.down.circle.fill")
+                                  .font(.system(size: 16, weight: .bold))
+                                  .foregroundColor(ipa.isInstalled ? .green : .vipPurple)
+                          }
+                          Button(action: onShare) {
+                              Image(systemName: "square.and.arrow.up").font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.blue)
+                          }
+                          Button(action: onDelete) {
+                              Image(systemName: "trash").font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.red.opacity(0.8))
+                          }
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 16)
+                      .fill(scheme == .dark ? Color.cardDark : Color.white)
+                      .shadow(color: .black.opacity(0.06), radius: 6, y: 3))
+                  .overlay(RoundedRectangle(cornerRadius: 16)
+                      .stroke(ipa.isInstalled ? Color.green.opacity(0.4) : Color.vipPurple.opacity(0.08), lineWidth: ipa.isInstalled ? 1.5 : 1))
+                  .contentShape(Rectangle())
+                  .onTapGesture { onTap() }
+              }
+          }
+
+          // MARK: - IPA Detail
+          struct IPADetailView: View {
+              let ipa: LocalIPA
+              @ObservedObject var ipaManager: IPAManager
+              let onShare: (URL) -> Void
+              @Environment(\.dismiss) var dismiss
+              @State private var recoverProgress: Double = 0
+              @State private var recoverMessage: String = ""
+              @State private var isRecovering = false
+              @State private var extractedFiles: [ExtractedFile] = []
+              @State private var showShare = false
+              @State private var shareURL: URL? = nil
+              @Environment(\.colorScheme) var scheme
+
+              struct ExtractedFile: Identifiable {
+                  let id = UUID()
+                  let path: String
+                  let size: Int64
+                  var isDir: Bool { path.hasSuffix("/") }
+                  var formattedSize: String {
+                      ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+                  }
+                  var displayName: String {
+                      let last = (path as NSString).lastPathComponent
+                      return last.isEmpty ? path : last
+                  }
+              }
+
+              var iconURL: URL? {
+                  guard let app = ipa.extractedPath?.appendingPathComponent("Payload").appendingPathComponent(ipa.payloadAppName ?? "") else { return nil }
+                  if let iconName = ipa.iconRelativePath, !iconName.isEmpty {
+                      for c in ["@3x.png", "@2x.png", ".png"] {
+                          let p = app.appendingPathComponent("\(iconName)\(c)")
+                          if FileManager.default.fileExists(atPath: p.path) { return p }
+                      }
+                  }
+                  return nil
+              }
+
+              var body: some View {
+                  NavigationView {
+                      ZStack(alignment: .bottom) {
+                          (scheme == .dark ? Color.vipDark : Color(red: 0.96, green: 0.96, blue: 1.0)).ignoresSafeArea()
+                          ScrollView {
+                              VStack(spacing: 18) {
+                                  header
+                                  stats
+                                  actionsRow
+                                  filesSection
+                                  if isRecovering { recoverProgressView }
+                                  Color.clear.frame(height: 80)
+                              }
+                              .padding(.bottom, 40)
+                          }
+                      }
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) {
+                              Text(ipa.displayName).font(.system(size: 16, weight: .bold))
+                          }
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("إغلاق") { dismiss() }
+                          }
+                      }
+                      .onAppear { loadExtractedFiles() }
+                  }
+                  .sheet(isPresented: $showShare) {
+                      if let url = shareURL { ShareSheet(items: [url]) }
+                  }
+              }
+
+              private var header: some View {
+                  VStack(spacing: 12) {
+                      ZStack {
+                          RoundedRectangle(cornerRadius: 26)
+                              .fill(LinearGradient(colors: [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                              .frame(width: 130, height: 130)
+                              .overlay(RoundedRectangle(cornerRadius: 26).stroke(Color.white.opacity(0.4), lineWidth: 2))
+                              .shadow(color: .vipPurple.opacity(0.5), radius: 18, y: 8)
+                          if let url = iconURL, let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
+                              Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                                  .frame(width: 110, height: 110)
+                                  .clipShape(RoundedRectangle(cornerRadius: 22))
+                          } else {
+                              Image(systemName: "app.fill").font(.system(size: 50)).foregroundColor(.white)
+                          }
+                      }
+                      Text(ipa.displayName).font(.system(size: 20, weight: .black))
+                      Text(ipa.bundleID).font(.system(size: 11)).foregroundColor(.gray)
+                  }
+                  .padding(.top, 12)
+              }
+
+              private var stats: some View {
+                  HStack(spacing: 0) {
+                      stat("النسخة", ipa.version, "tag")
+                      divider
+                      stat("الحجم", ipa.formattedSize, "internaldrive")
+                      divider
+                      stat("iOS", "≥ \(ipa.minOS)", "iphone")
+                  }
+                  .padding(.vertical, 14).glassCard(radius: 16).padding(.horizontal)
+              }
+
+              private func stat(_ label: String, _ value: String, _ icon: String) -> some View {
+                  VStack(spacing: 6) {
+                      Image(systemName: icon).font(.system(size: 14))
+                          .foregroundStyle(LinearGradient(colors: [.vipPurple, .blue], startPoint: .top, endPoint: .bottom))
+                      Text(value).font(.system(size: 12, weight: .bold))
+                      Text(label).font(.system(size: 10)).foregroundColor(.gray)
+                  }.frame(maxWidth: .infinity)
+              }
+
+              private var divider: some View {
+                  Rectangle().fill(Color.gray.opacity(0.2)).frame(width: 1, height: 36)
+              }
+
+              private var actionsRow: some View {
+                  HStack(spacing: 10) {
+                      if ipa.isInstalled {
+                          GradientButton(title: "إلغاء الاسترداد", icon: "arrow.uturn.backward.circle.fill",
+                                         gradient: [.gray, .gray.opacity(0.7)]) {
+                              ipaManager.uninstall(ipa)
+                              HapticManager.shared.notification(.success)
+                          }
+                      } else {
+                          GradientButton(title: "استرداد", icon: "arrow.down.circle.fill",
+                                         gradient: [.vipPurple, .blue]) {
+                              recover()
+                          }
+                      }
+                      GradientButton(title: "مشاركة", icon: "square.and.arrow.up",
+                                     gradient: [.orange, .pink]) {
+                          shareURL = ipa.sourceURL
+                          showShare = true
+                      }
+                  }.padding(.horizontal)
+              }
+
+              private var filesSection: some View {
+                  VStack(alignment: .trailing, spacing: 10) {
+                      HStack {
+                          Text("\(extractedFiles.count) ملف").font(.system(size: 12, weight: .semibold))
+                              .foregroundColor(.vipPurple)
+                          Spacer()
+                          Text("الملفات المستخرجة").font(.system(size: 16, weight: .bold))
+                          Image(systemName: "folder.fill").foregroundColor(.vipPurple)
+                      }.padding(.horizontal)
+
+                      VStack(spacing: 0) {
+                          ForEach(extractedFiles.prefix(200)) { f in
+                              HStack(spacing: 10) {
+                                  Image(systemName: f.isDir ? "folder.fill" : "doc.fill")
+                                      .foregroundColor(f.isDir ? .vipPurple : .gray).frame(width: 22)
+                                  Text(f.displayName).font(.system(size: 12)).lineLimit(1)
+                                  Spacer()
+                                  if !f.isDir {
+                                      Text(f.formattedSize).font(.system(size: 10)).foregroundColor(.gray)
+                                  }
+                              }
+                              .padding(.horizontal, 12).padding(.vertical, 8)
+                              .background(scheme == .dark ? Color.cardDark.opacity(0.6) : Color.white)
+                              Divider().opacity(0.3)
+                          }
+                          if extractedFiles.count > 200 {
+                              Text("والمزيد…").font(.system(size: 11)).foregroundColor(.gray).padding(8)
+                          }
+                      }
+                      .background(RoundedRectangle(cornerRadius: 14)
+                          .fill(scheme == .dark ? Color.cardDark : Color.white)
+                          .shadow(color: .black.opacity(0.05), radius: 6))
+                      .padding(.horizontal)
+                  }
+              }
+
+              private var recoverProgressView: some View {
+                  VStack(spacing: 10) {
+                      HStack {
+                          Text(recoverMessage).font(.system(size: 13, weight: .semibold)).foregroundColor(.primary)
+                          Spacer()
+                          Text("\(Int(recoverProgress * 100))%").font(.system(size: 13, weight: .bold)).foregroundColor(.vipPurple)
+                      }
+                      ProgressView(value: recoverProgress)
+                          .progressViewStyle(LinearProgressViewStyle(tint: .vipPurple))
+                  }
+                  .padding(14).background(RoundedRectangle(cornerRadius: 14).fill(Color.vipPurple.opacity(0.08)))
+                  .padding(.horizontal)
+              }
+
+              // MARK: - Recover
+              private func recover() {
+                  isRecovering = true
+                  recoverProgress = 0
+                  recoverMessage = "بدء الاسترداد…"
+                  ipaManager.recoverIPA(ipa, progress: { p, msg in
+                      recoverProgress = p
+                      recoverMessage = msg
+                  }) { result in
+                      isRecovering = false
+                      switch result {
+                      case .success:
+                          HapticManager.shared.notification(.success)
+                      case .failure(let err):
+                          recoverMessage = "فشل: \(err.localizedDescription)"
+                          HapticManager.shared.notification(.error)
+                      }
+                  }
+              }
+
+              private func loadExtractedFiles() {
+                  guard let root = ipa.extractedPath else { return }
+                  var list: [ExtractedFile] = []
+                  let fm = FileManager.default
+                  if let it = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) {
+                      while let u = it.nextObject() as? URL {
+                          let rel = u.path.replacingOccurrences(of: root.path + "/", with: "")
+                          let vals = try? u.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                          let isReg = vals?.isRegularFile ?? false
+                          let size = Int64(vals?.fileSize ?? 0)
+                          list.append(ExtractedFile(path: rel, size: isReg ? size : 0))
+                      }
+                  }
+                  extractedFiles = list.sorted { $0.path < $1.path }
+              }
+          }
+          VIPEOF
+          echo "IPAFilesTabView.swift: $(wc -l < IPAFilesTabView.swift) lines"
+
       - name: Generate Source - AppDetailView.swift
         run: |
           cat > AppDetailView.swift << 'VIPEOF'
@@ -1791,6 +2657,8 @@ jobs:
           // MARK: - App Detail View
           struct AppDetailView: View {
               let app: AppItem
+              @State private var isDownloading = false
+              @State private var showAlert = false
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
 
@@ -1809,36 +2677,19 @@ jobs:
                               VStack(spacing: 18) {
                                   ZStack(alignment: .bottom) {
                                       RoundedRectangle(cornerRadius: 28)
-                                          .fill(
-                                              LinearGradient(
-                                                  colors: [
-                                                      .vipPurple.opacity(0.85),
-                                                      .blue.opacity(0.75),
-                                                      .indigo.opacity(0.9)
-                                                  ],
-                                                  startPoint: .topLeading,
-                                                  endPoint: .bottomTrailing
-                                              )
-                                          )
+                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
                                           .frame(height: 180)
                                           .overlay(
                                               ZStack {
-                                                  Circle().fill(Color.white.opacity(0.10))
-                                                      .frame(width: 160, height: 160)
-                                                      .offset(x: -110, y: -50)
-                                                  Circle().fill(Color.white.opacity(0.08))
-                                                      .frame(width: 110, height: 110)
-                                                      .offset(x: 120, y: 40)
+                                                  Circle().fill(Color.white.opacity(0.10)).frame(width: 160, height: 160).offset(x: -110, y: -50)
+                                                  Circle().fill(Color.white.opacity(0.08)).frame(width: 110, height: 110).offset(x: 120, y: 40)
                                               }.clipShape(RoundedRectangle(cornerRadius: 28))
                                           )
-                                          .overlay(
-                                              RoundedRectangle(cornerRadius: 28)
-                                                  .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                          )
+                                          .overlay(RoundedRectangle(cornerRadius: 28).stroke(Color.white.opacity(0.18), lineWidth: 1))
                                           .shadow(color: .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
                                           .shadow(color: .blue.opacity(0.25), radius: 30, x: 0, y: 18)
                                           .padding(.horizontal, 16)
-
                                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                                           switch phase {
                                           case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
@@ -1851,10 +2702,7 @@ jobs:
                                       }
                                       .frame(width: 120, height: 120)
                                       .clipShape(RoundedRectangle(cornerRadius: 26))
-                                      .overlay(
-                                          RoundedRectangle(cornerRadius: 26)
-                                              .stroke(Color.white.opacity(0.9), lineWidth: 3)
-                                      )
+                                      .overlay(RoundedRectangle(cornerRadius: 26).stroke(Color.white.opacity(0.9), lineWidth: 3))
                                       .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 8)
                                       .shadow(color: .vipPurple.opacity(0.4), radius: 20, x: 0, y: 10)
                                       .offset(y: 50)
@@ -1939,505 +2787,6 @@ jobs:
           VIPEOF
           echo "AppDetailView.swift: $(wc -l < AppDetailView.swift) lines"
 
-      - name: Generate Source - IPAManagerTabView.swift
-        run: |
-          cat > IPAManagerTabView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import Foundation
-
-          // MARK: - IPA Manager Tab
-          struct IPAManagerTabView: View {
-              @ObservedObject var ipaManager: IPAManager
-              @State private var showImportPicker = false
-              @State private var showFolderPicker = false
-              @State private var showCreateIPASheet = false
-              @State private var selectedFile: IPAFile?
-              @State private var expandedFile: IPAFile?
-              @State private var folderToCompress: URL?
-              @State private var compressFileName = ""
-              @Environment(\.colorScheme) var scheme
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 16) {
-                              // Status Message
-                              if !ipaManager.statusMessage.isEmpty {
-                                  HStack {
-                                      Spacer()
-                                      Text(ipaManager.statusMessage)
-                                          .font(.system(size: 13))
-                                          .foregroundColor(ipaManager.statusMessage.contains("✅") ? .green :
-                                                          ipaManager.statusMessage.contains("❌") ? .red : .gray)
-                                          .multilineTextAlignment(.center)
-                                          .padding(10)
-                                          .background(RoundedRectangle(cornerRadius: 10)
-                                              .fill(Color.gray.opacity(0.08)))
-                                  }.padding(.horizontal)
-                              }
-
-                              // Actions Grid
-                              LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                                  ActionCard(
-                                      icon: "tray.and.arrow.down.fill",
-                                      title: "استيراد IPA",
-                                      subtitle: "اختر ملف IPA",
-                                      gradient: [.vipPurple, .blue]
-                                  ) { showImportPicker = true }
-
-                                  ActionCard(
-                                      icon: "folder.fill",
-                                      title: "تجميع IPA",
-                                      subtitle: "من مجلد",
-                                      gradient: [.blue, .cyan]
-                                  ) { showFolderPicker = true }
-
-                                  ActionCard(
-                                      icon: "arrow.clockwise.icloud.fill",
-                                      title: "استرداد",
-                                      subtitle: "البحث عن ملفات",
-                                      gradient: [.orange, .red]
-                                  ) { ipaManager.recoverIPAFiles() }
-
-                                  ActionCard(
-                                      icon: "trash.fill",
-                                      title: "تنظيف",
-                                      subtitle: "حذف المكرر",
-                                      gradient: [.red, .pink]
-                                  ) { cleanupDuplicates() }
-                              }
-                              .padding(.horizontal)
-
-                              // IPA Files List
-                              if ipaManager.ipaFiles.isEmpty {
-                                  VStack(spacing: 16) {
-                                      Image(systemName: "doc.badge.plus")
-                                          .font(.system(size: 50))
-                                          .foregroundColor(.gray.opacity(0.4))
-                                      Text("لا توجد ملفات IPA")
-                                          .font(.system(size: 16, weight: .semibold))
-                                      Text("استورد ملف IPA أو استرد الملفات الموجودة")
-                                          .font(.system(size: 12))
-                                          .foregroundColor(.gray)
-                                  }
-                                  .frame(maxWidth: .infinity)
-                                  .padding(.top, 40)
-                              } else {
-                                  VStack(alignment: .trailing, spacing: 8) {
-                                      HStack {
-                                          Spacer()
-                                          Text("\(ipaManager.ipaFiles.count) ملف")
-                                              .font(.system(size: 12))
-                                              .foregroundColor(.gray)
-                                      }
-                                      .padding(.horizontal)
-
-                                      ForEach(ipaManager.ipaFiles) { file in
-                                          IPAFileRow(
-                                              file: file,
-                                              isExpanded: expandedFile?.id == file.id,
-                                              onToggleExpand: {
-                                                  withAnimation(.spring()) {
-                                                      expandedFile = expandedFile?.id == file.id ? nil : file
-                                                  }
-                                              },
-                                              onExtract: { ipaManager.extractIPA(file) },
-                                              onDelete: { ipaManager.deleteIPAFile(file) },
-                                              onViewContents: {
-                                                  selectedFile = file
-                                              }
-                                          )
-                                          .padding(.horizontal)
-                                      }
-                                  }
-                              }
-
-                              if ipaManager.isLoading {
-                                  HStack {
-                                      Spacer()
-                                      ProgressView()
-                                          .progressViewStyle(CircularProgressViewStyle(tint: .vipPurple))
-                                      Spacer()
-                                  }
-                                  .padding()
-                              }
-                          }
-                          .padding(.bottom, 20)
-                      }
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .principal) {
-                              Text("إدارة IPA")
-                                  .font(.system(size: 20, weight: .bold))
-                                  .foregroundColor(.vipPurple)
-                          }
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button(action: { showImportPicker = true }) {
-                                  Image(systemName: "plus")
-                                      .font(.system(size: 18))
-                                      .foregroundColor(.vipPurple)
-                              }
-                          }
-                      }
-                  }
-                  .sheet(isPresented: $showImportPicker) {
-                      DocumentPicker(types: [.init(filenameExtension: "ipa") ?? .data]) { url in
-                          ipaManager.importIPA(from: url)
-                      }
-                  }
-                  .sheet(isPresented: $showFolderPicker) {
-                      DirectoryPicker { url in
-                          folderToCompress = url
-                          compressFileName = url.lastPathComponent + ".ipa"
-                          showCreateIPASheet = true
-                      }
-                  }
-                  .sheet(isPresented: $showCreateIPASheet) {
-                      if let folder = folderToCompress {
-                          NavigationView {
-                              VStack(spacing: 24) {
-                                  VStack(spacing: 8) {
-                                      Image(systemName: "folder.fill")
-                                          .font(.system(size: 50))
-                                          .foregroundColor(.vipPurple)
-                                      Text("تجميع مجلد إلى IPA")
-                                          .font(.system(size: 18, weight: .bold))
-                                      Text(folder.lastPathComponent)
-                                          .font(.system(size: 13))
-                                          .foregroundColor(.gray)
-                                  }.padding(.top, 20)
-
-                                  TextField("اسم الملف", text: $compressFileName)
-                                      .font(.system(size: 15))
-                                      .multilineTextAlignment(.trailing)
-                                      .padding(12)
-                                      .background(RoundedRectangle(cornerRadius: 10)
-                                          .fill(scheme == .dark ? Color(white: 0.1) : Color(white: 0.95)))
-                                      .padding(.horizontal)
-
-                                  GradientButton(
-                                      title: "تجميع IPA",
-                                      icon: "square.and.arrow.up.fill",
-                                      gradient: [.vipPurple, .blue],
-                                      action: {
-                                          ipaManager.createIPA(from: folder, fileName: compressFileName)
-                                          showCreateIPASheet = false
-                                      }
-                                  ).padding(.horizontal)
-
-                                  Spacer()
-                              }
-                              .navigationTitle("تجميع IPA")
-                              .navigationBarTitleDisplayMode(.inline)
-                              .toolbar {
-                                  ToolbarItem(placement: .navigationBarTrailing) {
-                                      Button("إلغاء") { showCreateIPASheet = false }
-                                          .foregroundColor(.vipPurple)
-                                  }
-                              }
-                          }
-                      }
-                  }
-                  .sheet(item: $selectedFile) { file in
-                      ExtractedContentView(file: file, ipaManager: ipaManager)
-                  }
-                  .alert("خطأ", isPresented: .constant(ipaManager.errorMessage != nil)) {
-                      Button("حسناً") { ipaManager.errorMessage = nil }
-                  } message: {
-                      Text(ipaManager.errorMessage ?? "")
-                  }
-              }
-
-              private func cleanupDuplicates() {
-                  var seen = Set<String>()
-                  var toDelete: [IPAFile] = []
-                  for file in ipaManager.ipaFiles {
-                      if seen.contains(file.fileName) {
-                          toDelete.append(file)
-                      } else {
-                          seen.insert(file.fileName)
-                      }
-                  }
-                  for file in toDelete {
-                      ipaManager.deleteIPAFile(file)
-                  }
-                  if toDelete.isEmpty {
-                      ipaManager.statusMessage = "ℹ️ لا توجد ملفات مكررة"
-                  } else {
-                      ipaManager.statusMessage = "✅ تم حذف \(toDelete.count) ملف مكرر"
-                  }
-              }
-          }
-
-          // MARK: - Action Card
-          struct ActionCard: View {
-              let icon: String
-              let title: String
-              let subtitle: String
-              let gradient: [Color]
-              let action: () -> Void
-              @State private var isPressed = false
-
-              var body: some View {
-                  Button(action: {
-                      HapticManager.shared.impact(.light)
-                      action()
-                  }) {
-                      VStack(spacing: 8) {
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 14)
-                                  .fill(LinearGradient(colors: gradient,
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  .frame(width: 50, height: 50)
-                                  .shadow(color: gradient.first?.opacity(0.3) ?? .clear, radius: 6, y: 3)
-                              Image(systemName: icon)
-                                  .font(.system(size: 20, weight: .semibold))
-                                  .foregroundColor(.white)
-                          }
-                          Text(title)
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.primary)
-                          Text(subtitle)
-                              .font(.system(size: 10))
-                              .foregroundColor(.gray)
-                      }
-                      .frame(maxWidth: .infinity)
-                      .padding(.vertical, 12)
-                      .background(
-                          RoundedRectangle(cornerRadius: 16)
-                              .fill(Color(UIColor.systemBackground).opacity(0.06))
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: 16)
-                                      .stroke(Color.gray.opacity(0.1), lineWidth: 1)
-                              )
-                      )
-                      .scaleEffect(isPressed ? 0.95 : 1.0)
-                  }
-                  .buttonStyle(PlainButtonStyle())
-                  .simultaneousGesture(
-                      DragGesture(minimumDistance: 0)
-                          .onChanged { _ in withAnimation(.easeInOut(duration: 0.1)) { isPressed = true } }
-                          .onEnded { _ in withAnimation(.spring()) { isPressed = false } }
-                  )
-              }
-          }
-
-          // MARK: - IPA File Row
-          struct IPAFileRow: View {
-              let file: IPAFile
-              let isExpanded: Bool
-              let onToggleExpand: () -> Void
-              let onExtract: () -> Void
-              let onDelete: () -> Void
-              let onViewContents: () -> Void
-              @Environment(\.colorScheme) var scheme
-
-              var body: some View {
-                  VStack(spacing: 0) {
-                      HStack(spacing: 12) {
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 12)
-                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.15), .blue.opacity(0.1)],
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  .frame(width: 44, height: 44)
-                              Image(systemName: file.isExtracted ? "doc.zipper" : "doc.fill")
-                                  .font(.system(size: 18))
-                                  .foregroundColor(file.isExtracted ? .green : .vipPurple)
-                          }
-
-                          VStack(alignment: .trailing, spacing: 3) {
-                              Text(file.fileName)
-                                  .font(.system(size: 13, weight: .semibold))
-                                  .lineLimit(1)
-                              HStack(spacing: 6) {
-                                  Text(file.fileSize)
-                                      .font(.system(size: 10))
-                                      .foregroundColor(.gray)
-                                  if file.isExtracted {
-                                      Text("• مستخرج")
-                                          .font(.system(size: 9, weight: .bold))
-                                          .foregroundColor(.green)
-                                  }
-                              }
-                          }
-
-                          Spacer()
-
-                          HStack(spacing: 6) {
-                              Button(action: onExtract) {
-                                  Image(systemName: file.isExtracted ? "arrow.clockwise" : "square.and.arrow.down")
-                                      .font(.system(size: 14))
-                                      .foregroundColor(file.isExtracted ? .gray : .vipPurple)
-                                      .frame(width: 32, height: 32)
-                                      .background(RoundedRectangle(cornerRadius: 8)
-                                          .fill(file.isExtracted ? Color.gray.opacity(0.1) : Color.vipPurple.opacity(0.1)))
-                              }
-
-                              Button(action: onToggleExpand) {
-                                  Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                      .font(.system(size: 12))
-                                      .foregroundColor(.gray)
-                                      .frame(width: 28, height: 28)
-                                      .background(RoundedRectangle(cornerRadius: 8)
-                                          .fill(Color.gray.opacity(0.08)))
-                              }
-
-                              Button(action: onDelete) {
-                                  Image(systemName: "trash")
-                                      .font(.system(size: 14))
-                                      .foregroundColor(.red)
-                                      .frame(width: 32, height: 32)
-                                      .background(RoundedRectangle(cornerRadius: 8)
-                                          .fill(Color.red.opacity(0.1)))
-                              }
-                          }
-                      }
-                      .padding(12)
-                      .background(
-                          RoundedRectangle(cornerRadius: 14)
-                              .fill(scheme == .dark ? Color(white: 0.08) : Color(white: 0.98))
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: 14)
-                                      .stroke(Color.vipPurple.opacity(0.08), lineWidth: 1)
-                              )
-                      )
-
-                      if isExpanded {
-                          VStack(alignment: .trailing, spacing: 8) {
-                              Divider()
-
-                              HStack {
-                                  Spacer()
-                                  Text("التفاصيل")
-                                      .font(.system(size: 12, weight: .bold))
-                                      .foregroundColor(.gray)
-                              }
-
-                              InfoRow(label: "الاسم", value: file.fileName)
-                              InfoRow(label: "الحجم", value: file.fileSize)
-                              InfoRow(label: "التاريخ", value: file.date)
-                              InfoRow(label: "الحالة", value: file.isExtracted ? "✅ مستخرج" : "📦 غير مستخرج")
-
-                              if file.isExtracted, let path = file.extractedPath {
-                                  HStack {
-                                      Spacer()
-                                      Button(action: onViewContents) {
-                                          HStack(spacing: 6) {
-                                              Image(systemName: "folder.fill")
-                                                  .font(.system(size: 12))
-                                              Text("عرض المحتويات")
-                                                  .font(.system(size: 12, weight: .semibold))
-                                          }
-                                          .foregroundColor(.white)
-                                          .padding(.horizontal, 14)
-                                          .padding(.vertical, 6)
-                                          .background(
-                                              Capsule().fill(LinearGradient(
-                                                  colors: [.vipPurple, .blue],
-                                                  startPoint: .leading, endPoint: .trailing))
-                                          )
-                                      }
-                                  }
-                              }
-
-                              HStack {
-                                  Spacer()
-                                  Text(path ?? "")
-                                      .font(.system(size: 9))
-                                      .foregroundColor(.gray.opacity(0.6))
-                                      .lineLimit(2)
-                                      .multilineTextAlignment(.trailing)
-                              }
-                          }
-                          .padding(.horizontal, 12)
-                          .padding(.bottom, 12)
-                          .transition(.opacity.combined(with: .move(edge: .top)))
-                      }
-                  }
-                  .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
-              }
-          }
-
-          // MARK: - Info Row
-          struct InfoRow: View {
-              let label: String
-              let value: String
-
-              var body: some View {
-                  HStack {
-                      Spacer()
-                      Text(value)
-                          .font(.system(size: 12))
-                          .foregroundColor(.primary)
-                      Text(label + ":")
-                          .font(.system(size: 11))
-                          .foregroundColor(.gray)
-                  }
-              }
-          }
-
-          // MARK: - Extracted Content View
-          struct ExtractedContentView: View {
-              let file: IPAFile
-              let ipaManager: IPAManager
-              @Environment(\.dismiss) var dismiss
-              @Environment(\.colorScheme) var scheme
-              @State private var contents: [URL] = []
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView {
-                          VStack(alignment: .trailing, spacing: 12) {
-                              if contents.isEmpty {
-                                  VStack(spacing: 16) {
-                                      Image(systemName: "folder")
-                                          .font(.system(size: 50))
-                                          .foregroundColor(.gray.opacity(0.4))
-                                      Text("لا توجد محتويات")
-                                          .font(.system(size: 16))
-                                  }
-                                  .frame(maxWidth: .infinity)
-                                  .padding(.top, 60)
-                              } else {
-                                  ForEach(contents, id: \.path) { url in
-                                      HStack {
-                                          Spacer()
-                                          Image(systemName: url.hasDirectoryPath ? "folder.fill" : "doc.fill")
-                                              .font(.system(size: 14))
-                                              .foregroundColor(url.hasDirectoryPath ? .vipPurple : .blue)
-                                          Text(url.lastPathComponent)
-                                              .font(.system(size: 13))
-                                          Spacer()
-                                      }
-                                      .padding(.horizontal, 12)
-                                      .padding(.vertical, 8)
-                                      .background(
-                                          RoundedRectangle(cornerRadius: 8)
-                                              .fill(scheme == .dark ? Color(white: 0.06) : Color(white: 0.96))
-                                      )
-                                  }
-                              }
-                          }
-                          .padding()
-                      }
-                      .navigationTitle("المحتويات")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button("إغلاق") { dismiss() }
-                                  .foregroundColor(.vipPurple)
-                          }
-                      }
-                  }
-                  .onAppear {
-                      contents = ipaManager.getExtractedContents(file) ?? []
-                  }
-              }
-          }
-          VIPEOF
-          echo "IPAManagerTabView.swift: $(wc -l < IPAManagerTabView.swift) lines"
-
       - name: Generate Source - VIP21StoreApp.swift
         run: |
           cat > VIP21StoreApp.swift << 'VIPEOF'
@@ -2454,9 +2803,7 @@ jobs:
               var body: some Scene {
                   WindowGroup {
                       ContentView()
-                          .onAppear {
-                              requestNotifications()
-                          }
+                          .onAppear { requestNotifications() }
                   }
               }
 
@@ -2496,14 +2843,14 @@ jobs:
             Constants.swift \
             HapticManager.swift \
             Models.swift \
-            ZIPEngine.swift \
             AppsManager.swift \
             SharedComponents.swift \
+            IPAManager.swift \
             ContentView.swift \
             HomeTabView.swift \
             AppsTabView.swift \
+            IPAFilesTabView.swift \
             AppDetailView.swift \
-            IPAManagerTabView.swift \
             VIP21StoreApp.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
@@ -2513,7 +2860,6 @@ jobs:
             -framework UIKit \
             -framework Foundation \
             -framework UserNotifications \
-            -framework UniformTypeIdentifiers \
             -o VIP21Store
           file VIP21Store
 
