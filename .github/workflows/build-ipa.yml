@@ -2595,20 +2595,34 @@ jobs:
                             guard case .success(let urls) = result, let url = urls.first else { return }
                             let accessed = url.startAccessingSecurityScopedResource()
                             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                            guard let data = try? Data(contentsOf: url) else { return }
+                            guard let data = try? Data(contentsOf: url) else {
+                                signError = "تعذر قراءة ملف P12"
+                                return
+                            }
                             pendingP12 = PendingCert(p12Data: data, p12Name: url.lastPathComponent)
                             p12Password = ""
                             displayName = url.deletingPathExtension().lastPathComponent
-                            showProvPicker = true
+                            // ✅ الإصلاح: لازم ننتظر حتى ينتهي إغلاق منتقي الملف الأول بالكامل
+                            // قبل فتح الثاني، وإلا SwiftUI يتجاهل طلب العرض الثاني بصمت
+                            // (مشكلة معروفة عند تسلسل sheets/fileImporter بدون تأخير).
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProvPicker = true
+                            }
                         }
 
                         private func handleProvision(_ result: Result<[URL], Error>) {
                             guard case .success(let urls) = result, let url = urls.first else { return }
                             let accessed = url.startAccessingSecurityScopedResource()
                             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                            guard let provData = try? Data(contentsOf: url) else { return }
+                            guard let provData = try? Data(contentsOf: url) else {
+                                signError = "تعذر قراءة ملف mobileprovision"
+                                return
+                            }
                             UserDefaults.standard.set(provData, forKey: "pending.provision")
-                            showPasswordAlert = true
+                            // ✅ نفس الإصلاح: تأخير بسيط قبل عرض الـ alert التالي
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showPasswordAlert = true
+                            }
                         }
 
                         private func continueCertImport() {
@@ -2616,8 +2630,16 @@ jobs:
                                   let prov = UserDefaults.standard.data(forKey: "pending.provision") else { return }
                             let name = displayName.isEmpty ? pending.p12Name : displayName
                             certificateManager.importP12(data: pending.p12Data, password: p12Password,
-                                                          displayName: name, provisionData: prov) { _ in
+                                                          displayName: name, provisionData: prov) { result in
                                 UserDefaults.standard.removeObject(forKey: "pending.provision")
+                                // ✅ الإصلاح: كان الخطأ يُتجاهل بصمت — الآن نعرضه للمستخدم
+                                switch result {
+                                case .success:
+                                    HapticManager.notification(.success)
+                                case .failure(let error):
+                                    HapticManager.notification(.error)
+                                    signError = error.localizedDescription
+                                }
                             }
                             pendingP12 = nil
                         }
@@ -3053,6 +3075,7 @@ jobs:
                   NSDocumentsFolderUsageDescription: "لحفظ ملفات IPA المستوردة"
                   UISupportsDocumentBrowser: true
                   LSSupportsOpeningDocumentsInPlace: true
+                  UIFileSharingEnabled: true
                   CFBundleDocumentTypes:
                     - CFBundleTypeName: "IPA File"
                       LSHandlerRank: "Alternate"
