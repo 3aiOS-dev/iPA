@@ -953,38 +953,78 @@ jobs:
               }
           }
 
-          // MARK: - StreamingInflate (DEFLATE عبر zlib القياسي، متاح دائماً في iOS SDK)
-          // ملاحظة: inflateInit2/inflate/inflateEnd هي C macros → نستدعي *_ الأساسية مع ZLIB_VERSION
-          import zlib
+          // MARK: - StreamingInflate (DEFLATE عبر libz باستدعاء C مباشر)
+          // نستخدم @_silgen_name لاستدعاء inflate_/inflateInit2_/inflateEnd_ بدون الحاجة لـ import zlib
+          // (الـ underscore-suffixed functions هي الأساسية خلف الـ macros)
+          // libz مربوط تلقائياً على iOS (متاح عبر libSystem)
+
+          @_silgen_name("inflateInit2_")
+          private func _inflateInit2(_ strm: UnsafeMutablePointer<z_stream_raw>,
+                                     _ windowBits: Int32,
+                                     _ version: UnsafePointer<CChar>,
+                                     _ stream_size: Int32) -> Int32
+
+          @_silgen_name("inflate")
+          private func _inflate(_ strm: UnsafeMutablePointer<z_stream_raw>, _ flush: Int32) -> Int32
+
+          @_silgen_name("inflateEnd")
+          private func _inflateEnd(_ strm: UnsafeMutablePointer<z_stream_raw>) -> Int32
+
+          // نسخة مبسطة من z_stream (نحتاج الحقول الأساسية فقط)
+          private struct z_stream_raw {
+              var next_in: UnsafePointer<UInt8>?
+              var avail_in: UInt32
+              var total_in: UInt64
+              var next_out: UnsafeMutablePointer<UInt8>?
+              var avail_out: UInt32
+              var total_out: UInt64
+              var msg: UnsafePointer<CChar>?
+              var state: UnsafeMutableRawPointer?
+              var zalloc: UnsafeMutableRawPointer?
+              var zfree: UnsafeMutableRawPointer?
+              var opaque: UnsafeMutableRawPointer?
+              var data_type: Int32
+              var adler: UInt64
+              var reserved: UInt64
+          }
+
+          private let Z_OK: Int32          = 0
+          private let Z_STREAM_END: Int32  = 1
+          private let Z_FINISH: Int32      = 4
+          private let Z_DATA_ERROR: Int32  = -3
+          private let MAX_WBITS_RAW: Int32 = 15
 
           enum StreamingInflate {
               static func inflate(_ data: Data) -> Data? {
-                  // ZIP DEFLATE entries تكون raw DEFLATE (بدون zlib header)
-                  return tryInflate(data, windowBits: -MAX_WBITS)
+                  // ZIP DEFLATE entries: raw DEFLATE → نمرّر windowBits سالب
+                  // نمرّر -MAX_WBITS_RAW = -15
+                  let negMax = -MAX_WBITS_RAW
+                  return tryInflate(data, windowBits: negMax)
               }
               private static func tryInflate(_ data: Data, windowBits: Int32) -> Data? {
-                  // نتوقع حجم المخرَج — DEFLATE يقدر يفجّر لحجم أكبر بـ 1000x
                   let expectedMax = max(data.count * 1000, 16 * 1024 * 1024)
                   let dst = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedMax)
                   defer { dst.deallocate() }
 
-                  var stream = z_stream()
-                  memset(&stream, 0, MemoryLayout<z_stream>.size)
-                  stream.next_out = dst
-                  stream.avail_out = uInt(expectedMax)
-
+                  var stream = z_stream_raw()
+                  // تهيئة الحقول الضرورية
                   let initRet = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int32 in
-                      guard let base = rawBuf.baseAddress else { return Int32(Z_DATA_ERROR) }
+                      guard let base = rawBuf.baseAddress else { return Z_DATA_ERROR }
                       let src = base.assumingMemoryBound(to: UInt8.self)
-                      stream.next_in = UnsafeMutablePointer<UInt8>(mutating: src)
-                      stream.avail_in = uInt(data.count)
-                      return inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+                      stream.next_in = src
+                      stream.avail_in = UInt32(data.count)
+                      stream.next_out = dst
+                      stream.avail_out = UInt32(expectedMax)
+                      let zlibVer = "1.2.12"  // ZLIB_VERSION ثابت في iOS
+                      return zlibVer.withCString { verPtr in
+                          _inflateInit2(&stream, windowBits, verPtr, Int32(MemoryLayout<z_stream_raw>.size))
+                      }
                   }
                   guard initRet == Z_OK else { return nil }
 
                   let totalOutBefore = stream.total_out
-                  let inflateRet = inflate_(&stream, Z_FINISH)
-                  inflateEnd_(&stream)
+                  let inflateRet = _inflate(&stream, Z_FINISH)
+                  _inflateEnd(&stream)
 
                   guard inflateRet == Z_STREAM_END || inflateRet == Z_OK else { return nil }
                   let written = Int(stream.total_out - totalOutBefore)
