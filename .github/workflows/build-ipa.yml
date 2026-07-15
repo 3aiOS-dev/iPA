@@ -26,7 +26,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
 
       - name: Setup Dependencies
-        run: brew install ldid zip
+        run: brew install zip
 
       - name: Generate App Icons
         run: |
@@ -3110,9 +3110,20 @@ jobs:
           test -x "$APP_DIR/VIP21Store" && echo "✅ Binary executable: OK" || (echo "❌ Binary missing"; exit 1)
           test -f "$APP_DIR/Info.plist" && echo "✅ Info.plist: OK" || (echo "❌ Info.plist missing"; exit 1)
 
-      - name: Sign Binary (Fake Sign for Ldid)
+      - name: Strip Signature (Clean Unsigned Build for AltStore/Sideloadly)
         run: |
-          ldid -S "21s.app/VIP21Store" 2>/dev/null || echo "ldid not available, skipping fake sign"
+          # ✅ الإصلاح: توقيع ldid الوهمي يتعارض مع إعادة التوقيع من AltStore/Sideloadly
+          # ويكسر الملف التنفيذي مع SDK الحديث (chained fixups) → يثبت ثم يكرش عند الفتح.
+          # الحل: نزيل أي توقيع تلقائي وضعه swiftc/الرابط ونسلّم .app نظيف تمامًا بدون توقيع،
+          # ليقوم AltStore/Sideloadly/Xcode بتوقيعه بالكامل من الصفر بشهادتك الحقيقية.
+          APP_NAME="21s"
+          APP_DIR="${APP_NAME}.app"
+
+          codesign --remove-signature "$APP_DIR/VIP21Store" 2>/dev/null || true
+          codesign --remove-signature "$APP_DIR" 2>/dev/null || true
+
+          echo "🔍 Signature status (should be unsigned):"
+          codesign -dv "$APP_DIR/VIP21Store" 2>&1 || echo "✅ Confirmed unsigned"
 
       - name: Create IPA Package
         run: |
