@@ -469,12 +469,13 @@ jobs:
           VIPEOF
           echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
-      - name: Generate Source - IPAManager.swift
+      - name: Generate Source - IPAManager.swift (المصحح)
         run: |
           cat > IPAManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
+          import zlib
 
           // MARK: - IPA Manager (استخراج Streaming + استرداد بدون ضغط)
           final class IPAManager: ObservableObject {
@@ -630,7 +631,7 @@ jobs:
                   }
               }
 
-              // MARK: - نسخ ملفات كبيرة بدون انهيار (بـ 1MB chunks)
+              // MARK: - نسخ ملفات كبيرة
               private func copyLargeFile(from src: URL, to dst: URL, progress: (Double) -> Void) throws {
                   let fm = FileManager.default
                   let attrs = try fm.attributesOfItem(atPath: src.path)
@@ -701,7 +702,7 @@ jobs:
                   return apps.first(where: { $0.pathExtension == "app" })
               }
 
-              // MARK: - Streaming Unzip
+              // MARK: - Streaming Unzip باستخدام zlib من النظام
               struct UnzipResult {
                   let appURL: URL?
                   let fileCount: Int
@@ -797,7 +798,7 @@ jobs:
                                    displayName: display, executableName: exec, iconName: iconName)
               }
 
-              // MARK: - استرداد (إستخراج Payload/.app إلى مجلد Installed)
+              // MARK: - استرداد
               func recoverIPA(_ ipa: LocalIPA,
                               progress: @escaping (Double, String) -> Void,
                               completion: @escaping (Result<URL, Error>) -> Void) {
@@ -892,7 +893,7 @@ jobs:
                   }
               }
 
-              // MARK: - جلب ملف IPA الأصلي (للمشاركة)
+              // MARK: - جلب ملف IPA الأصلي
               func sharedIPAFile(_ ipa: LocalIPA) -> URL { ipa.sourceURL }
 
               // MARK: - جلب التطبيق المُستخرج
@@ -929,70 +930,32 @@ jobs:
               }
           }
 
-          // MARK: - StreamingInflate (DEFLATE عبر libz)
-          @_silgen_name("inflateInit2_")
-          private func _inflateInit2(_ strm: UnsafeMutablePointer<z_stream_raw>,
-                                     _ windowBits: Int32,
-                                     _ version: UnsafePointer<CChar>,
-                                     _ stream_size: Int32) -> Int32
-
-          @_silgen_name("inflate")
-          private func _inflate(_ strm: UnsafeMutablePointer<z_stream_raw>, _ flush: Int32) -> Int32
-
-          @_silgen_name("inflateEnd")
-          private func _inflateEnd(_ strm: UnsafeMutablePointer<z_stream_raw>) -> Int32
-
-          private struct z_stream_raw {
-              var next_in: UnsafePointer<UInt8>?
-              var avail_in: UInt32
-              var total_in: UInt64
-              var next_out: UnsafeMutablePointer<UInt8>?
-              var avail_out: UInt32
-              var total_out: UInt64
-              var msg: UnsafePointer<CChar>?
-              var state: UnsafeMutableRawPointer?
-              var zalloc: UnsafeMutableRawPointer?
-              var zfree: UnsafeMutableRawPointer?
-              var opaque: UnsafeMutableRawPointer?
-              var data_type: Int32
-              var adler: UInt64
-              var reserved: UInt64
-          }
-
-          private let Z_OK: Int32          = 0
-          private let Z_STREAM_END: Int32  = 1
-          private let Z_FINISH: Int32      = 4
-          private let Z_DATA_ERROR: Int32  = -3
-          private let MAX_WBITS_RAW: Int32 = 15
-
+          // MARK: - StreamingInflate (باستخدام zlib من النظام)
           enum StreamingInflate {
               static func inflate(_ data: Data) -> Data? {
-                  let negMax = -MAX_WBITS_RAW
-                  return tryInflate(data, windowBits: negMax)
-              }
-              private static func tryInflate(_ data: Data, windowBits: Int32) -> Data? {
                   let expectedMax = max(data.count * 1000, 16 * 1024 * 1024)
                   let dst = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedMax)
                   defer { dst.deallocate() }
 
-                  var stream = z_stream_raw()
+                  var stream = z_stream()
+                  stream.zalloc = nil
+                  stream.zfree = nil
+                  stream.opaque = nil
+
                   let initRet = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int32 in
                       guard let base = rawBuf.baseAddress else { return Z_DATA_ERROR }
                       let src = base.assumingMemoryBound(to: UInt8.self)
-                      stream.next_in = src
-                      stream.avail_in = UInt32(data.count)
+                      stream.next_in = UnsafeMutablePointer(mutating: src)
+                      stream.avail_in = uInt(data.count)
                       stream.next_out = dst
-                      stream.avail_out = UInt32(expectedMax)
-                      let zlibVer = "1.2.12"
-                      return zlibVer.withCString { verPtr in
-                          _inflateInit2(&stream, windowBits, verPtr, Int32(MemoryLayout<z_stream_raw>.size))
-                      }
+                      stream.avail_out = uInt(expectedMax)
+                      return inflateInit2_(&stream, -MAX_WBITS, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
                   }
                   guard initRet == Z_OK else { return nil }
 
                   let totalOutBefore = stream.total_out
-                  let inflateRet = _inflate(&stream, Z_FINISH)
-                  _inflateEnd(&stream)
+                  let inflateRet = inflate(&stream, Z_FINISH)
+                  inflateEnd(&stream)
 
                   guard inflateRet == Z_STREAM_END || inflateRet == Z_OK else { return nil }
                   let written = Int(stream.total_out - totalOutBefore)
