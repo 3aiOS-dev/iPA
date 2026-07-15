@@ -15,9 +15,16 @@ jobs:
 
       - name: Setup Xcode
         run: |
-          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+          # ✅ اكتشاف أي Xcode متوفر تلقائياً (يدعم Xcode_26.5 وغيرها)
+          XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | head -1)
+          if [ -z "$XCODE_PATH" ]; then
+            XCODE_PATH="/Applications/Xcode.app"
+          fi
+          echo "🔍 Using Xcode at: $XCODE_PATH"
+          sudo xcode-select --switch "$XCODE_PATH/Contents/Developer"
           xcode-select -p
           swift --version
+          xcrun --sdk iphoneos --show-sdk-path
 
       - name: Setup Dependencies
         run: brew install ldid zip
@@ -160,7 +167,11 @@ jobs:
               let iconURL: String
               var category: String?
           
-              var formattedSize: String { ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
+              var formattedSize: String {
+                  let f = ByteCountFormatter()
+                  f.countStyle = .file
+                  return f.string(fromByteCount: Int64(size))
+              }
           
               var formattedDate: String {
                   let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
@@ -286,8 +297,16 @@ jobs:
               }
           
               var progressPercentage: Int { Int(progress * 100) }
-              var formattedDownloaded: String { ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file) }
-              var formattedTotal: String      { ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file) }
+              var formattedDownloaded: String {
+                  let f = ByteCountFormatter()
+                  f.countStyle = .file
+                  return f.string(fromByteCount: downloadedBytes)
+              }
+              var formattedTotal: String {
+                  let f = ByteCountFormatter()
+                  f.countStyle = .file
+                  return f.string(fromByteCount: totalBytes)
+              }
           }
           
           // MARK: - Certificate Model
@@ -424,7 +443,8 @@ jobs:
               // MARK: - حفظ/تحميل قائمة IPAs من Documents
               static let libraryKey = "vip21.ipaLibrary.v1"
           
-              private func libraryURL() -> URL {
+              // ✅ nonisolated عشان يقدر الـ URLSession delegate (nonisolated) يستخدمه
+              nonisolated private func libraryURL() -> URL {
                   let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                       .appendingPathComponent("IPAs", isDirectory: true)
                   try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -470,11 +490,12 @@ jobs:
                   let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
                   let size = (attrs?[.size] as? Int64) ?? 0
                   let formatter = ByteCountFormatter()
+                  formatter.countStyle = .file
                   let file = IPAFile(
                       fileName: url.lastPathComponent,
                       localPath: url.path,
                       originalURL: url.absoluteString,
-                      fileSize: formatter.string(fromByteCount: size, countStyle: .file),
+                      fileSize: formatter.string(fromByteCount: size),
                       fileSizeBytes: size,
                       dateImported: Date()
                   )
@@ -546,22 +567,23 @@ jobs:
                                           didFinishDownloadingTo location: URL) {
                   let dest = libraryURL().appendingPathComponent(downloadTask.originalRequest?.url?.lastPathComponent ?? UUID().uuidString + ".ipa")
                   try? FileManager.default.moveItem(at: location, to: dest)
+                  let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path)
+                  let size = (attrs?[.size] as? Int64) ?? 0
+                  let formatter = ByteCountFormatter()
+                  formatter.countStyle = .file
+                  let file = IPAFile(
+                      fileName: dest.lastPathComponent,
+                      localPath: dest.path,
+                      originalURL: dest.absoluteString,
+                      fileSize: formatter.string(fromByteCount: size),
+                      fileSizeBytes: size,
+                      dateImported: Date()
+                  )
                   Task { @MainActor in
                       guard let dl = self.activeDownloads.first(where: { $0.task === downloadTask }) else { return }
                       dl.status = .completed
                       dl.progress = 1.0
                       dl.destinationURL = dest
-                      let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path)
-                      let size = (attrs?[.size] as? Int64) ?? 0
-                      let formatter = ByteCountFormatter()
-                      let file = IPAFile(
-                          fileName: dest.lastPathComponent,
-                          localPath: dest.path,
-                          originalURL: dest.absoluteString,
-                          fileSize: formatter.string(fromByteCount: size, countStyle: .file),
-                          fileSizeBytes: size,
-                          dateImported: Date()
-                      )
                       if !self.ipaFiles.contains(where: { $0.localPath == file.localPath }) {
                           self.ipaFiles.insert(file, at: 0)
                           self.saveIPAFiles()
