@@ -679,14 +679,15 @@ jobs:
                   progress(1.0)
               }
 
-              // MARK: - Quick hash
+              // MARK: - Quick hash (متوافق مع جميع إصدارات Swift)
               static func quickHash(of url: URL) -> String {
-                  guard let h = try? FileHandle(forReadingFrom: url) else { return UUID().uuidString }
+                  guard let h = try? FileHandle(forReadingFrom: url) else {
+                      return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                  }
                   defer { try? h.close() }
-                  var hasher = Hasher()
-                  // عينة من بداية + منتصف + نهاية الملف
                   let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
                   let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                  var hasher = Hasher()
                   if let head = try? h.read(upToCount: 4096) { hasher.combine(head) }
                   if size > 10_000_000 {
                       try? h.seek(toOffset: UInt64(size / 2))
@@ -696,7 +697,8 @@ jobs:
                   }
                   hasher.combine(size)
                   hasher.combine(url.lastPathComponent)
-                  return String(hasher.finalize, radix: 16, uppercase: false)
+                  let raw = hasher.finalize()
+                  return String(format: "%016llx", UInt(bitPattern: raw))
               }
 
               private func tick(progress: Double, msg: String) {
@@ -951,27 +953,41 @@ jobs:
               }
           }
 
-          // MARK: - StreamingInflite (DEFLATE via Compression، يدعم ملفات كبيرة)
+          // MARK: - StreamingInflate (DEFLATE عبر zlib القياسي، متاح دائماً في iOS SDK)
+          import zlib
+
           enum StreamingInflate {
               static func inflate(_ data: Data) -> Data? {
-                  if let r = tryInflate(data, skipHeader: true)  { return r }
-                  if let r = tryInflate(data, skipHeader: false) { return r }
-                  return nil
+                  // ZIP DEFLATE entries تكون raw DEFLATE (بدون zlib header)
+                  return tryInflate(data, windowBits: -MAX_WBITS)
               }
-              private static func tryInflate(_ data: Data, skipHeader: Bool) -> Data? {
+              private static func tryInflate(_ data: Data, windowBits: Int32) -> Data? {
                   // نتوقع حجم المخرَج — DEFLATE يقدر يفجّر لحجم أكبر بـ 1000x
                   let expectedMax = max(data.count * 1000, 16 * 1024 * 1024)
                   let dst = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedMax)
                   defer { dst.deallocate() }
 
-                  let srcOffset = skipHeader ? 2 : 0
-                  guard data.count > srcOffset else { return nil }
-                  let written = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int in
-                      guard let base = rawBuf.baseAddress else { return 0 }
-                      let src = base.assumingMemoryBound(to: UInt8.self).advanced(by: srcOffset)
-                      let srcCount = data.count - srcOffset
-                      return compression_decode_buffer(dst, expectedMax, src, srcCount, nil, COMPRESSION_ZLIB)
+                  var stream = z_stream()
+                  stream.next_in = UnsafeMutablePointer<UInt8>(bitPattern: 0)
+                  stream.avail_in = 0
+                  stream.next_out = dst
+                  stream.avail_out = uInt(expectedMax)
+
+                  let initRet = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int32 in
+                      guard let base = rawBuf.baseAddress else { return Z_DATA_ERROR }
+                      let src = base.assumingMemoryBound(to: UInt8.self)
+                      stream.next_in = UnsafeMutablePointer<UInt8>(mutating: src)
+                      stream.avail_in = uInt(data.count)
+                      return inflateInit2(&stream, windowBits)
                   }
+                  guard initRet == Z_OK else { return nil }
+
+                  let totalOutBefore = stream.total_out
+                  let inflateRet = inflate(&stream, Z_FINISH)
+                  inflateEnd(&stream)
+
+                  guard inflateRet == Z_STREAM_END || inflateRet == Z_OK else { return nil }
+                  let written = Int(stream.total_out - totalOutBefore)
                   guard written > 0 else { return nil }
                   return Data(bytes: dst, count: written)
               }
@@ -2860,6 +2876,7 @@ jobs:
             -framework UIKit \
             -framework Foundation \
             -framework UserNotifications \
+            -lz \
             -o VIP21Store
           file VIP21Store
 
