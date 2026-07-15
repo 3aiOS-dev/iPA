@@ -2972,28 +2972,111 @@ jobs:
           VIPEOF
           echo "VIP21StoreApp.swift: $(wc -l < VIP21StoreApp.swift) lines"
 
-      - name: Build Application
+      # ============================================================
+      # ✅ الإصلاح الجوهري: بناء executable حقيقي + بنية .app صحيحة
+      # ============================================================
+      - name: Compile iOS Executable
         run: |
-          mkdir -p App/Sources
-          cp *.swift App/Sources/
-          cp Resources/Info.plist App/Info.plist
-          cp Resources/apps_data.json App/apps_data.json
-          mkdir -p App/Resources
-          cp Resources/*.png App/Resources/
-          cd App && \
-            swiftc -O -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
-                   -target arm64-apple-ios16.0 \
-                   -emit-library -emit-module -module-name VIP21Store \
-                   -o App.dylib Sources/*.swift 2>&1 | tail -30
-          echo "Build status: $?"
+          set -e
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          TARGET="arm64-apple-ios16.0"
+          
+          echo "📱 SDK: $SDK_PATH"
+          echo "🎯 Target: $TARGET"
+          
+          # تجميع السورس إلى Mach-O executable واحد (وليس dylib)
+          swiftc \
+            -O \
+            -sdk "$SDK_PATH" \
+            -target "$TARGET" \
+            -emit-executable \
+            -o VIP21Store \
+            Constants.swift \
+            Models.swift \
+            AppsManager.swift \
+            IPADownloadManager.swift \
+            CertificateManager.swift \
+            ZipHelper.swift \
+            InstallEngine.swift \
+            SigningEngine.swift \
+            UserProfileManager.swift \
+            SharedComponents.swift \
+            ContentView.swift \
+            HomeTabView.swift \
+            AppsTabView.swift \
+            LibraryTabView.swift \
+            SigningTabView.swift \
+            AppDetailView.swift \
+            SettingsView.swift \
+            VIP21StoreApp.swift \
+            2>&1 | tail -50
+          
+          echo "✅ Compile status: $?"
+          file VIP21Store
+          ls -lh VIP21Store
+
+      - name: Build .app Bundle
+        run: |
+          set -e
+          APP_NAME="21s"
+          APP_DIR="${APP_NAME}.app"
+          
+          rm -rf "$APP_DIR" "Payload" /tmp/VIP21Store.ipa
+          mkdir -p "$APP_DIR"
+          
+          # ✅ executable name = CFBundleExecutable في Info.plist
+          cp VIP21Store "$APP_DIR/VIP21Store"
+          chmod +x "$APP_DIR/VIP21Store"
+          
+          # ✅ Info.plist
+          cp Resources/Info.plist "$APP_DIR/Info.plist"
+          
+          # ✅ موارد التطبيق (الأيقونات + apps_data.json)
+          mkdir -p "$APP_DIR/Resources"
+          cp Resources/*.png "$APP_DIR/Resources/" 2>/dev/null || true
+          cp Resources/apps_data.json "$APP_DIR/Resources/" 2>/dev/null || true
+          
+          # ✅ PkgInfo (اختياري لكن يساعد)
+          echo -n "APPL????" > "$APP_DIR/PkgInfo"
+          
+          echo "📦 App bundle contents:"
+          find "$APP_DIR" -maxdepth 3 -type f
+          
+          # ✅ التحقق من البنية
+          test -x "$APP_DIR/VIP21Store" && echo "✅ Binary executable: OK" || (echo "❌ Binary missing"; exit 1)
+          test -f "$APP_DIR/Info.plist" && echo "✅ Info.plist: OK" || (echo "❌ Info.plist missing"; exit 1)
+
+      - name: Sign Binary (Fake Sign for Ldid)
+        run: |
+          # ldid لتوقيع تجريبي (fake sign) — للـ IPA غير الموقّعة
+          ldid -S "$APP_NAME.app/VIP21Store" 2>/dev/null || ldid -S "21s.app/VIP21Store" 2>/dev/null || echo "ldid not available, skipping fake sign"
 
       - name: Create IPA Package
         run: |
-          cd App
+          set -e
+          APP_NAME="21s"
+          APP_DIR="${APP_NAME}.app"
+          IPA_OUT="/tmp/VIP21Store.ipa"
+          
+          rm -f "$IPA_OUT"
           mkdir -p Payload
-          ldid -S -M Payload/VIP21Store 2>/dev/null || true
-          zip -r /tmp/VIP21Store.ipa Payload Info.plist Resources 2>&1 | tail -5
-          ls -lh /tmp/VIP21Store.ipa
+          cp -R "$APP_DIR" Payload/
+          
+          cd Payload
+          # zip بدون تخفيف للحفاظ على بنية .app
+          zip -r "$IPA_OUT" "${APP_NAME}.app" -x "*.DS_Store"
+          cd ..
+          
+          echo "📦 IPA created:"
+          ls -lh "$IPA_OUT"
+          
+          # ✅ تحقق من البنية النهائية
+          echo "🔍 Final IPA contents:"
+          unzip -l "$IPA_OUT" | head -30
+          
+          echo ""
+          echo "✅ Payload check:"
+          unzip -l "$IPA_OUT" | grep -E "(Payload/.*\.app/|VIP21Store|Info.plist)" | head -20
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
