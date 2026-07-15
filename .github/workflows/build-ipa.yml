@@ -954,6 +954,7 @@ jobs:
           }
 
           // MARK: - StreamingInflate (DEFLATE عبر zlib القياسي، متاح دائماً في iOS SDK)
+          // ملاحظة: inflateInit2/inflate/inflateEnd هي C macros → نستدعي *_ الأساسية مع ZLIB_VERSION
           import zlib
 
           enum StreamingInflate {
@@ -968,23 +969,22 @@ jobs:
                   defer { dst.deallocate() }
 
                   var stream = z_stream()
-                  stream.next_in = UnsafeMutablePointer<UInt8>(bitPattern: 0)
-                  stream.avail_in = 0
+                  memset(&stream, 0, MemoryLayout<z_stream>.size)
                   stream.next_out = dst
                   stream.avail_out = uInt(expectedMax)
 
                   let initRet = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int32 in
-                      guard let base = rawBuf.baseAddress else { return Z_DATA_ERROR }
+                      guard let base = rawBuf.baseAddress else { return Int32(Z_DATA_ERROR) }
                       let src = base.assumingMemoryBound(to: UInt8.self)
                       stream.next_in = UnsafeMutablePointer<UInt8>(mutating: src)
                       stream.avail_in = uInt(data.count)
-                      return inflateInit2(&stream, windowBits)
+                      return inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
                   }
                   guard initRet == Z_OK else { return nil }
 
                   let totalOutBefore = stream.total_out
-                  let inflateRet = inflate(&stream, Z_FINISH)
-                  inflateEnd(&stream)
+                  let inflateRet = inflate_(&stream, Z_FINISH)
+                  inflateEnd_(&stream)
 
                   guard inflateRet == Z_STREAM_END || inflateRet == Z_OK else { return nil }
                   let written = Int(stream.total_out - totalOutBefore)
