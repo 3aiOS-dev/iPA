@@ -173,7 +173,7 @@ jobs:
               static let glassBorder = Color.white.opacity(0.15)
           }
           VIPEOF
-          echo "Constants.swift: $(wc -l < Constants.swift) lines"
+          echo "Constants.swift created"
 
       - name: Generate Source - HapticManager.swift
         run: |
@@ -219,7 +219,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "HapticManager.swift: $(wc -l < HapticManager.swift) lines"
+          echo "HapticManager.swift created"
 
       - name: Generate Source - Models.swift
         run: |
@@ -360,7 +360,99 @@ jobs:
               }
           }
           VIPEOF
-          echo "Models.swift: $(wc -l < Models.swift) lines"
+          echo "Models.swift created"
+
+      - name: Generate Source - AppsManager.swift
+        run: |
+          cat > AppsManager.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+          import Foundation
+          import Combine
+
+          // MARK: - Apps Manager
+          class AppsManager: ObservableObject {
+              @Published var apps: [AppItem] = []
+              @Published var isLoading = false
+              @Published var errorMessage: String?
+              @Published var recentSearches: [String] = []
+
+              var categories: [AppCategory] {
+                  return []
+              }
+
+              func appsForCategory(_ cat: AppCategory) -> [AppItem] {
+                  switch cat.name {
+                  default:              return apps
+                  }
+              }
+
+              func fetchApps() {
+                  isLoading = true; errorMessage = nil
+                  guard let url = URL(string: AppConstants.storeURL) else { isLoading = false; return }
+                  URLSession.shared.dataTask(with: url) { [weak self] data, _, err in
+                      DispatchQueue.main.async {
+                          self?.isLoading = false
+                          if let err = err { self?.errorMessage = err.localizedDescription; return }
+                          guard let data = data else { self?.errorMessage = "لا توجد بيانات"; return }
+                          var loaded: [AppItem] = []
+                          if let resp = try? JSONDecoder().decode(AppsResponse.self, from: data) {
+                              loaded = resp.apps
+                          } else if let arr = try? JSONDecoder().decode([AppItem].self, from: data) {
+                              loaded = arr
+                          } else {
+                              self?.errorMessage = "فشل تحليل البيانات"; return
+                          }
+                          self?.apps = loaded.map { app in
+                              var mutable = app
+                              if mutable.category == nil || mutable.category!.isEmpty {
+                                  mutable.category = Self.inferCategory(name: app.name, desc: app.localizedDescription)
+                              }
+                              return mutable
+                          }
+                      }
+                  }.resume()
+              }
+
+              static func inferCategory(name: String, desc: String) -> String {
+                  let text = (name + " " + desc).lowercased()
+                  let map: [(keys: [String], cat: String)] = [
+                      (["game", "لعبة", "لعب", "clash", "minecraft", "roblox", "pubg", "cod", "fifa"], "ألعاب"),
+                      (["social", "chat", "تواصل", "instagram", "tiktok", "telegram", "whatsapp", "snapchat", "twitter", "x.com"], "اجتماعي"),
+                      (["music", "موسيقى", "spotify", "soundcloud", "youtube", "video", "فيديو", "netflix", "tubi", "مشاهدة"], "ترفيه"),
+                      (["vpn", "security", "أمان", "proxy", "shield", "protect"], "أمان"),
+                      (["photo", "camera", "صورة", "تصوير", "edit", "تعديل", "lightroom", "vsco", "capcut"], "صور وفيديو"),
+                      (["learn", "تعلّم", "education", "تعليم", "school", "duolingo", "quran", "قرآن"], "تعليم"),
+                      (["shop", "store", "تسوق", "amazon", "noon", "delivery", "توصيل"], "تسوق"),
+                      (["bank", "pay", "دفع", "مال", "finance", "بنك", "paypal", "stc pay"], "مالية"),
+                      (["productivity", "office", "word", "excel", "pdf", "scan", "إنتاجية", "ملفات"], "إنتاجية"),
+                      (["travel", "سفر", "flight", "hotel", "فندق", "map", "خرائط", "uber", "careem"], "سفر"),
+                      (["health", "fitness", "صحة", "رياضة", "workout", "gym", "diet", "نظام غذائي"], "صحة ورياضة"),
+                      (["food", "restaurant", "طعام", "مطعم", "hungerstation", "talabat", "جاهز"], "طعام"),
+                      (["news", "أخبار", "newspaper", "bbc", "cnn", "aljazeera", "رياضة"], "أخبار"),
+                  ]
+                  for entry in map {
+                      if entry.keys.contains(where: { text.contains($0) }) { return entry.cat }
+                  }
+                  return "أدوات"
+              }
+
+              func retryFetch() { fetchApps() }
+
+              func loadRecentSearches() {
+                  recentSearches = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
+              }
+
+              func addRecentSearch(_ term: String) {
+                  guard !term.isEmpty else { return }
+                  recentSearches.removeAll { $0 == term }
+                  recentSearches.insert(term, at: 0)
+                  if recentSearches.count > 15 { recentSearches = Array(recentSearches.prefix(10)) }
+                  UserDefaults.standard.set(recentSearches, forKey: "recentSearches")
+              }
+          }
+          VIPEOF
+          echo "AppsManager.swift created"
 
       - name: Generate Source - FileManagerService.swift
         run: |
@@ -369,7 +461,6 @@ jobs:
           import UIKit
           import Foundation
           import UniformTypeIdentifiers
-          import Zip
 
           // MARK: - File Manager Service
           class FileManagerService: ObservableObject {
@@ -601,38 +692,18 @@ jobs:
                   var metadata = ImportedFile.FileMetadata()
 
                   do {
-                      // Try to extract Info.plist from IPA
-                      let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                      try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                      defer { try? fileManager.removeItem(at: tempDir) }
-
-                      // Unzip IPA
-                      try Zip.unzipFile(url, destination: tempDir, overwrite: true, password: nil)
-
-                      // Look for Payload/*.app/Info.plist
-                      let payloadDir = tempDir.appendingPathComponent("Payload")
-                      if let appDir = try? fileManager.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
-                          .first(where: { $0.pathExtension == "app" }) {
-
-                          let infoPlist = appDir.appendingPathComponent("Info.plist")
-                          if fileManager.fileExists(atPath: infoPlist.path) {
-                              let data = try Data(contentsOf: infoPlist)
-                              let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
-
-                              if let dict = plist as? [String: Any] {
-                                  metadata.appName = dict["CFBundleName"] as? String ?? dict["CFBundleDisplayName"] as? String
-                                  metadata.bundleID = dict["CFBundleIdentifier"] as? String
-                                  metadata.version = dict["CFBundleShortVersionString"] as? String
-                              }
-                          }
-
-                          // Try to extract app icon
-                          let iconFiles = try fileManager.contentsOfDirectory(at: appDir, includingPropertiesForKeys: nil)
-                              .filter { $0.lastPathComponent.hasPrefix("AppIcon") || $0.pathExtension == "png" || $0.pathExtension == "jpg" }
-
-                          if let iconFile = iconFiles.first {
-                              let iconData = try Data(contentsOf: iconFile)
-                              metadata.iconData = iconData
+                      // Try to extract Info.plist from IPA using simple file reading
+                      // Since we can't unzip in this environment, try to read the plist directly
+                      // by looking for the Payload directory pattern in the file
+                      let data = try Data(contentsOf: url)
+                      
+                      // Try to find Info.plist content in the IPA file
+                      if let plistData = extractPlistFromIPA(data) {
+                          let plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
+                          if let dict = plist as? [String: Any] {
+                              metadata.appName = dict["CFBundleName"] as? String ?? dict["CFBundleDisplayName"] as? String
+                              metadata.bundleID = dict["CFBundleIdentifier"] as? String
+                              metadata.version = dict["CFBundleShortVersionString"] as? String
                           }
                       }
                   } catch {
@@ -642,14 +713,27 @@ jobs:
                   return metadata
               }
 
+              private func extractPlistFromIPA(_ data: Data) -> Data? {
+                  // Search for Info.plist in the data
+                  let searchString = "Info.plist".data(using: .utf8) ?? Data()
+                  guard let plistStart = data.range(of: searchString) else { return nil }
+                  
+                  // Look for XML plist content after the Info.plist marker
+                  let searchXML = "<?xml".data(using: .utf8) ?? Data()
+                  let range = plistStart.upperBound..<data.endIndex
+                  
+                  guard let xmlStart = data.range(of: searchXML, range: range) else { return nil }
+                  guard let plistEnd = data.range(of: "</plist>".data(using: .utf8) ?? Data(), range: xmlStart.lowerBound..<data.endIndex) else { return nil }
+                  
+                  let finalRange = xmlStart.lowerBound..<plistEnd.upperBound
+                  return data[finalRange]
+              }
+
               // MARK: - P12 Metadata Extraction
               private func extractP12Metadata(from url: URL) -> ImportedFile.FileMetadata {
                   var metadata = ImportedFile.FileMetadata()
-
-                  // P12 is a binary file, we can only extract basic info from the filename
                   let name = url.deletingPathExtension().lastPathComponent
                   metadata.appName = name
-
                   return metadata
               }
 
@@ -666,7 +750,7 @@ jobs:
                           let plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
                           if let dict = plist as? [String: Any] {
                               metadata.appName = dict["AppIDName"] as? String
-                              metadata.bundleID = dict["Entitlements"]?["application-identifier"] as? String
+                              metadata.bundleID = (dict["Entitlements"] as? [String: Any])?["application-identifier"] as? String
                               metadata.teamName = dict["TeamName"] as? String
                               metadata.version = dict["Version"] as? String
                           }
@@ -679,7 +763,6 @@ jobs:
               }
 
               private func extractPlistFromProvisioning(_ data: Data) -> Data? {
-                  // Simple extraction - find the plist content between <?xml and </plist>
                   guard let xmlStart = data.range(of: "<?xml".data(using: .utf8) ?? Data()) else { return nil }
                   guard let plistEnd = data.range(of: "</plist>".data(using: .utf8) ?? Data(), range: xmlStart.lowerBound..<data.endIndex) else { return nil }
 
@@ -694,7 +777,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "FileManagerService.swift: $(wc -l < FileManagerService.swift) lines"
+          echo "FileManagerService.swift created"
 
       - name: Generate Source - SharedComponents.swift
         run: |
@@ -845,7 +928,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
+          echo "SharedComponents.swift created"
 
       - name: Generate Source - ContentView.swift
         run: |
@@ -945,7 +1028,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
+          echo "ContentView.swift created"
 
       - name: Generate Source - HomeTabView.swift
         run: |
@@ -1468,7 +1551,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "HomeTabView.swift: $(wc -l < HomeTabView.swift) lines"
+          echo "HomeTabView.swift created"
 
       - name: Generate Source - AppsTabView.swift
         run: |
@@ -1768,7 +1851,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
+          echo "AppsTabView.swift created"
 
       - name: Generate Source - AppDetailView.swift
         run: |
@@ -1929,7 +2012,7 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppDetailView.swift: $(wc -l < AppDetailView.swift) lines"
+          echo "AppDetailView.swift created"
 
       - name: Generate Source - FilesTabView.swift
         run: |
@@ -2257,11 +2340,8 @@ jobs:
                   )
               }
           }
-
-          // MARK: - Loading View (Reused from ContentView)
-          // Note: LoadingView is defined in ContentView.swift
           VIPEOF
-          echo "FilesTabView.swift: $(wc -l < FilesTabView.swift) lines"
+          echo "FilesTabView.swift created"
 
       - name: Generate Source - VIP21StoreApp.swift
         run: |
@@ -2311,7 +2391,18 @@ jobs:
               }
           }
           VIPEOF
-          echo "VIP21StoreApp.swift: $(wc -l < VIP21StoreApp.swift) lines"
+          echo "VIP21StoreApp.swift created"
+
+      - name: List Generated Files
+        run: |
+          echo "=== Generated Files ==="
+          ls -la *.swift
+          echo "======================="
+          for f in *.swift; do
+            echo "=== $f ==="
+            head -5 "$f"
+            echo "..."
+          done
 
       - name: Build Application
         run: |
