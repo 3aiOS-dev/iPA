@@ -66,37 +66,6 @@ jobs:
           JEOF
           python3 -c "import json; json.load(open('Resources/apps_data.json')); print('OK')"
 
-      - name: Download and Encode Header Icon
-        run: |
-          mkdir -p Resources
-          curl -L -o Resources/HeaderIcon.png "https://up6.cc/2026/07/178416235288151.png"
-          if [ -f Resources/HeaderIcon.png ]; then
-            echo "Header icon downloaded successfully"
-            ls -lh Resources/HeaderIcon.png
-            file Resources/HeaderIcon.png
-          else
-            echo "Failed to download header icon, generating placeholder"
-            python3 << 'PYEOF'
-          from PIL import Image, ImageDraw
-          size = 1024
-          im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-          d = ImageDraw.Draw(im)
-          d.ellipse([size*0.10, size*0.08, size*0.90, size*0.78], fill=(220, 38, 38, 255))
-          d.rectangle([size*0.18, size*0.32, size*0.86, size*0.70], fill=(15, 23, 42, 255))
-          try:
-              from PIL import ImageFont
-              font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", int(size*0.20))
-          except Exception:
-              font = ImageFont.load_default()
-          text = "21s"
-          bbox = d.textbbox((0, 0), text, font=font)
-          tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-          d.text(((size-tw)/2 - bbox[0], (size*0.51 - th/2) - bbox[1]), text, fill=(255, 255, 255, 255), font=font)
-          im.save("Resources/HeaderIcon.png")
-          print("Generated placeholder HeaderIcon.png")
-          PYEOF
-          fi
-
       - name: Generate Info.plist
         run: |
           mkdir -p Resources
@@ -146,6 +115,7 @@ jobs:
               static let appVersion  = "7.0"
               static let storeName   = "21s"
               static let accentColor = Color(red: 0.4, green: 0.2, blue: 1.0)
+              static let topRightIconURL = "https://up6.cc/2026/07/178416235288151.png"
 
               static let topNotification = "📸 صوّر  •  📣 أعلن للمتجر  •  🎁 واحصل على كوبون هدية اشتراك ببلاش  •  "
 
@@ -454,6 +424,47 @@ jobs:
                   .background(Capsule().fill(LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)))
               }
           }
+
+          // MARK: - Top Right Icon View
+          struct TopRightIconView: View {
+              @State private var iconImage: UIImage? = nil
+              
+              var body: some View {
+                  Group {
+                      if let img = iconImage {
+                          Image(uiImage: img)
+                              .resizable()
+                              .aspectRatio(contentMode: .fill)
+                              .frame(width: 36, height: 36)
+                              .clipShape(Circle())
+                              .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1.5))
+                      } else {
+                          Circle()
+                              .fill(Color.vipPurple.opacity(0.3))
+                              .frame(width: 36, height: 36)
+                              .overlay(
+                                  ProgressView()
+                                      .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                      .scaleEffect(0.6)
+                              )
+                      }
+                  }
+                  .onAppear {
+                      loadIcon()
+                  }
+              }
+              
+              private func loadIcon() {
+                  guard let url = URL(string: AppConstants.topRightIconURL) else { return }
+                  URLSession.shared.dataTask(with: url) { data, _, _ in
+                      if let data = data, let img = UIImage(data: data) {
+                          DispatchQueue.main.async {
+                              iconImage = img
+                          }
+                      }
+                  }.resume()
+              }
+          }
           VIPEOF
           echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
@@ -639,24 +650,14 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              Text("21s")
-                                  .font(.system(size: 20, weight: .bold))
-                                  .foregroundColor(.vipPurple)
+                              HStack(spacing: 8) {
+                                  Text("21s")
+                                      .font(.system(size: 20, weight: .bold))
+                                      .foregroundColor(.vipPurple)
+                              }
                           }
                           ToolbarItem(placement: .navigationBarTrailing) {
-                              Button(action: { /* header icon */ }) {
-                                  if let uiImg = UIImage(named: "HeaderIcon") {
-                                      Image(uiImage: uiImg)
-                                          .resizable()
-                                          .scaledToFit()
-                                          .frame(width: 34, height: 34)
-                                          .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                  } else {
-                                      Image(systemName: "flag.checkered")
-                                          .font(.system(size: 18))
-                                          .foregroundColor(.vipPurple)
-                                  }
-                              }
+                              TopRightIconView()
                           }
                       }
                   }
@@ -1274,9 +1275,11 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              Text("21s")
-                                  .font(.system(size: 20, weight: .bold))
-                                  .foregroundColor(.vipPurple)
+                              HStack(spacing: 8) {
+                                  Text("21s")
+                                      .font(.system(size: 20, weight: .bold))
+                                      .foregroundColor(.vipPurple)
+                              }
                           }
                       }
                   }
@@ -1626,7 +1629,6 @@ jobs:
           cp Resources/AppIcon76x76@2x~ipad.png  build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
-          cp Resources/HeaderIcon.png            build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
           cd build-output && zip -r -q ../artifacts/21s.ipa Payload/ && cd ..
           echo "IPA: $(du -sh artifacts/21s.ipa)"
