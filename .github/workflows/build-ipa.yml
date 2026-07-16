@@ -63,6 +63,7 @@ jobs:
             "identifier": "com.vip21.store",
             "sourceURL": "https://repository.apptesters.org/apps.json",
             "kurdStoreURL": "https://kurdstore.info/store-data.json",
+            "thirdPartyURL": "https://raw.githubusercontent.com/ikiraplus/ipastore/main/jom.json",
             "iconURL": "https://a.top4top.io/p_380487iqk0.jpeg",
             "website": "https://t.me/ClickStoreipaios",
             "subtitle": "متجر 21s VIP",
@@ -315,6 +316,8 @@ jobs:
               static let storeURL    = "https://repository.apptesters.org/apps.json"
               // Secondary source (kurdstore)
               static let kurdStoreURL = "https://kurdstore.info/store-data.json"
+              // Third party source (ikiraplus)
+              static let thirdPartyURL = "https://raw.githubusercontent.com/ikiraplus/ipastore/main/jom.json"
 
               static let telegramURL = "https://t.me/ClickStoreipaios"
               static let bannerURL   = "https://a.top4top.io/p_380487iqk0.jpeg"
@@ -344,6 +347,7 @@ jobs:
               case all     = "الكل"
               case primary = "مصدر 21s"
               case kurd    = "KurdStore"
+              case third   = "مصدر إضافي"
               case local   = "الملفات المستوردة"
 
               var id: String { rawValue }
@@ -354,6 +358,7 @@ jobs:
                   case .all:     return "square.grid.2x2.fill"
                   case .primary: return "crown.fill"
                   case .kurd:    return "k.circle.fill"
+                  case .third:   return "plus.circle.fill"
                   case .local:   return "tray.and.arrow.down.fill"
                   }
               }
@@ -435,6 +440,7 @@ jobs:
           enum AppSourceType: String, Codable {
               case primary = "primary"
               case kurd    = "kurd"
+              case third   = "third"
               case local   = "local"
           }
 
@@ -457,11 +463,12 @@ jobs:
               let iconURL: String
               var category: String?
               var source: AppSourceType
+              var note: String?
 
               enum CodingKeys: String, CodingKey {
                   case id, name, type, bundleID, bundleIdentifier, version, versionDate,
                        fullDate, size, down, downloadURL, developerName,
-                       localizedDescription, icon, iconURL, category, source
+                       localizedDescription, icon, iconURL, category, source, note
               }
 
               init(name: String,
@@ -479,7 +486,8 @@ jobs:
                    icon: String = "",
                    iconURL: String,
                    category: String? = nil,
-                   source: AppSourceType = .primary)
+                   source: AppSourceType = .primary,
+                   note: String? = nil)
               {
                   self.id = UUID()
                   self.name = name
@@ -498,6 +506,7 @@ jobs:
                   self.iconURL = iconURL
                   self.category = category
                   self.source = source
+                  self.note = note
               }
 
               // Custom decoder (for backward compat with primary source that doesn't include source)
@@ -520,6 +529,7 @@ jobs:
                   self.iconURL        = (try? c.decode(String.self, forKey: .iconURL)) ?? self.icon
                   self.category       = try? c.decode(String.self, forKey: .category)
                   self.source         = (try? c.decode(AppSourceType.self, forKey: .source)) ?? .primary
+                  self.note           = try? c.decode(String.self, forKey: .note)
               }
 
               // MARK: Computed
@@ -582,6 +592,7 @@ jobs:
                   switch source {
                   case .primary: return "21s"
                   case .kurd:    return "Kurd"
+                  case .third:   return "إضافي"
                   case .local:   return "مستورد"
                   }
               }
@@ -590,6 +601,7 @@ jobs:
                   switch source {
                   case .primary: return .vipPurple
                   case .kurd:    return Color(red: 0.95, green: 0.45, blue: 0.20)
+                  case .third:   return Color(red: 0.20, green: 0.70, blue: 0.90)
                   case .local:   return Color(red: 0.20, green: 0.70, blue: 0.50)
                   }
               }
@@ -630,6 +642,25 @@ jobs:
               let category: String?
               let created_at: String?
               let updated_at: String?
+          }
+
+          // MARK: - Third Party Source API Response (ikiraplus)
+          struct ThirdPartyApp: Codable {
+              let id: String
+              let name: String
+              let version: String
+              let ipaUrl: String
+              let icon: String
+              let size: String
+              let note: String?
+              let category: String?
+              let addedAt: String?
+              let updatedAt: String?
+              let hidden: Bool?
+          }
+
+          struct ThirdPartyRoot: Codable {
+              let apps: [ThirdPartyApp]
           }
 
           // MARK: - App Category
@@ -797,7 +828,7 @@ jobs:
                   }
               }
 
-              // MARK: - Fetch (both sources in parallel)
+              // MARK: - Fetch (all sources in parallel)
               func fetchApps() {
                   isLoading = true
                   errorMessage = nil
@@ -819,6 +850,16 @@ jobs:
                   // KurdStore
                   group.enter()
                   fetchKurdStore { result in
+                      switch result {
+                      case .success(let items): combined.append(contentsOf: items)
+                      case .failure(let err):   if firstError == nil { firstError = err.localizedDescription }
+                      }
+                      group.leave()
+                  }
+
+                  // Third Party (ikiraplus)
+                  group.enter()
+                  fetchThirdParty { result in
                       switch result {
                       case .success(let items): combined.append(contentsOf: items)
                       case .failure(let err):   if firstError == nil { firstError = err.localizedDescription }
@@ -921,6 +962,73 @@ jobs:
                   }.resume()
               }
 
+              // MARK: - Third Party source (ikiraplus)
+              private func fetchThirdParty(completion: @escaping (Result<[AppItem], Error>) -> Void) {
+                  guard let url = URL(string: AppConstants.thirdPartyURL) else {
+                      DispatchQueue.main.async { completion(.failure(AppFetchError.invalidURL(source: "المصدر الإضافي"))) }
+                      return
+                  }
+                  URLSession.shared.dataTask(with: url) { data, _, err in
+                      if let err = err {
+                          DispatchQueue.main.async {
+                              completion(.failure(AppFetchError.network(source: "المصدر الإضافي", message: err.localizedDescription)))
+                          }
+                          return
+                      }
+                      guard let data = data else {
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.noData(source: "المصدر الإضافي"))) }
+                          return
+                      }
+                      do {
+                          let root = try JSONDecoder().decode(ThirdPartyRoot.self, from: data)
+                          let apps = root.apps.filter { !($0.hidden ?? false) }
+                          let mapped = apps.map { Self.toAppItem($0) }
+                          DispatchQueue.main.async { completion(.success(mapped)) }
+                      } catch {
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.decodeFailed(source: "المصدر الإضافي"))) }
+                      }
+                  }.resume()
+              }
+
+              // MARK: - ThirdParty -> AppItem mapper
+              private static func toAppItem(_ t: ThirdPartyApp) -> AppItem {
+                  let sizeBytes = parseSizeString(t.size)
+                  let dateStr = t.updatedAt ?? t.addedAt ?? ""
+                  let cat = t.category ?? Self.inferCategory(name: t.name, desc: t.note ?? "")
+                  return AppItem(
+                      name: t.name,
+                      type: 0,
+                      bundleID: "com.thirdparty.\(t.id)",
+                      bundleIdentifier: "com.thirdparty.\(t.id)",
+                      version: t.version,
+                      versionDate: dateStr,
+                      fullDate: dateStr,
+                      size: sizeBytes,
+                      down: "0",
+                      downloadURL: t.ipaUrl,
+                      developerName: "مصدر إضافي",
+                      localizedDescription: t.note ?? "",
+                      icon: "",
+                      iconURL: t.icon,
+                      category: cat,
+                      source: .third,
+                      note: t.note
+                  )
+              }
+
+              private static func parseSizeString(_ s: String?) -> Int {
+                  guard let s = s, !s.isEmpty else { return 0 }
+                  let trimmed = s.trimmingCharacters(in: .whitespaces).uppercased()
+                  let parts = trimmed.split(separator: " ")
+                  guard parts.count == 2, let value = Double(parts[0]) else { return 0 }
+                  switch parts[1] {
+                  case "KB": return Int(value * 1024)
+                  case "MB": return Int(value * 1024 * 1024)
+                  case "GB": return Int(value * 1024 * 1024 * 1024)
+                  default:   return Int(value)
+                  }
+              }
+
               // MARK: - KurdStore -> AppItem mapper
               private static func toAppItem(_ k: KurdStoreApp) -> AppItem {
                   let sizeBytes = parseSizeMB(k.ipa_size)
@@ -928,6 +1036,7 @@ jobs:
                             k.github_url?.isEmpty == false ? k.github_url :
                             k.archive_url) ?? ""
                   let versionDate = Self.extractDate(from: k.updated_at) ?? Self.extractDate(from: k.created_at) ?? ""
+                  let cat = k.category ?? Self.inferCategory(name: k.name, desc: k.description ?? "")
                   return AppItem(
                       name: k.name,
                       type: 0,
@@ -943,7 +1052,7 @@ jobs:
                       localizedDescription: k.description ?? "",
                       icon: k.icon ?? "",
                       iconURL: k.icon ?? "",
-                      category: k.category,
+                      category: cat,
                       source: .kurd
                   )
               }
@@ -1014,6 +1123,7 @@ jobs:
                   case .all:     return apps
                   case .primary: return apps.filter { $0.source == .primary }
                   case .kurd:    return apps.filter { $0.source == .kurd }
+                  case .third:   return apps.filter { $0.source == .third }
                   case .local:   return [] // local files surfaced through FilesManager
                   }
               }
@@ -1317,8 +1427,7 @@ jobs:
                       try fm.moveItem(at: src, to: dst)
                       if let idx = files.firstIndex(where: { $0.id == file.id }) {
                           let old = files[idx]
-                          var updated = old
-                          updated = ImportedFile(
+                          var updated = ImportedFile(
                               id: old.id,
                               originalName: newName,
                               storedName: newName,
@@ -1969,17 +2078,20 @@ jobs:
               }
           }
 
-          // MARK: - Source Badge (21s / Kurd / Local)
+          // MARK: - Source Badge (21s / Kurd / Third / Local)
           struct SourceBadge: View {
               let source: AppSourceType
 
               var body: some View {
                   HStack(spacing: 3) {
                       Image(systemName: source == .primary ? "crown.fill" :
-                              source == .kurd ? "k.circle.fill" : "tray.and.arrow.down.fill")
+                              source == .kurd ? "k.circle.fill" :
+                              source == .third ? "plus.circle.fill" :
+                              "tray.and.arrow.down.fill")
                           .font(.system(size: 8, weight: .bold))
                       Text(source == .primary ? "21s" :
-                           source == .kurd    ? "Kurd" : "مستورد")
+                           source == .kurd    ? "Kurd" :
+                           source == .third   ? "إضافي" : "مستورد")
                           .font(.system(size: 9, weight: .heavy))
                   }
                   .foregroundColor(.white)
@@ -1991,6 +2103,8 @@ jobs:
                                   ? [.vipPurple, .blue]
                                   : source == .kurd
                                   ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                                  : source == .third
+                                  ? [Color(red: 0.20, green: 0.70, blue: 0.90), Color(red: 0.10, green: 0.50, blue: 0.80)]
                                   : [Color(red: 0.20, green: 0.70, blue: 0.50), Color(red: 0.10, green: 0.55, blue: 0.40)],
                               startPoint: .leading, endPoint: .trailing
                           )
@@ -2164,6 +2278,7 @@ jobs:
               private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
               private var newThisWeek: [AppItem] { appsManager.newThisWeek }
               private var kurdApps: [AppItem] { appsManager.apps(for: .kurd) }
+              private var thirdApps: [AppItem] { appsManager.apps(for: .third) }
 
               var body: some View {
                   NavigationView {
@@ -2224,7 +2339,22 @@ jobs:
                                       }
                                   }
 
-                                  // 6) Top Downloads
+                                  // 6) Third Party
+                                  if !thirdApps.isEmpty {
+                                      sectionHeader(title: "➕ من المصدر الإضافي", icon: "plus.circle.fill",
+                                                    color: Color(red: 0.20, green: 0.70, blue: 0.90))
+                                      ScrollView(.horizontal, showsIndicators: false) {
+                                          HStack(spacing: 12) {
+                                              ForEach(thirdApps.prefix(8), id: \.id) { app in
+                                                  FeaturedAppCard(app: app)
+                                                      .contentShape(Rectangle())
+                                                      .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
+                                              }
+                                          }.padding(.horizontal, 16)
+                                      }
+                                  }
+
+                                  // 7) Top Downloads
                                   if !topRated.isEmpty {
                                       sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2239,7 +2369,7 @@ jobs:
                                       }
                                   }
 
-                                  // 7) Latest Apps
+                                  // 8) Latest Apps
                                   sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                                   ForEach(newest, id: \.id) { app in
                                       AppCardView(app: app)
@@ -2484,6 +2614,8 @@ jobs:
                       LinearGradient(
                           colors: app.source == .kurd
                               ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                              : app.source == .third
+                              ? [Color(red: 0.20, green: 0.70, blue: 0.90), Color(red: 0.10, green: 0.50, blue: 0.80)]
                               : [Color.pink, Color.purple, Color.indigo],
                           startPoint: .topLeading, endPoint: .bottomTrailing
                       )
@@ -2744,7 +2876,7 @@ jobs:
           echo "HomeTabView.swift: $(wc -l < HomeTabView.swift) lines"
 
       # =========================================================
-      # APPS TAB (unchanged behavior, supports local source filter)
+      # APPS TAB (unchanged behavior, supports third and local source filter)
       # =========================================================
       - name: توليد الكود - تبويب التطبيقات (AppsTabView.swift)
         run: |
@@ -2784,6 +2916,7 @@ jobs:
                   case .all:     break
                   case .primary: base = base.filter { $0.source == .primary }
                   case .kurd:    base = base.filter { $0.source == .kurd }
+                  case .third:   base = base.filter { $0.source == .third }
                   case .local:   base = base.filter { $0.source == .local }
                   }
 
@@ -2923,6 +3056,8 @@ jobs:
                                                           ? LinearGradient(
                                                               colors: src == .kurd
                                                                   ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                                                                  : src == .third
+                                                                  ? [Color(red: 0.20, green: 0.70, blue: 0.90), Color(red: 0.10, green: 0.50, blue: 0.80)]
                                                                   : [.vipPurple, .blue],
                                                               startPoint: .leading, endPoint: .trailing
                                                           )
@@ -3848,6 +3983,8 @@ jobs:
                                               LinearGradient(
                                                   colors: app.source == .kurd
                                                       ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10), Color(red: 0.75, green: 0.15, blue: 0.05)]
+                                                      : app.source == .third
+                                                      ? [Color(red: 0.20, green: 0.70, blue: 0.90), Color(red: 0.10, green: 0.50, blue: 0.80), Color(red: 0.05, green: 0.35, blue: 0.70)]
                                                       : [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)],
                                                   startPoint: .topLeading,
                                                   endPoint: .bottomTrailing
@@ -3868,7 +4005,7 @@ jobs:
                                               RoundedRectangle(cornerRadius: 28)
                                                   .stroke(Color.white.opacity(0.18), lineWidth: 1)
                                           )
-                                          .shadow(color: app.source == .kurd ? Color.orange.opacity(0.45) : .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
+                                          .shadow(color: app.source == .kurd ? Color.orange.opacity(0.45) : app.source == .third ? Color.cyan.opacity(0.45) : .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
                                           .shadow(color: .blue.opacity(0.25), radius: 30, x: 0, y: 18)
                                           .padding(.horizontal, 16)
 
@@ -3918,6 +4055,19 @@ jobs:
                                       InfoPill(label: "الترخيص",   value: app.subscriptionType)
                                   }.padding(.horizontal)
 
+                                  // Note for third party apps
+                                  if let note = app.note, !note.isEmpty {
+                                      VStack(alignment: .trailing, spacing: 8) {
+                                          HStack {
+                                              Spacer()
+                                              Image(systemName: "info.circle").foregroundColor(.vipPurple)
+                                              Text("ملاحظة").font(.system(size: 15, weight: .semibold))
+                                          }
+                                          Text(note)
+                                              .font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.trailing).lineSpacing(4)
+                                      }.padding(14).glassCard(radius: 16).padding(.horizontal)
+                                  }
+
                                   VStack(alignment: .trailing, spacing: 8) {
                                       HStack {
                                           Spacer()
@@ -3933,6 +4083,8 @@ jobs:
                                       icon: "arrow.down.circle.fill",
                                       gradient: app.source == .kurd
                                           ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                                          : app.source == .third
+                                          ? [Color(red: 0.20, green: 0.70, blue: 0.90), Color(red: 0.10, green: 0.50, blue: 0.80)]
                                           : [.vipPurple, .blue],
                                       action: {
                                           HapticManager.shared.impact(.medium)
