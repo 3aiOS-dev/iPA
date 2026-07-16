@@ -445,6 +445,23 @@ jobs:
           import Foundation
           import Combine
 
+          // MARK: - Fetch Error
+          enum AppFetchError: LocalizedError {
+              case invalidURL(source: String)
+              case noData(source: String)
+              case decodeFailed(source: String)
+              case network(source: String, message: String)
+
+              var errorDescription: String? {
+                  switch self {
+                  case .invalidURL(let s):     return "\(s): رابط غير صالح"
+                  case .noData(let s):         return "\(s): لا توجد بيانات"
+                  case .decodeFailed(let s):   return "\(s): فشل تحليل البيانات"
+                  case .network(let s, let m): return "\(s): \(m)"
+                  }
+              }
+          }
+
           // MARK: - Apps Manager
           class AppsManager: ObservableObject {
               @Published var apps: [AppItem] = []
@@ -477,7 +494,7 @@ jobs:
                   fetchPrimary { result in
                       switch result {
                       case .success(let items): combined.append(contentsOf: items)
-                      case .failure(let err):   if firstError == nil { firstError = err }
+                      case .failure(let err):   if firstError == nil { firstError = err.localizedDescription }
                       }
                       group.leave()
                   }
@@ -487,7 +504,7 @@ jobs:
                   fetchKurdStore { result in
                       switch result {
                       case .success(let items): combined.append(contentsOf: items)
-                      case .failure(let err):   if firstError == nil { firstError = err }
+                      case .failure(let err):   if firstError == nil { firstError = err.localizedDescription }
                       }
                       group.leave()
                   }
@@ -511,18 +528,20 @@ jobs:
               }
 
               // MARK: - Primary source (apptesters)
-              private func fetchPrimary(completion: @escaping (Result<[AppItem], String>) -> Void) {
+              private func fetchPrimary(completion: @escaping (Result<[AppItem], Error>) -> Void) {
                   guard let url = URL(string: AppConstants.storeURL) else {
-                      completion(.failure("رابط المصدر الأول غير صالح"))
+                      DispatchQueue.main.async { completion(.failure(AppFetchError.invalidURL(source: "المصدر 21s"))) }
                       return
                   }
                   URLSession.shared.dataTask(with: url) { data, _, err in
                       if let err = err {
-                          DispatchQueue.main.async { completion(.failure("المصدر 21s: \(err.localizedDescription)")) }
+                          DispatchQueue.main.async {
+                              completion(.failure(AppFetchError.network(source: "المصدر 21s", message: err.localizedDescription)))
+                          }
                           return
                       }
                       guard let data = data else {
-                          DispatchQueue.main.async { completion(.failure("المصدر 21s: لا توجد بيانات")) }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.noData(source: "المصدر 21s"))) }
                           return
                       }
                       var loaded: [AppItem] = []
@@ -531,7 +550,7 @@ jobs:
                       } else if let arr = try? JSONDecoder().decode([AppItem].self, from: data) {
                           loaded = arr
                       } else {
-                          DispatchQueue.main.async { completion(.failure("المصدر 21s: فشل تحليل البيانات")) }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.decodeFailed(source: "المصدر 21s"))) }
                           return
                       }
                       // Force source tag & category
@@ -560,18 +579,20 @@ jobs:
               }
 
               // MARK: - KurdStore source
-              private func fetchKurdStore(completion: @escaping (Result<[AppItem], String>) -> Void) {
+              private func fetchKurdStore(completion: @escaping (Result<[AppItem], Error>) -> Void) {
                   guard let url = URL(string: AppConstants.kurdStoreURL) else {
-                      completion(.failure("رابط KurdStore غير صالح"))
+                      DispatchQueue.main.async { completion(.failure(AppFetchError.invalidURL(source: "KurdStore"))) }
                       return
                   }
                   URLSession.shared.dataTask(with: url) { data, _, err in
                       if let err = err {
-                          DispatchQueue.main.async { completion(.failure("KurdStore: \(err.localizedDescription)")) }
+                          DispatchQueue.main.async {
+                              completion(.failure(AppFetchError.network(source: "KurdStore", message: err.localizedDescription)))
+                          }
                           return
                       }
                       guard let data = data else {
-                          DispatchQueue.main.async { completion(.failure("KurdStore: لا توجد بيانات")) }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.noData(source: "KurdStore"))) }
                           return
                       }
                       do {
@@ -579,7 +600,7 @@ jobs:
                           let mapped = root.apps.apps.map { Self.toAppItem($0) }
                           DispatchQueue.main.async { completion(.success(mapped)) }
                       } catch {
-                          DispatchQueue.main.async { completion(.failure("KurdStore: فشل تحليل البيانات")) }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.decodeFailed(source: "KurdStore"))) }
                       }
                   }.resume()
               }
