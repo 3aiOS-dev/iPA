@@ -58,6 +58,7 @@ jobs:
             "name": "21s Store",
             "identifier": "com.vip21.store",
             "sourceURL": "https://repository.apptesters.org/apps.json",
+            "kurdStoreURL": "https://kurdstore.info/store-data.json",
             "iconURL": "https://a.top4top.io/p_380487iqk0.jpeg",
             "website": "https://t.me/ClickStoreipaios",
             "subtitle": "متجر 21s VIP",
@@ -90,44 +91,25 @@ jobs:
               <key>UISupportedInterfaceOrientations</key>
               <array><string>UIInterfaceOrientationPortrait</string></array>
               <key>UILaunchScreen</key><dict/>
-              <key>UISupportsDocumentBrowser</key>   <true/>
-              <key>LSSupportsOpeningDocumentsInPlace</key> <true/>
-              <key>UIFileSharingEnabled</key>        <true/>
-              <key>CFBundleDocumentTypes</key>
-              <array>
-                  <dict>
-                      <key>CFBundleTypeName</key>           <string>IPA File</string>
-                      <key>CFBundleTypeRole</key>           <string>Editor</string>
-                      <key>LSHandlerRank</key>              <string>Alternate</string>
-                      <key>LSItemContentTypes</key>
-                      <array><string>com.apple.itunes.ipa</string></array>
-                  </dict>
-                  <dict>
-                      <key>CFBundleTypeName</key>           <string>Mobile Provision</string>
-                      <key>CFBundleTypeRole</key>           <string>Editor</string>
-                      <key>LSHandlerRank</key>              <string>Alternate</string>
-                      <key>LSItemContentTypes</key>
-                      <array><string>com.apple.mobileprovision</string></array>
-                  </dict>
-                  <dict>
-                      <key>CFBundleTypeName</key>           <string>PKCS12</string>
-                      <key>CFBundleTypeRole</key>           <string>Editor</string>
-                      <key>LSHandlerRank</key>              <string>Alternate</string>
-                      <key>LSItemContentTypes</key>
-                      <array><string>com.rsa.pkcs-12</string></array>
-                  </dict>
-              </array>
               <key>NSPhotoLibraryUsageDescription</key>
               <string>لاستيراد أيقونات التطبيقات</string>
               <key>NSFaceIDUsageDescription</key>
               <string>لحماية إعدادات التطبيق</string>
+              <key>NSAppTransportSecurity</key>
+              <dict>
+                  <key>NSAllowsArbitraryLoads</key>
+                  <true/>
+                  <key>NSAllowsArbitraryLoadsInWebContent</key>
+                  <true/>
+                  <key>NSAllowsArbitraryLoadsForMedia</key>
+                  <true/>
+              </dict>
           </dict>
           </plist>
           PEOF
 
-      - name: Generate Source Files
+      - name: Generate Source - Constants.swift
         run: |
-          # Constants.swift
           cat > Constants.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -136,7 +118,11 @@ jobs:
 
           // MARK: - Constants
           struct AppConstants {
+              // Primary source (apptesters)
               static let storeURL    = "https://repository.apptesters.org/apps.json"
+              // Secondary source (kurdstore)
+              static let kurdStoreURL = "https://kurdstore.info/store-data.json"
+
               static let telegramURL = "https://t.me/ClickStoreipaios"
               static let bannerURL   = "https://a.top4top.io/p_380487iqk0.jpeg"
               static let appIconURL  = "https://a.top4top.io/p_380487iqk0.jpeg"
@@ -152,6 +138,27 @@ jobs:
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios")
               ]
+
+              // "New this week" window in days
+              static let newThisWeekDays = 7
+          }
+
+          // MARK: - App Source Enum
+          enum AppSource: String, CaseIterable, Identifiable {
+              case all     = "الكل"
+              case primary = "مصدر 21s"
+              case kurd    = "KurdStore"
+
+              var id: String { rawValue }
+              var displayName: String { rawValue }
+
+              var icon: String {
+                  switch self {
+                  case .all:     return "square.grid.2x2.fill"
+                  case .primary: return "crown.fill"
+                  case .kurd:    return "k.circle.fill"
+                  }
+              }
           }
 
           // MARK: - Color Extensions
@@ -165,8 +172,10 @@ jobs:
               static let glassBorder = Color.white.opacity(0.15)
           }
           VIPEOF
+          echo "Constants.swift: $(wc -l < Constants.swift) lines"
 
-          # HapticManager.swift
+      - name: Generate Source - HapticManager.swift
+        run: |
           cat > HapticManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -209,16 +218,24 @@ jobs:
               }
           }
           VIPEOF
+          echo "HapticManager.swift: $(wc -l < HapticManager.swift) lines"
 
-          # Models.swift
+      - name: Generate Source - Models.swift
+        run: |
           cat > Models.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - App Data Model
+          // MARK: - App Source Identifier
+          enum AppSourceType: String, Codable {
+              case primary = "primary"
+              case kurd    = "kurd"
+          }
+
+          // MARK: - App Data Model (Unified)
           struct AppItem: Identifiable, Codable {
-              var id = UUID()
+              var id: UUID
               let name: String
               let type: Int
               let bundleID: String
@@ -234,21 +251,107 @@ jobs:
               let icon: String
               let iconURL: String
               var category: String?
+              var source: AppSourceType
 
               enum CodingKeys: String, CodingKey {
-                  case name, type, bundleID, bundleIdentifier, version, versionDate,
+                  case id, name, type, bundleID, bundleIdentifier, version, versionDate,
                        fullDate, size, down, downloadURL, developerName,
-                       localizedDescription, icon, iconURL
+                       localizedDescription, icon, iconURL, category, source
               }
 
-              var formattedSize: String { ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
+              init(name: String,
+                   type: Int = 0,
+                   bundleID: String,
+                   bundleIdentifier: String = "",
+                   version: String,
+                   versionDate: String,
+                   fullDate: String = "",
+                   size: Int,
+                   down: String = "0",
+                   downloadURL: String,
+                   developerName: String,
+                   localizedDescription: String,
+                   icon: String = "",
+                   iconURL: String,
+                   category: String? = nil,
+                   source: AppSourceType = .primary)
+              {
+                  self.id = UUID()
+                  self.name = name
+                  self.type = type
+                  self.bundleID = bundleID
+                  self.bundleIdentifier = bundleIdentifier.isEmpty ? bundleID : bundleIdentifier
+                  self.version = version
+                  self.versionDate = versionDate
+                  self.fullDate = fullDate
+                  self.size = size
+                  self.down = down
+                  self.downloadURL = downloadURL
+                  self.developerName = developerName
+                  self.localizedDescription = localizedDescription
+                  self.icon = icon
+                  self.iconURL = iconURL
+                  self.category = category
+                  self.source = source
+              }
+
+              // Custom decoder (for backward compat with primary source that doesn't include source)
+              init(from decoder: Decoder) throws {
+                  let c = try decoder.container(keyedBy: CodingKeys.self)
+                  self.id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+                  self.name           = try c.decode(String.self, forKey: .name)
+                  self.type           = (try? c.decode(Int.self, forKey: .type)) ?? 0
+                  self.bundleID       = (try? c.decode(String.self, forKey: .bundleID)) ?? ""
+                  self.bundleIdentifier = (try? c.decode(String.self, forKey: .bundleIdentifier)) ?? self.bundleID
+                  self.version        = (try? c.decode(String.self, forKey: .version)) ?? ""
+                  self.versionDate    = (try? c.decode(String.self, forKey: .versionDate)) ?? ""
+                  self.fullDate       = (try? c.decode(String.self, forKey: .fullDate)) ?? self.versionDate
+                  self.size           = (try? c.decode(Int.self, forKey: .size)) ?? 0
+                  self.down           = (try? c.decode(String.self, forKey: .down)) ?? "0"
+                  self.downloadURL    = (try? c.decode(String.self, forKey: .downloadURL)) ?? ""
+                  self.developerName  = (try? c.decode(String.self, forKey: .developerName)) ?? ""
+                  self.localizedDescription = (try? c.decode(String.self, forKey: .localizedDescription)) ?? ""
+                  self.icon           = (try? c.decode(String.self, forKey: .icon)) ?? ""
+                  self.iconURL        = (try? c.decode(String.self, forKey: .iconURL)) ?? self.icon
+                  self.category       = try? c.decode(String.self, forKey: .category)
+                  self.source         = (try? c.decode(AppSourceType.self, forKey: .source)) ?? .primary
+              }
+
+              // MARK: Computed
+
+              var formattedSize: String {
+                  if size > 0 {
+                      return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+                  }
+                  return "—"
+              }
 
               var formattedDate: String {
-                  let input = DateFormatter(); input.dateFormat = "yyyy-MM-dd"
-                  if let d = input.date(from: versionDate) {
-                      let out = DateFormatter(); out.dateFormat = "dd-MM-yyyy"; return out.string(from: d)
+                  let formats = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ssZZZZZ", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"]
+                  let inFmt = DateFormatter()
+                  inFmt.locale = Locale(identifier: "en_US_POSIX")
+                  for fmt in formats {
+                      inFmt.dateFormat = fmt
+                      if let d = inFmt.date(from: versionDate) {
+                          let out = DateFormatter()
+                          out.dateFormat = "dd-MM-yyyy"
+                          return out.string(from: d)
+                      }
                   }
                   return versionDate
+              }
+
+              /// Parsed Date for "new this week" comparisons. Returns nil if unparseable.
+              var parsedDate: Date? {
+                  let formats = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ssZZZZZ", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"]
+                  let f = DateFormatter()
+                  f.locale = Locale(identifier: "en_US_POSIX")
+                  for fmt in formats {
+                      f.dateFormat = fmt
+                      if let d = f.date(from: versionDate) { return d }
+                      if let d = f.date(from: fullDate) { return d }
+                  }
+                  return nil
               }
 
               var subscriptionType: String {
@@ -261,21 +364,69 @@ jobs:
               }
 
               var isNew: Bool {
-                  let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-                  guard let d = f.date(from: versionDate) else { return false }
-                  return Calendar.current.dateComponents([.day], from: d, to: Date()).day ?? 999 < 7
+                  guard let d = parsedDate else { return false }
+                  let days = Calendar.current.dateComponents([.day], from: d, to: Date()).day ?? 999
+                  return days < AppConstants.newThisWeekDays
               }
 
               var isPopular: Bool { (Int(down) ?? 0) > 500 }
 
               var _secureDownloadURL: String { downloadURL }
+
+              var sourceDisplay: String {
+                  switch source {
+                  case .primary: return "21s"
+                  case .kurd:    return "Kurd"
+                  }
+              }
+
+              var sourceColor: Color {
+                  switch source {
+                  case .primary: return .vipPurple
+                  case .kurd:    return Color(red: 0.95, green: 0.45, blue: 0.20)
+                  }
+              }
           }
 
-          // MARK: - API Response
+          // MARK: - Primary Source API Response
           struct AppsResponse: Codable {
               let name: String; let identifier: String; let sourceURL: String
               let iconURL: String; let website: String; let ipawebsite: String
               let subtitle: String; let apps: [AppItem]
+          }
+
+          // MARK: - KurdStore API Response
+          // {
+          //   "last_updated": "...",
+          //   "apps": { "success": true, "count": 39, "apps": [ {...}, ... ] }
+          // }
+          struct KurdStoreRoot: Codable {
+              let last_updated: String?
+              let apps: KurdStoreAppsContainer
+          }
+
+          struct KurdStoreAppsContainer: Codable {
+              let success: Bool?
+              let count: Int?
+              let apps: [KurdStoreApp]
+          }
+
+          struct KurdStoreApp: Codable {
+              let id: Int
+              let name: String
+              let bundle_id: String
+              let bundle_version: String
+              let ipa_size: String?            // e.g. "585.02 MB"
+              let github_url: String?
+              let archive_url: String?
+              let ipa_url: String?
+              let host: String?
+              let icon: String?
+              let description: String?
+              let screenshots: [String]?
+              let category: String?
+              let created_at: String?          // ISO 8601
+              let updated_at: String?          // ISO 8601
           }
 
           // MARK: - App Category
@@ -283,497 +434,11 @@ jobs:
               let id = UUID()
               let name: String; let icon: String; let gradient: [Color]
           }
-
-          // MARK: - Imported File Model
-          struct ImportedFile: Identifiable, Codable, Equatable {
-              var id: UUID = UUID()
-              var originalName: String
-              var storedName: String
-              var fileType: FileType
-              var sizeBytes: Int64
-              var importedAt: Date
-              var appName: String?
-              var appVersion: String?
-              var bundleID: String?
-              var iconPath: String?
-              var notes: String
-
-              enum FileType: String, Codable, CaseIterable {
-                  case ipa            = "IPA"
-                  case mobileprovision = "MobileProvision"
-                  case p12            = "P12"
-
-                  var fileExtension: String {
-                      switch self {
-                      case .ipa:             return "ipa"
-                      case .mobileprovision: return "mobileprovision"
-                      case .p12:             return "p12"
-                      }
-                  }
-
-                  var systemIcon: String {
-                      switch self {
-                      case .ipa:             return "app.badge.fill"
-                      case .mobileprovision: return "checkmark.shield.fill"
-                      case .p12:             return "key.fill"
-                      }
-                  }
-
-                  var displayName: String {
-                      switch self {
-                      case .ipa:             return "تطبيق iOS"
-                      case .mobileprovision: return "ملف التوقيع"
-                      case .p12:             return "شهادة P12"
-                      }
-                  }
-
-                  var gradient: [Color] {
-                      switch self {
-                      case .ipa:             return [Color.vipPurple, .blue]
-                      case .mobileprovision: return [.green, .teal]
-                      case .p12:             return [.orange, .red]
-                      }
-                  }
-              }
-
-              var formattedSize: String {
-                  ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
-              }
-
-              var formattedDate: String {
-                  let f = DateFormatter()
-                  f.dateFormat = "yyyy-MM-dd HH:mm"
-                  return f.string(from: importedAt)
-              }
-
-              static func == (lhs: ImportedFile, rhs: ImportedFile) -> Bool { lhs.id == rhs.id }
-          }
           VIPEOF
+          echo "Models.swift: $(wc -l < Models.swift) lines"
 
-          # FileImporterManager.swift
-          cat > FileImporterManager.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import Foundation
-          import UniformTypeIdentifiers
-          import Compression
-
-          // MARK: - File Importer Manager
-          @MainActor
-          final class FileImporterManager: ObservableObject {
-              @Published var files: [ImportedFile] = []
-              @Published var isImporting: Bool = false
-              @Published var lastError: String?
-              @Published var lastSuccess: String?
-
-              private let storageKey = "importedFiles_v1"
-
-              // Storage directory
-              static var storageDirectory: URL {
-                  let fm = FileManager.default
-                  let base = try! fm.url(for: .applicationSupportDirectory,
-                                         in: .userDomainMask,
-                                         appropriateFor: nil, create: true)
-                  let dir = base.appendingPathComponent("ImportedFiles", isDirectory: true)
-                  if !fm.fileExists(atPath: dir.path) {
-                      try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-                  }
-                  return dir
-              }
-
-              static var iconsDirectory: URL {
-                  let fm = FileManager.default
-                  let base = try! fm.url(for: .applicationSupportDirectory,
-                                         in: .userDomainMask,
-                                         appropriateFor: nil, create: true)
-                  let dir = base.appendingPathComponent("ImportedIcons", isDirectory: true)
-                  if !fm.fileExists(atPath: dir.path) {
-                      try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-                  }
-                  return dir
-              }
-
-              init() { loadFromDisk() }
-
-              // MARK: - Persistence
-              private func loadFromDisk() {
-                  guard let data = UserDefaults.standard.data(forKey: storageKey) else { return }
-                  if let decoded = try? JSONDecoder().decode([ImportedFile].self, from: data) {
-                      self.files = decoded.sorted { $0.importedAt > $1.importedAt }
-                  }
-              }
-
-              private func saveToDisk() {
-                  if let data = try? JSONEncoder().encode(files) {
-                      UserDefaults.standard.set(data, forKey: storageKey)
-                  }
-              }
-
-              // MARK: - File Type Detection
-              func detectFileType(from url: URL) -> ImportedFile.FileType? {
-                  let ext = url.pathExtension.lowercased()
-                  switch ext {
-                  case "ipa":              return .ipa
-                  case "mobileprovision":  return .mobileprovision
-                  case "p12", "pfx":       return .p12
-                  default:
-                      if let type = UTType(filenameExtension: ext) {
-                          if type.conforms(to: .archive) { return .ipa }
-                          if type.conforms(to: .data)    { return .p12 }
-                      }
-                      return nil
-                  }
-              }
-
-              // MARK: - Import Single File
-              func importFile(from sourceURL: URL) async -> Bool {
-                  isImporting = true
-                  defer { isImporting = false }
-
-                  let didStart = sourceURL.startAccessingSecurityScopedResource()
-                  defer { if didStart { sourceURL.stopAccessingSecurityScopedResource() } }
-
-                  guard let type = detectFileType(from: sourceURL) else {
-                      lastError = "نوع الملف غير مدعوم: .\(sourceURL.pathExtension)"
-                      return false
-                  }
-
-                  var fileData: Data?
-                  do {
-                      fileData = try Data(contentsOf: sourceURL)
-                  } catch {
-                      lastError = "فشل قراءة الملف: \(error.localizedDescription)"
-                      return false
-                  }
-
-                  guard let data = fileData, !data.isEmpty else {
-                      lastError = "الملف فارغ أو تالف"
-                      return false
-                  }
-
-                  let validation = validateFile(data: data, type: type, sourceURL: sourceURL)
-                  if !validation.isValid {
-                      lastError = validation.error ?? "الملف غير صالح"
-                      return false
-                  }
-
-                  let storedName = "\(UUID().uuidString)_\(sourceURL.lastPathComponent)"
-                  let dest = Self.storageDirectory.appendingPathComponent(storedName)
-                  do {
-                      try data.write(to: dest, options: [.atomic])
-                  } catch {
-                      lastError = "فشل حفظ الملف: \(error.localizedDescription)"
-                      return false
-                  }
-
-                  var metadata = ImportedFile(
-                      originalName: sourceURL.lastPathComponent,
-                      storedName: storedName,
-                      fileType: type,
-                      sizeBytes: Int64(data.count),
-                      importedAt: Date(),
-                      appName: nil,
-                      appVersion: nil,
-                      bundleID: nil,
-                      iconPath: nil,
-                      notes: ""
-                  )
-
-                  if type == .ipa {
-                      let info = IPAInspector.extract(from: dest)
-                      metadata.appName    = info.name
-                      metadata.appVersion = info.version
-                      metadata.bundleID   = info.bundleID
-                      if let iconData = info.iconPNG {
-                          let iconName = "\(UUID().uuidString).png"
-                          let iconURL = Self.iconsDirectory.appendingPathComponent(iconName)
-                          try? iconData.write(to: iconURL)
-                          metadata.iconPath = iconName
-                      }
-                  }
-
-                  files.insert(metadata, at: 0)
-                  saveToDisk()
-                  HapticManager.shared.notification(.success)
-                  lastSuccess = "تم استيراد \(type.displayName) بنجاح"
-                  return true
-              }
-
-              // MARK: - File Validation
-              private func validateFile(data: Data, type: ImportedFile.FileType, sourceURL: URL) -> (isValid: Bool, error: String?) {
-                  if data.isEmpty { return (false, "الملف فارغ") }
-
-                  switch type {
-                  case .ipa:
-                      let zipMagic: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
-                      let prefix = Array(data.prefix(4))
-                      if prefix != zipMagic {
-                          return (false, "ملف IPA تالف (توقيع ZIP غير صالح)")
-                      }
-                      return (true, nil)
-                  case .mobileprovision:
-                      if let str = String(data: data.prefix(64), encoding: .utf8),
-                         str.contains("<?xml") || str.contains("plist") {
-                          return (true, nil)
-                      }
-                      return (false, "ملف mobileprovision غير صالح")
-                  case .p12:
-                      let prefix = Array(data.prefix(4))
-                      if prefix == [0x50, 0x4B, 0x03, 0x04] {
-                          return (true, nil)
-                      }
-                      return (false, "ملف P12 تالف")
-                  }
-              }
-
-              // MARK: - Delete File
-              func delete(_ file: ImportedFile) {
-                  let url = Self.storageDirectory.appendingPathComponent(file.storedName)
-                  try? FileManager.default.removeItem(at: url)
-                  if let icon = file.iconPath {
-                      try? FileManager.default.removeItem(at: Self.iconsDirectory.appendingPathComponent(icon))
-                  }
-                  files.removeAll { $0.id == file.id }
-                  saveToDisk()
-                  HapticManager.shared.notification(.success)
-                  lastSuccess = "تم حذف الملف"
-              }
-
-              // MARK: - Rename File
-              func rename(_ file: ImportedFile, to newOriginalName: String) {
-                  if let idx = files.firstIndex(where: { $0.id == file.id }) {
-                      files[idx].originalName = newOriginalName
-                      saveToDisk()
-                      HapticManager.shared.selection()
-                  }
-              }
-
-              // MARK: - Update Notes
-              func updateNotes(for file: ImportedFile, notes: String) {
-                  if let idx = files.firstIndex(where: { $0.id == file.id }) {
-                      files[idx].notes = notes
-                      saveToDisk()
-                  }
-              }
-
-              // MARK: - Get Stored URL
-              func storedURL(for file: ImportedFile) -> URL {
-                  Self.storageDirectory.appendingPathComponent(file.storedName)
-              }
-
-              // MARK: - Get Icon URL
-              func iconURL(for file: ImportedFile) -> URL? {
-                  guard let icon = file.iconPath else { return nil }
-                  return Self.iconsDirectory.appendingPathComponent(icon)
-              }
-
-              // MARK: - Refresh
-              func refresh() { loadFromDisk() }
-
-              // MARK: - Clear All
-              func clearAll() {
-                  for f in files {
-                      try? FileManager.default.removeItem(at: storedURL(for: f))
-                      if let icon = f.iconPath {
-                          try? FileManager.default.removeItem(at: Self.iconsDirectory.appendingPathComponent(icon))
-                      }
-                  }
-                  files.removeAll()
-                  saveToDisk()
-                  HapticManager.shared.notification(.success)
-              }
-          }
-
-          // MARK: - IPA Inspector (extract Info.plist + icon)
-          enum IPAInspector {
-              struct Info {
-                  var name: String?
-                  var version: String?
-                  var bundleID: String?
-                  var iconPNG: Data?
-              }
-
-              static func extract(from ipaURL: URL) -> Info {
-                  var info = Info()
-                  guard let data = try? Data(contentsOf: ipaURL, options: .mappedIfSafe) else { return info }
-
-                  if let path = locateInfoPlistPath(in: data),
-                     let plistData = readEntry(in: data, named: path) {
-                      if let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] {
-                          info.name     = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String
-                          info.version  = plist["CFBundleShortVersionString"] as? String
-                          info.bundleID = plist["CFBundleIdentifier"] as? String
-                      }
-                  }
-
-                  if let iconPath = locateIconPath(in: data),
-                     let iconData = readEntry(in: data, named: iconPath) {
-                      info.iconPNG = iconData
-                  }
-
-                  return info
-              }
-
-              // MARK: - Find EOCD record
-              private static func findEOCD(in data: Data) -> Int? {
-                  let bytes = [UInt8](data)
-                  let count = bytes.count
-                  if count < 22 { return nil }
-                  let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
-                  let searchStart = max(0, count - 65557)
-                  for i in stride(from: count - 22, through: searchStart, by: -1) {
-                      if i + 4 <= count &&
-                          bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                          bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                          return i
-                      }
-                  }
-                  return nil
-              }
-
-              // MARK: - Locate Info.plist path
-              private static func locateInfoPlistPath(in data: Data) -> String? {
-                  let bytes = [UInt8](data)
-                  let count = bytes.count
-                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
-
-                  let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
-                                 (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
-                  let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
-                  var p = cdOffset
-                  let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
-                  for _ in 0..<totalEntries {
-                      if p + 46 > count { break }
-                      if !(bytes[p] == cdSig[0] && bytes[p+1] == cdSig[1] &&
-                           bytes[p+2] == cdSig[2] && bytes[p+3] == cdSig[3]) { break }
-                      let nameLen = Int(bytes[p+28]) | (Int(bytes[p+29]) << 8)
-                      let extraLen = Int(bytes[p+30]) | (Int(bytes[p+31]) << 8)
-                      let commentLen = Int(bytes[p+32]) | (Int(bytes[p+33]) << 8)
-                      if p + 46 + nameLen > count { break }
-                      let nameData = Data(bytes[p+46..<p+46+nameLen])
-                      if let name = String(data: nameData, encoding: .utf8),
-                         name.hasSuffix("Info.plist") && name.contains("Payload/") {
-                          return name
-                      }
-                      p += 46 + nameLen + extraLen + commentLen
-                  }
-                  return nil
-              }
-
-              // MARK: - Locate icon path
-              private static func locateIconPath(in data: Data) -> String? {
-                  let bytes = [UInt8](data)
-                  let count = bytes.count
-                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
-
-                  let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
-                                 (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
-                  let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
-                  var p = cdOffset
-                  let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
-                  var bestIcon: String? = nil
-                  var bestScore = -1
-                  for _ in 0..<totalEntries {
-                      if p + 46 > count { break }
-                      if !(bytes[p] == cdSig[0] && bytes[p+1] == cdSig[1] &&
-                           bytes[p+2] == cdSig[2] && bytes[p+3] == cdSig[3]) { break }
-                      let nameLen = Int(bytes[p+28]) | (Int(bytes[p+29]) << 8)
-                      let extraLen = Int(bytes[p+30]) | (Int(bytes[p+31]) << 8)
-                      let commentLen = Int(bytes[p+32]) | (Int(bytes[p+33]) << 8)
-                      if p + 46 + nameLen > count { break }
-                      let nameData = Data(bytes[p+46..<p+46+nameLen])
-                      if let name = String(data: nameData, encoding: .utf8),
-                         name.lowercased().hasSuffix(".png") && name.contains("Payload/") {
-                          var score = 0
-                          let lower = name.lowercased()
-                          if lower.contains("appicon") { score += 100 }
-                          if lower.contains("icon")    { score += 50 }
-                          if lower.contains("@3x")     { score += 30 }
-                          if lower.contains("@2x")     { score += 20 }
-                          if lower.contains("60x60")   { score += 40 }
-                          if lower.contains("120x120") { score += 50 }
-                          if lower.contains("180x180") { score += 60 }
-                          if lower.contains("1024")    { score += 70 }
-                          if !lower.contains("launch") && !lower.contains("logo") { score += 10 }
-                          if score > bestScore {
-                              bestScore = score
-                              bestIcon = name
-                          }
-                      }
-                      p += 46 + nameLen + extraLen + commentLen
-                  }
-                  return bestIcon
-              }
-
-              // MARK: - Read ZIP Entry by name
-              private static func readEntry(in data: Data, named name: String) -> Data? {
-                  let bytes = [UInt8](data)
-                  let count = bytes.count
-                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
-
-                  let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
-                                 (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
-                  let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
-                  var p = cdOffset
-                  let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
-                  for _ in 0..<totalEntries {
-                      if p + 46 > count { break }
-                      if !(bytes[p] == cdSig[0] && bytes[p+1] == cdSig[1] &&
-                           bytes[p+2] == cdSig[2] && bytes[p+3] == cdSig[3]) { break }
-                      let nameLen = Int(bytes[p+28]) | (Int(bytes[p+29]) << 8)
-                      let extraLen = Int(bytes[p+30]) | (Int(bytes[p+31]) << 8)
-                      let commentLen = Int(bytes[p+32]) | (Int(bytes[p+33]) << 8)
-                      if p + 46 + nameLen > count { break }
-                      let nameData = Data(bytes[p+46..<p+46+nameLen])
-                      if let entryName = String(data: nameData, encoding: .utf8), entryName == name {
-                          let compSize = Int(bytes[p+20]) | (Int(bytes[p+21]) << 8) |
-                                         (Int(bytes[p+22]) << 16) | (Int(bytes[p+23]) << 24)
-                          let uncompSize = Int(bytes[p+24]) | (Int(bytes[p+25]) << 8) |
-                                           (Int(bytes[p+26]) << 16) | (Int(bytes[p+27]) << 24)
-                          let localHdrOffset = Int(bytes[p+42]) | (Int(bytes[p+43]) << 8) |
-                                               (Int(bytes[p+44]) << 16) | (Int(bytes[p+45]) << 24)
-                          if localHdrOffset + 30 > count { return nil }
-                          let lNameLen = Int(bytes[localHdrOffset+26]) | (Int(bytes[localHdrOffset+27]) << 8)
-                          let lExtraLen = Int(bytes[localHdrOffset+28]) | (Int(bytes[localHdrOffset+29]) << 8)
-                          let dataStart = localHdrOffset + 30 + lNameLen + lExtraLen
-                          if dataStart + compSize > count { return nil }
-                          let compData = data.subdata(in: dataStart..<(dataStart + compSize))
-                          let method = Int(bytes[p+10]) | (Int(bytes[p+11]) << 8)
-                          if method == 0 {
-                              return compData
-                          } else {
-                              return inflate(data: compData, expectedSize: uncompSize)
-                          }
-                      }
-                      p += 46 + nameLen + extraLen + commentLen
-                  }
-                  return nil
-              }
-
-              // MARK: - DEFLATE inflate using Apple's Compression framework
-              private static func inflate(data: Data, expectedSize: Int) -> Data? {
-                  let bufferSize = max(expectedSize + 64, 1024 * 1024)
-                  let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-                  defer { buffer.deallocate() }
-
-                  let result = data.withUnsafeBytes { (rawPtr: UnsafeRawBufferPointer) -> Int in
-                      guard let baseAddr = rawPtr.baseAddress else { return 0 }
-                      let src = baseAddr.assumingMemoryBound(to: UInt8.self)
-                      return compression_decode_buffer(
-                          buffer, bufferSize,
-                          src, data.count,
-                          nil,
-                          COMPRESSION_ZLIB
-                      )
-                  }
-
-                  if result <= 0 { return nil }
-                  return Data(bytes: buffer, count: result)
-              }
-          }
-          VIPEOF
-
-          # AppsManager.swift
+      - name: Generate Source - AppsManager.swift
+        run: |
           cat > AppsManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -786,38 +451,202 @@ jobs:
               @Published var isLoading = false
               @Published var errorMessage: String?
               @Published var recentSearches: [String] = []
+              @Published var lastUpdated: Date?
 
-              var categories: [AppCategory] { [] }
+              var categories: [AppCategory] {
+                  return []
+              }
 
-              func appsForCategory(_ cat: AppCategory) -> [AppItem] { apps }
+              func appsForCategory(_ cat: AppCategory) -> [AppItem] {
+                  switch cat.name {
+                  default:              return apps
+                  }
+              }
 
+              // MARK: - Fetch (both sources in parallel)
               func fetchApps() {
-                  isLoading = true; errorMessage = nil
-                  guard let url = URL(string: AppConstants.storeURL) else { isLoading = false; return }
-                  URLSession.shared.dataTask(with: url) { [weak self] data, _, err in
-                      DispatchQueue.main.async {
-                          self?.isLoading = false
-                          if let err = err { self?.errorMessage = err.localizedDescription; return }
-                          guard let data = data else { self?.errorMessage = "لا توجد بيانات"; return }
-                          var loaded: [AppItem] = []
-                          if let resp = try? JSONDecoder().decode(AppsResponse.self, from: data) {
-                              loaded = resp.apps
-                          } else if let arr = try? JSONDecoder().decode([AppItem].self, from: data) {
-                              loaded = arr
-                          } else {
-                              self?.errorMessage = "فشل تحليل البيانات"; return
+                  isLoading = true
+                  errorMessage = nil
+
+                  let group = DispatchGroup()
+                  var combined: [AppItem] = []
+                  var firstError: String?
+
+                  // Primary
+                  group.enter()
+                  fetchPrimary { result in
+                      switch result {
+                      case .success(let items): combined.append(contentsOf: items)
+                      case .failure(let err):   if firstError == nil { firstError = err }
+                      }
+                      group.leave()
+                  }
+
+                  // KurdStore
+                  group.enter()
+                  fetchKurdStore { result in
+                      switch result {
+                      case .success(let items): combined.append(contentsOf: items)
+                      case .failure(let err):   if firstError == nil { firstError = err }
+                      }
+                      group.leave()
+                  }
+
+                  group.notify(queue: .main) {
+                      self.isLoading = false
+                      self.lastUpdated = Date()
+                      // de-duplicate by bundleID
+                      var seen = Set<String>()
+                      let unique = combined.filter { item in
+                          let key = item.bundleID.isEmpty ? item.name : item.bundleID
+                          if seen.contains(key) { return false }
+                          seen.insert(key)
+                          return true
+                      }
+                      self.apps = unique
+                      if unique.isEmpty, let err = firstError {
+                          self.errorMessage = err
+                      }
+                  }
+              }
+
+              // MARK: - Primary source (apptesters)
+              private func fetchPrimary(completion: @escaping (Result<[AppItem], String>) -> Void) {
+                  guard let url = URL(string: AppConstants.storeURL) else {
+                      completion(.failure("رابط المصدر الأول غير صالح"))
+                      return
+                  }
+                  URLSession.shared.dataTask(with: url) { data, _, err in
+                      if let err = err {
+                          DispatchQueue.main.async { completion(.failure("المصدر 21s: \(err.localizedDescription)")) }
+                          return
+                      }
+                      guard let data = data else {
+                          DispatchQueue.main.async { completion(.failure("المصدر 21s: لا توجد بيانات")) }
+                          return
+                      }
+                      var loaded: [AppItem] = []
+                      if let resp = try? JSONDecoder().decode(AppsResponse.self, from: data) {
+                          loaded = resp.apps
+                      } else if let arr = try? JSONDecoder().decode([AppItem].self, from: data) {
+                          loaded = arr
+                      } else {
+                          DispatchQueue.main.async { completion(.failure("المصدر 21s: فشل تحليل البيانات")) }
+                          return
+                      }
+                      // Force source tag & category
+                      let enriched = loaded.map { app -> AppItem in
+                          var mutable = app
+                          if mutable.category == nil || mutable.category!.isEmpty {
+                              mutable.category = Self.inferCategory(name: app.name, desc: app.localizedDescription)
                           }
-                          self?.apps = loaded.map { app in
-                              var mutable = app
-                              if mutable.category == nil || mutable.category!.isEmpty {
-                                  mutable.category = Self.inferCategory(name: app.name, desc: app.localizedDescription)
-                              }
-                              return mutable
-                          }
+                          return AppItem(
+                              name: mutable.name, type: mutable.type,
+                              bundleID: mutable.bundleID,
+                              bundleIdentifier: mutable.bundleIdentifier,
+                              version: mutable.version,
+                              versionDate: mutable.versionDate,
+                              fullDate: mutable.fullDate,
+                              size: mutable.size, down: mutable.down,
+                              downloadURL: mutable.downloadURL,
+                              developerName: mutable.developerName,
+                              localizedDescription: mutable.localizedDescription,
+                              icon: mutable.icon, iconURL: mutable.iconURL,
+                              category: mutable.category, source: .primary
+                          )
+                      }
+                      DispatchQueue.main.async { completion(.success(enriched)) }
+                  }.resume()
+              }
+
+              // MARK: - KurdStore source
+              private func fetchKurdStore(completion: @escaping (Result<[AppItem], String>) -> Void) {
+                  guard let url = URL(string: AppConstants.kurdStoreURL) else {
+                      completion(.failure("رابط KurdStore غير صالح"))
+                      return
+                  }
+                  URLSession.shared.dataTask(with: url) { data, _, err in
+                      if let err = err {
+                          DispatchQueue.main.async { completion(.failure("KurdStore: \(err.localizedDescription)")) }
+                          return
+                      }
+                      guard let data = data else {
+                          DispatchQueue.main.async { completion(.failure("KurdStore: لا توجد بيانات")) }
+                          return
+                      }
+                      do {
+                          let root = try JSONDecoder().decode(KurdStoreRoot.self, from: data)
+                          let mapped = root.apps.apps.map { Self.toAppItem($0) }
+                          DispatchQueue.main.async { completion(.success(mapped)) }
+                      } catch {
+                          DispatchQueue.main.async { completion(.failure("KurdStore: فشل تحليل البيانات")) }
                       }
                   }.resume()
               }
 
+              // MARK: - KurdStore -> AppItem mapper
+              private static func toAppItem(_ k: KurdStoreApp) -> AppItem {
+                  let sizeBytes = parseSizeMB(k.ipa_size)
+                  // Build download URL: prefer ipa_url, fall back to github_url, then archive_url
+                  let dl = (k.ipa_url?.isEmpty == false ? k.ipa_url :
+                            k.github_url?.isEmpty == false ? k.github_url :
+                            k.archive_url) ?? ""
+                  // Use updated_at as the "newest" reference; fall back to created_at
+                  let versionDate = Self.extractDate(from: k.updated_at) ?? Self.extractDate(from: k.created_at) ?? ""
+                  return AppItem(
+                      name: k.name,
+                      type: 0,
+                      bundleID: k.bundle_id,
+                      bundleIdentifier: k.bundle_id,
+                      version: k.bundle_version,
+                      versionDate: versionDate,
+                      fullDate: k.updated_at ?? k.created_at ?? "",
+                      size: sizeBytes,
+                      down: "0",
+                      downloadURL: dl,
+                      developerName: k.host ?? "KurdStore",
+                      localizedDescription: k.description ?? "",
+                      icon: k.icon ?? "",
+                      iconURL: k.icon ?? "",
+                      category: k.category,
+                      source: .kurd
+                  )
+              }
+
+              private static func parseSizeMB(_ s: String?) -> Int {
+                  guard let s = s, !s.isEmpty else { return 0 }
+                  // supports "585.02 MB", "1.2 GB", "900 KB"
+                  let trimmed = s.trimmingCharacters(in: .whitespaces).uppercased()
+                  let parts = trimmed.split(separator: " ")
+                  guard parts.count == 2, let value = Double(parts[0]) else { return 0 }
+                  switch parts[1] {
+                  case "KB": return Int(value * 1024)
+                  case "MB": return Int(value * 1024 * 1024)
+                  case "GB": return Int(value * 1024 * 1024 * 1024)
+                  default:   return Int(value)
+                  }
+              }
+
+              private static func extractDate(from iso: String?) -> String? {
+                  guard let iso = iso else { return nil }
+                  let f = DateFormatter()
+                  f.locale = Locale(identifier: "en_US_POSIX")
+                  f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+                  if let d = f.date(from: iso) {
+                      let out = DateFormatter()
+                      out.dateFormat = "yyyy-MM-dd"
+                      return out.string(from: d)
+                  }
+                  f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+                  if let d = f.date(from: iso) {
+                      let out = DateFormatter()
+                      out.dateFormat = "yyyy-MM-dd"
+                      return out.string(from: d)
+                  }
+                  return nil
+              }
+
+              // MARK: - Category inference (shared)
               static func inferCategory(name: String, desc: String) -> String {
                   let text = (name + " " + desc).lowercased()
                   let map: [(keys: [String], cat: String)] = [
@@ -833,12 +662,25 @@ jobs:
                       (["travel", "سفر", "flight", "hotel", "فندق", "map", "خرائط", "uber", "careem"], "سفر"),
                       (["health", "fitness", "صحة", "رياضة", "workout", "gym", "diet", "نظام غذائي"], "صحة ورياضة"),
                       (["food", "restaurant", "طعام", "مطعم", "hungerstation", "talabat", "جاهز"], "طعام"),
-                      (["news", "أخبار", "newspaper", "bbc", "cnn", "aljazeera", "رياضة"], "أخبار"),
+                      (["news", "أخبار", "newspaper", "bbc", "cnn", "aljazeera"], "أخبار"),
                   ]
                   for entry in map {
                       if entry.keys.contains(where: { text.contains($0) }) { return entry.cat }
                   }
                   return "أدوات"
+              }
+
+              // MARK: - Derived collections
+              var newThisWeek: [AppItem] {
+                  apps.filter { $0.isNew }
+              }
+
+              func apps(for source: AppSource) -> [AppItem] {
+                  switch source {
+                  case .all:     return apps
+                  case .primary: return apps.filter { $0.source == .primary }
+                  case .kurd:    return apps.filter { $0.source == .kurd }
+                  }
               }
 
               func retryFetch() { fetchApps() }
@@ -856,8 +698,10 @@ jobs:
               }
           }
           VIPEOF
+          echo "AppsManager.swift: $(wc -l < AppsManager.swift) lines"
 
-          # SharedComponents.swift
+      - name: Generate Source - SharedComponents.swift
+        run: |
           cat > SharedComponents.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -927,10 +771,36 @@ jobs:
               }
           }
 
+          // MARK: - Source Badge (21s / Kurd)
+          struct SourceBadge: View {
+              let source: AppSourceType
+
+              var body: some View {
+                  HStack(spacing: 3) {
+                      Image(systemName: source == .primary ? "crown.fill" : "k.circle.fill")
+                          .font(.system(size: 8, weight: .bold))
+                      Text(source == .primary ? "21s" : "Kurd")
+                          .font(.system(size: 9, weight: .heavy))
+                  }
+                  .foregroundColor(.white)
+                  .padding(.horizontal, 6).padding(.vertical, 2)
+                  .background(
+                      Capsule().fill(
+                          LinearGradient(
+                              colors: source == .primary
+                                  ? [.vipPurple, .blue]
+                                  : [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)],
+                              startPoint: .leading, endPoint: .trailing
+                          )
+                      )
+                  )
+              }
+          }
+
           // MARK: - Top Right Icon View
           struct TopRightIconView: View {
               @State private var iconImage: UIImage? = nil
-              
+
               var body: some View {
                   Group {
                       if let img = iconImage {
@@ -953,7 +823,7 @@ jobs:
                   }
                   .onAppear { loadIcon() }
               }
-              
+
               private func loadIcon() {
                   guard let url = URL(string: AppConstants.topRightIconURL) else { return }
                   URLSession.shared.dataTask(with: url) { data, _, _ in
@@ -964,8 +834,10 @@ jobs:
               }
           }
           VIPEOF
+          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
-          # ContentView.swift
+      - name: Generate Source - ContentView.swift
+        run: |
           cat > ContentView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -974,15 +846,13 @@ jobs:
 
           // MARK: - Main Tab Enum
           enum AppTab: String, CaseIterable {
-              case home  = "الرئيسية"
-              case apps  = "التطبيقات"
-              case files = "الملفات"
+              case home = "الرئيسية"
+              case apps = "التطبيقات"
               
               var icon: String {
                   switch self {
-                  case .home:  return "house"
-                  case .apps:  return "square.stack.3d.up"
-                  case .files: return "folder.fill"
+                  case .home: return "house"
+                  case .apps: return "square.stack.3d.up"
                   }
               }
           }
@@ -992,21 +862,20 @@ jobs:
               @State private var selectedTab: AppTab = .home
               @Environment(\.colorScheme) var scheme
               @StateObject private var appsManager = AppsManager()
-              @StateObject private var fileImporter = FileImporterManager()
 
               var body: some View {
                   TabView(selection: $selectedTab) {
                       HomeTabView(appsManager: appsManager)
-                          .tabItem { Label("الرئيسية", systemImage: AppTab.home.icon) }
+                          .tabItem {
+                              Label("الرئيسية", systemImage: AppTab.home.icon)
+                          }
                           .tag(AppTab.home)
                       
                       AppsTabView(appsManager: appsManager)
-                          .tabItem { Label("التطبيقات", systemImage: AppTab.apps.icon) }
+                          .tabItem {
+                              Label("التطبيقات", systemImage: AppTab.apps.icon)
+                          }
                           .tag(AppTab.apps)
-
-                      FilesTabView(fileImporter: fileImporter)
-                          .tabItem { Label("الملفات", systemImage: AppTab.files.icon) }
-                          .tag(AppTab.files)
                   }
                   .preferredColorScheme(.none)
                   .onAppear {
@@ -1055,8 +924,10 @@ jobs:
               }
           }
           VIPEOF
+          echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
 
-          # HomeTabView.swift
+      - name: Generate Source - HomeTabView.swift
+        run: |
           cat > HomeTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -1068,10 +939,13 @@ jobs:
               @State private var selectedApp: AppItem?
               @Environment(\.colorScheme) var scheme
 
+              // Featured sections
               private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
               private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
               private var trending: [AppItem] { appsManager.apps.filter { $0.isNew }.prefix(8).map { $0 } }
               private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
+              private var newThisWeek: [AppItem] { appsManager.newThisWeek }
+              private var kurdApps: [AppItem] { appsManager.apps(for: .kurd) }
 
               var body: some View {
                   NavigationView {
@@ -1082,9 +956,28 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
-                                  StoreHeroBanner().padding(.top, 6)
+                                  // 1) Hero Banner
+                                  StoreHeroBanner()
+                                      .padding(.top, 6)
+
+                                  // 2) Ad Carousel
                                   AdImageCarousel(images: AppConstants.adBanners)
 
+                                  // 3) NEW THIS WEEK (highlighted - top of feed)
+                                  if !newThisWeek.isEmpty {
+                                      sectionHeader(title: "🆕 جديد هذا الأسبوع", icon: "sparkles", color: .pink)
+                                      ScrollView(.horizontal, showsIndicators: false) {
+                                          HStack(spacing: 12) {
+                                              ForEach(newThisWeek, id: \.id) { app in
+                                                  NewThisWeekCard(app: app)
+                                                      .contentShape(Rectangle())
+                                                      .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
+                                              }
+                                          }.padding(.horizontal, 16)
+                                      }
+                                  }
+
+                                  // 4) Popular (21s source)
                                   if !popular.isEmpty {
                                       sectionHeader(title: "🔥 الأكثر شعبية", icon: "flame.fill", color: .orange)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -1098,11 +991,13 @@ jobs:
                                       }
                                   }
 
-                                  if !trending.isEmpty {
-                                      sectionHeader(title: "✨ جديد هذا الأسبوع", icon: "sparkles", color: .purple)
+                                  // 5) KurdStore featured (separate brand strip)
+                                  if !kurdApps.isEmpty {
+                                      sectionHeader(title: "🟧 من KurdStore", icon: "k.circle.fill",
+                                                    color: Color(red: 0.95, green: 0.45, blue: 0.20))
                                       ScrollView(.horizontal, showsIndicators: false) {
                                           HStack(spacing: 12) {
-                                              ForEach(trending, id: \.id) { app in
+                                              ForEach(kurdApps.prefix(8), id: \.id) { app in
                                                   FeaturedAppCard(app: app)
                                                       .contentShape(Rectangle())
                                                       .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
@@ -1111,6 +1006,7 @@ jobs:
                                       }
                                   }
 
+                                  // 6) Top Downloads
                                   if !topRated.isEmpty {
                                       sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -1125,6 +1021,7 @@ jobs:
                                       }
                                   }
 
+                                  // 7) Latest Apps
                                   sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                                   ForEach(newest, id: \.id) { app in
                                       AppCardView(app: app)
@@ -1139,12 +1036,20 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              Text("21s").font(.system(size: 20, weight: .bold)).foregroundColor(.vipPurple)
+                              HStack(spacing: 8) {
+                                  Text("21s")
+                                      .font(.system(size: 20, weight: .bold))
+                                      .foregroundColor(.vipPurple)
+                              }
                           }
-                          ToolbarItem(placement: .navigationBarTrailing) { TopRightIconView() }
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              TopRightIconView()
+                          }
                       }
                   }
-                  .sheet(item: $selectedApp) { app in AppDetailView(app: app) }
+                  .sheet(item: $selectedApp) { app in
+                      AppDetailView(app: app)
+                  }
               }
 
               private func sectionHeader(title: String, icon: String, color: Color = .vipPurple) -> some View {
@@ -1174,12 +1079,14 @@ jobs:
                                   img.resizable().aspectRatio(contentMode: .fill)
                                       .frame(width: 56, height: 56)
                                       .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                      .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.45), lineWidth: 1.5))
+                                      .overlay(RoundedRectangle(cornerRadius: 14)
+                                          .stroke(Color.white.opacity(0.45), lineWidth: 1.5))
                               } else {
                                   RoundedRectangle(cornerRadius: 14)
                                       .fill(Color.white.opacity(0.2))
                                       .frame(width: 56, height: 56)
-                                      .overlay(Image(systemName: "storefront.fill").font(.system(size: 22)).foregroundColor(.white.opacity(0.6)))
+                                      .overlay(Image(systemName: "storefront.fill")
+                                          .font(.system(size: 22)).foregroundColor(.white.opacity(0.6)))
                               }
                           }
                       }
@@ -1188,8 +1095,14 @@ jobs:
                       Spacer(minLength: 16)
 
                       VStack(alignment: .center, spacing: 5) {
-                          Text("متجر VIP21").font(.system(size: 19, weight: .black, design: .rounded)).foregroundColor(.white)
-                          Text("آخر التطبيقات المحدثة").font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.82)).multilineTextAlignment(.center)
+                          Text("متجر VIP21")
+                              .font(.system(size: 19, weight: .black, design: .rounded))
+                              .foregroundColor(.white)
+
+                          Text("آخر التطبيقات المحدثة")
+                              .font(.system(size: 12, weight: .medium))
+                              .foregroundColor(.white.opacity(0.82))
+                              .multilineTextAlignment(.center)
                       }
                       .frame(maxWidth: .infinity)
 
@@ -1197,28 +1110,48 @@ jobs:
 
                       VStack(spacing: 4) {
                           HStack(spacing: 3) {
-                              Image(systemName: "crown.fill").font(.system(size: 9)).foregroundColor(.vipGold)
-                              Text("VIP").font(.system(size: 10, weight: .black)).foregroundColor(.vipGold)
+                              Image(systemName: "crown.fill")
+                                  .font(.system(size: 9))
+                                  .foregroundColor(.vipGold)
+                              Text("VIP")
+                                  .font(.system(size: 10, weight: .black))
+                                  .foregroundColor(.vipGold)
                           }
                           .padding(.horizontal, 10).padding(.vertical, 4)
-                          .background(Capsule().fill(Color.white.opacity(0.18)).overlay(Capsule().stroke(Color.vipGold.opacity(0.5), lineWidth: 1)))
-                          Text("2026").font(.system(size: 10, weight: .semibold)).foregroundColor(.white.opacity(0.65))
+                          .background(
+                              Capsule().fill(Color.white.opacity(0.18))
+                                  .overlay(Capsule().stroke(Color.vipGold.opacity(0.5), lineWidth: 1))
+                          )
+
+                          Text("2026")
+                              .font(.system(size: 10, weight: .semibold))
+                              .foregroundColor(.white.opacity(0.65))
                       }
                       .padding(.trailing, 20)
                   }
                   .frame(height: 90)
                   .background(
                       ZStack {
-                          LinearGradient(colors: [Color(red: 0.35, green: 0.10, blue: 0.85),
-                                                  Color(red: 0.10, green: 0.35, blue: 0.95),
-                                                  Color(red: 0.00, green: 0.55, blue: 0.90)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing)
-                          Circle().fill(Color.white.opacity(0.07)).frame(width: 140).offset(x: 60, y: -40)
-                          Circle().fill(Color.white.opacity(0.05)).frame(width: 100).offset(x: -80, y: 30)
+                          LinearGradient(
+                              colors: [
+                                  Color(red: 0.35, green: 0.10, blue: 0.85),
+                                  Color(red: 0.10, green: 0.35, blue: 0.95),
+                                  Color(red: 0.00, green: 0.55, blue: 0.90)
+                              ],
+                              startPoint: .topLeading,
+                              endPoint: .bottomTrailing
+                          )
+                          Circle().fill(Color.white.opacity(0.07))
+                              .frame(width: 140).offset(x: 60, y: -40)
+                          Circle().fill(Color.white.opacity(0.05))
+                              .frame(width: 100).offset(x: -80, y: 30)
                       }
                   )
                   .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                  .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                  .overlay(
+                      RoundedRectangle(cornerRadius: 20, style: .continuous)
+                          .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                  )
                   .shadow(color: Color(red: 0.35, green: 0.10, blue: 0.85).opacity(0.50), radius: 16, x: 0, y: 7)
                   .shadow(color: .blue.opacity(0.22), radius: 24, x: 0, y: 12)
                   .padding(.horizontal, 16)
@@ -1238,10 +1171,12 @@ jobs:
                           ForEach(Array(images.enumerated()), id: \.offset) { idx, item in
                               CachedAsyncImage(url: URL(string: item.image)) { phase in
                                   switch phase {
-                                  case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
+                                  case .success(let img):
+                                      img.resizable().aspectRatio(contentMode: .fill)
                                   default:
                                       ZStack {
-                                          LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                          LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
+                                                         startPoint: .topLeading, endPoint: .bottomTrailing)
                                           ProgressView().tint(.white)
                                       }
                                   }
@@ -1250,7 +1185,10 @@ jobs:
                               .frame(height: 90)
                               .clipped()
                               .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                              .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                              .overlay(
+                                  RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                      .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                              )
                               .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
                               .contentShape(Rectangle())
                               .onTapGesture {
@@ -1288,21 +1226,86 @@ jobs:
                   ZStack(alignment: .bottomLeading) {
                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                           switch phase {
-                          case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
-                          default: LinearGradient(colors: [.vipPurple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+                          case .success(let img):
+                              img.resizable().aspectRatio(contentMode: .fill)
+                          default:
+                              LinearGradient(colors: [.vipPurple, .blue],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing)
                           }
                       }
                       .frame(width: 220, height: 130)
                       .clipped()
-                      .overlay(LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
+                      .overlay(
+                          LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.75)],
+                                         startPoint: .top, endPoint: .bottom)
+                      )
                       VStack(alignment: .leading, spacing: 3) {
-                          Text(app.name).font(.system(size: 14, weight: .bold)).foregroundColor(.white).lineLimit(1)
-                          Text(app.formattedSize).font(.system(size: 10)).foregroundColor(.white.opacity(0.85))
+                          HStack(spacing: 4) {
+                              if app.isNew { NewBadge() }
+                              SourceBadge(source: app.source)
+                          }
+                          Text(app.name).font(.system(size: 14, weight: .bold))
+                              .foregroundColor(.white).lineLimit(1)
+                          Text(app.formattedSize).font(.system(size: 10))
+                              .foregroundColor(.white.opacity(0.85))
                       }.padding(10)
                   }
                   .frame(width: 220, height: 130)
                   .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                   .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+              }
+          }
+
+          // MARK: - New This Week Card (larger, gradient-tinted)
+          struct NewThisWeekCard: View {
+              let app: AppItem
+              @Environment(\.colorScheme) var scheme
+
+              var body: some View {
+                  ZStack(alignment: .bottomLeading) {
+                      // background gradient (theme by source)
+                      LinearGradient(
+                          colors: app.source == .kurd
+                              ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                              : [Color.pink, Color.purple, Color.indigo],
+                          startPoint: .topLeading, endPoint: .bottomTrailing
+                      )
+
+                      CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
+                          switch phase {
+                          case .success(let img):
+                              img.resizable().aspectRatio(contentMode: .fill)
+                          default:
+                              Color.white.opacity(0.15)
+                          }
+                      }
+                      .frame(width: 180, height: 200)
+                      .clipped()
+                      .opacity(0.35)
+
+                      VStack(alignment: .leading, spacing: 6) {
+                          HStack(spacing: 4) {
+                              NewBadge()
+                              SourceBadge(source: app.source)
+                          }
+                          Spacer()
+                          Text(app.name)
+                              .font(.system(size: 15, weight: .heavy))
+                              .foregroundColor(.white).lineLimit(2)
+                          Text(app.formattedSize)
+                              .font(.system(size: 11, weight: .medium))
+                              .foregroundColor(.white.opacity(0.85))
+                      }
+                      .padding(12)
+                      .frame(width: 180, height: 200, alignment: .bottomLeading)
+                  }
+                  .frame(width: 180, height: 200)
+                  .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                  .overlay(
+                      RoundedRectangle(cornerRadius: 20, style: .continuous)
+                          .stroke(Color.white.opacity(0.20), lineWidth: 1)
+                  )
+                  .shadow(color: .pink.opacity(0.35), radius: 10, y: 5)
               }
           }
 
@@ -1333,34 +1336,55 @@ jobs:
                               if let img = phase.image {
                                   img.resizable().aspectRatio(contentMode: .fill)
                               } else {
-                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
                               }
                           }
                           .frame(width: 160, height: 110)
                           .clipped()
-                          .overlay(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
+                          .overlay(
+                              LinearGradient(colors: [.clear, .black.opacity(0.55)],
+                                             startPoint: .top, endPoint: .bottom)
+                          )
 
                           ZStack {
-                              Circle().fill(LinearGradient(colors: rankGradient, startPoint: .topLeading, endPoint: .bottomTrailing))
+                              Circle()
+                                  .fill(LinearGradient(colors: rankGradient,
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
                                   .frame(width: 32, height: 32)
                                   .shadow(color: rankGradient.first!.opacity(0.6), radius: 6, y: 2)
-                              Text("\(rank)").font(.system(size: 13, weight: .black)).foregroundColor(.white)
+                              Text("\(rank)")
+                                  .font(.system(size: 13, weight: .black))
+                                  .foregroundColor(.white)
                           }
                           .padding(8)
                       }
                       .frame(width: 160, height: 110)
 
                       VStack(alignment: .leading, spacing: 4) {
-                          Text(app.name).font(.system(size: 13, weight: .bold)).foregroundColor(.primary).lineLimit(1)
-                          Text(shortDesc).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2).multilineTextAlignment(.leading)
+                          Text(app.name)
+                              .font(.system(size: 13, weight: .bold))
+                              .foregroundColor(.primary)
+                              .lineLimit(1)
+
+                          Text(shortDesc)
+                              .font(.system(size: 10))
+                              .foregroundColor(.secondary)
+                              .lineLimit(2)
+                              .multilineTextAlignment(.leading)
+
                           HStack(spacing: 4) {
+                              SourceBadge(source: app.source)
                               if let cat = app.category {
-                                  Text(cat).font(.system(size: 8, weight: .semibold)).foregroundColor(.vipPurple)
+                                  Text(cat)
+                                      .font(.system(size: 8, weight: .semibold))
+                                      .foregroundColor(.vipPurple)
                                       .padding(.horizontal, 5).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                               }
                               Spacer()
-                              Text(app.formattedSize).font(.system(size: 9)).foregroundColor(.gray)
+                              Text(app.formattedSize)
+                                  .font(.system(size: 9)).foregroundColor(.gray)
                           }
                       }
                       .padding(.horizontal, 10)
@@ -1389,7 +1413,8 @@ jobs:
                                   .frame(width: 58, height: 58).cornerRadius(14).shadow(color: .black.opacity(0.1), radius: 5)
                           default:
                               RoundedRectangle(cornerRadius: 14)
-                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
                                   .frame(width: 58, height: 58)
                                   .overlay(Image(systemName: "app.fill").foregroundColor(.white.opacity(0.5)))
                           }
@@ -1404,6 +1429,7 @@ jobs:
                           Text(app.localizedDescription.replacingOccurrences(of: "Injected with ", with: ""))
                               .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                           HStack(spacing: 10) {
+                              SourceBadge(source: app.source)
                               Label(app.formattedSize, systemImage: "memorychip").font(.system(size: 9))
                               Label(app.formattedDate, systemImage: "calendar").font(.system(size: 9))
                           }.foregroundColor(.gray.opacity(0.7))
@@ -1414,7 +1440,7 @@ jobs:
               }
           }
 
-          // MARK: - Marquee Text
+          // MARK: - Marquee Text (نص متحرك)
           struct MarqueeText: View {
               let text: String
               var font: Font = .system(size: 13, weight: .semibold)
@@ -1485,7 +1511,10 @@ jobs:
                   }
                   .padding(.vertical, 6)
                   .padding(.horizontal, 10)
-                  .background(LinearGradient(colors: [.pink, .vipPurple, .blue], startPoint: .leading, endPoint: .trailing))
+                  .background(
+                      LinearGradient(colors: [.pink, .vipPurple, .blue],
+                                     startPoint: .leading, endPoint: .trailing)
+                  )
                   .clipShape(Capsule())
                   .shadow(color: .vipPurple.opacity(0.30), radius: 8, x: 0, y: 3)
                   .padding(.horizontal, 12)
@@ -1495,424 +1524,10 @@ jobs:
               }
           }
           VIPEOF
+          echo "HomeTabView.swift: $(wc -l < HomeTabView.swift) lines"
 
-          # FilesTabView.swift
-          cat > FilesTabView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import Foundation
-          import UniformTypeIdentifiers
-
-          // MARK: - Files Tab (Real Importer)
-          struct FilesTabView: View {
-              @ObservedObject var fileImporter: FileImporterManager
-              @State private var showImporter = false
-              @State private var selectedFile: ImportedFile?
-              @State private var showDeleteConfirm: ImportedFile?
-              @State private var filter: ImportedFile.FileType? = nil
-              @State private var searchText = ""
-              @Environment(\.colorScheme) var scheme
-
-              var filteredFiles: [ImportedFile] {
-                  var list = fileImporter.files
-                  if let f = filter { list = list.filter { $0.fileType == f } }
-                  if !searchText.isEmpty {
-                      list = list.filter {
-                          $0.originalName.localizedCaseInsensitiveContains(searchText) ||
-                          ($0.appName ?? "").localizedCaseInsensitiveContains(searchText) ||
-                          ($0.bundleID ?? "").localizedCaseInsensitiveContains(searchText)
-                      }
-                  }
-                  return list
-              }
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 16) {
-                              FilesStatsCard(importer: fileImporter).padding(.horizontal)
-                              FilesTypeFilter(selected: $filter).padding(.horizontal)
-
-                              HStack(spacing: 10) {
-                                  Image(systemName: "magnifyingglass").foregroundColor(.gray)
-                                  TextField("ابحث في الملفات...", text: $searchText)
-                                      .multilineTextAlignment(.trailing)
-                                  if !searchText.isEmpty {
-                                      Button(action: { searchText = "" }) {
-                                          Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
-                                      }
-                                  }
-                              }
-                              .padding(12)
-                              .background(RoundedRectangle(cornerRadius: 12)
-                                  .fill(scheme == .dark ? Color.cardDark : Color.white)
-                                  .shadow(color: .black.opacity(0.05), radius: 6))
-                              .padding(.horizontal)
-
-                              if filteredFiles.isEmpty {
-                                  EmptyFilesView(showImporter: $showImporter).padding(.top, 40)
-                              } else {
-                                  LazyVStack(spacing: 10) {
-                                      ForEach(filteredFiles) { file in
-                                          ImportedFileRow(
-                                              file: file,
-                                              importer: fileImporter,
-                                              onTap: { selectedFile = file },
-                                              onDelete: { showDeleteConfirm = file }
-                                          )
-                                          .padding(.horizontal)
-                                      }
-                                  }
-                              }
-                          }
-                          .padding(.bottom, 30)
-                      }
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .principal) {
-                              Text("21s").font(.system(size: 20, weight: .bold)).foregroundColor(.vipPurple)
-                          }
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button(action: { showImporter = true }) {
-                                  Image(systemName: "plus.circle.fill").font(.system(size: 22)).foregroundColor(.vipPurple)
-                              }
-                          }
-                      }
-                  }
-                  .fileImporter(
-                      isPresented: $showImporter,
-                      allowedContentTypes: allowedTypes,
-                      allowsMultipleSelection: true,
-                      onCompletion: handleImport
-                  )
-                  .alert("حذف الملف؟", isPresented: Binding(
-                      get: { showDeleteConfirm != nil },
-                      set: { if !$0 { showDeleteConfirm = nil } }
-                  )) {
-                      Button("حذف", role: .destructive) {
-                          if let f = showDeleteConfirm { fileImporter.delete(f) }
-                          showDeleteConfirm = nil
-                      }
-                      Button("إلغاء", role: .cancel) { showDeleteConfirm = nil }
-                  } message: {
-                      Text("سيتم حذف الملف نهائياً من الجهاز")
-                  }
-                  .sheet(item: $selectedFile) { file in
-                      ImportedFileDetailView(file: file, importer: fileImporter)
-                  }
-              }
-
-              private var allowedTypes: [UTType] {
-                  var types: [UTType] = [.data, .archive, .item]
-                  if let ipa = UTType("com.apple.itunes.ipa") { types.append(ipa) }
-                  if let mp = UTType("com.apple.mobileprovision") { types.append(mp) }
-                  if let p12 = UTType("com.rsa.pkcs-12") { types.append(p12) }
-                  return types
-              }
-
-              private func handleImport(_ results: [URL]) {
-                  Task {
-                      var importedCount = 0
-                      for url in results {
-                          let ok = await fileImporter.importFile(from: url)
-                          if ok { importedCount += 1 }
-                      }
-                      if importedCount > 0 { HapticManager.shared.notification(.success) }
-                  }
-              }
-          }
-
-          // MARK: - Stats Card
-          struct FilesStatsCard: View {
-              @ObservedObject var importer: FileImporterManager
-
-              var ipaCount: Int    { importer.files.filter { $0.fileType == .ipa }.count }
-              var p12Count: Int    { importer.files.filter { $0.fileType == .p12 }.count }
-              var mpCount: Int     { importer.files.filter { $0.fileType == .mobileprovision }.count }
-              var totalSize: Int64 { importer.files.reduce(0) { $0 + $1.sizeBytes } }
-
-              var body: some View {
-                  VStack(spacing: 14) {
-                      HStack {
-                          Spacer()
-                          Text("ملفاتي").font(.system(size: 18, weight: .heavy))
-                      }
-                      HStack(spacing: 0) {
-                          statBox(value: "\(ipaCount)", label: "IPA",   gradient: [.vipPurple, .blue])
-                          Divider().frame(height: 38)
-                          statBox(value: "\(p12Count)", label: "P12",   gradient: [.orange, .red])
-                          Divider().frame(height: 38)
-                          statBox(value: "\(mpCount)",  label: "MobProv", gradient: [.green, .teal])
-                          Divider().frame(height: 38)
-                          statBox(value: formatted(totalSize), label: "إجمالي", gradient: [.pink, .purple])
-                      }
-                  }
-                  .padding(16)
-                  .background(RoundedRectangle(cornerRadius: 20)
-                      .fill(LinearGradient(colors: [Color.vipPurple.opacity(0.15), Color.blue.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                      .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.vipPurple.opacity(0.2), lineWidth: 1)))
-              }
-
-              private func statBox(value: String, label: String, gradient: [Color]) -> some View {
-                  VStack(spacing: 5) {
-                      Text(value).font(.system(size: 16, weight: .black))
-                          .foregroundStyle(LinearGradient(colors: gradient, startPoint: .top, endPoint: .bottom))
-                      Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
-                  }.frame(maxWidth: .infinity)
-              }
-
-              private func formatted(_ bytes: Int64) -> String {
-                  ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-              }
-          }
-
-          // MARK: - Type Filter
-          struct FilesTypeFilter: View {
-              @Binding var selected: ImportedFile.FileType?
-              @Environment(\.colorScheme) var scheme
-
-              var body: some View {
-                  ScrollView(.horizontal, showsIndicators: false) {
-                      HStack(spacing: 8) {
-                          chip(title: "الكل", gradient: [.gray, .gray.opacity(0.7)], active: selected == nil) { selected = nil }
-                          ForEach(ImportedFile.FileType.allCases, id: \.self) { type in
-                              chip(title: type.rawValue, gradient: type.gradient, active: selected == type) { selected = type }
-                          }
-                      }
-                  }
-              }
-
-              private func chip(title: String, gradient: [Color], active: Bool, action: @escaping () -> Void) -> some View {
-                  Button(action: { HapticManager.shared.selection(); action() }) {
-                      Text(title)
-                          .font(.system(size: 12, weight: active ? .bold : .medium))
-                          .foregroundColor(active ? .white : .primary)
-                          .padding(.horizontal, 14).padding(.vertical, 8)
-                          .background(
-                              Capsule().fill(active
-                                  ? LinearGradient(colors: gradient, startPoint: .leading, endPoint: .trailing)
-                                  : LinearGradient(colors: [scheme == .dark ? Color(white: 0.15) : Color(white: 0.93)], startPoint: .leading, endPoint: .trailing))
-                          )
-                  }
-              }
-          }
-
-          // MARK: - Empty Files View
-          struct EmptyFilesView: View {
-              @Binding var showImporter: Bool
-              var body: some View {
-                  VStack(spacing: 18) {
-                      Image(systemName: "tray.and.arrow.down.fill")
-                          .font(.system(size: 64)).foregroundColor(.vipPurple.opacity(0.5))
-                      Text("لا توجد ملفات بعد").font(.system(size: 18, weight: .bold))
-                      Text("استورد ملفات IPA أو P12 أو Mobile Provision من تطبيق الملفات")
-                          .font(.system(size: 13)).foregroundColor(.gray)
-                          .multilineTextAlignment(.center).padding(.horizontal, 40)
-                      GradientButton(title: "استيراد ملف الآن", icon: "plus", gradient: [.vipPurple, .blue]) {
-                          showImporter = true
-                      }
-                      .frame(width: 220).padding(.top, 8)
-                  }
-              }
-          }
-
-          // MARK: - File Row
-          struct ImportedFileRow: View {
-              let file: ImportedFile
-              @ObservedObject var importer: FileImporterManager
-              let onTap: () -> Void
-              let onDelete: () -> Void
-              @Environment(\.colorScheme) var scheme
-
-              var body: some View {
-                  Button(action: onTap) {
-                      HStack(spacing: 12) {
-                          iconView
-                          VStack(alignment: .trailing, spacing: 4) {
-                              HStack(spacing: 6) {
-                                  if file.fileType == .ipa, let _ = file.bundleID {
-                                      Text(file.bundleID ?? "")
-                                          .font(.system(size: 9, weight: .semibold)).foregroundColor(.white)
-                                          .padding(.horizontal, 5).padding(.vertical, 2)
-                                          .background(Capsule().fill(Color.vipPurple))
-                                  }
-                                  Text(file.appName ?? file.originalName)
-                                      .font(.system(size: 14, weight: .bold)).lineLimit(1)
-                              }
-                              HStack(spacing: 8) {
-                                  if let v = file.appVersion, file.fileType == .ipa {
-                                      Label(v, systemImage: "number").font(.system(size: 10))
-                                  }
-                                  Label(file.formattedSize, systemImage: "internaldrive").font(.system(size: 10))
-                                  Label(file.formattedDate, systemImage: "calendar").font(.system(size: 10))
-                              }
-                              .foregroundColor(.gray)
-                          }
-                          Spacer()
-                          VStack(spacing: 8) {
-                              Image(systemName: "chevron.left").font(.system(size: 12)).foregroundColor(.gray)
-                              Button(action: onDelete) {
-                                  Image(systemName: "trash.fill").font(.system(size: 13)).foregroundColor(.red)
-                                      .padding(6).background(Circle().fill(Color.red.opacity(0.1)))
-                              }
-                              .buttonStyle(PlainButtonStyle())
-                          }
-                      }
-                      .padding(12)
-                      .background(RoundedRectangle(cornerRadius: 16)
-                          .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
-                          .shadow(color: .black.opacity(0.05), radius: 6, y: 2))
-                      .overlay(RoundedRectangle(cornerRadius: 16).stroke(file.fileType.gradient.first?.opacity(0.25) ?? .gray.opacity(0.2), lineWidth: 1))
-                  }
-                  .buttonStyle(PlainButtonStyle())
-              }
-
-              @ViewBuilder
-              private var iconView: some View {
-                  if let iconURL = importer.iconURL(for: file), let data = try? Data(contentsOf: iconURL),
-                     let uiImg = UIImage(data: data) {
-                      Image(uiImage: uiImg).resizable().aspectRatio(contentMode: .fill)
-                          .frame(width: 54, height: 54).clipShape(RoundedRectangle(cornerRadius: 12))
-                  } else {
-                      ZStack {
-                          RoundedRectangle(cornerRadius: 12)
-                              .fill(LinearGradient(colors: file.fileType.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
-                              .frame(width: 54, height: 54)
-                          Image(systemName: file.fileType.systemIcon).font(.system(size: 22)).foregroundColor(.white)
-                      }
-                  }
-              }
-          }
-
-          // MARK: - File Detail
-          struct ImportedFileDetailView: View {
-              let file: ImportedFile
-              @ObservedObject var importer: FileImporterManager
-              @Environment(\.dismiss) var dismiss
-              @State private var renameText = ""
-              @State private var notesText = ""
-              @State private var showRename = false
-              @Environment(\.colorScheme) var scheme
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 18) {
-                              ZStack {
-                                  Circle().fill(LinearGradient(colors: file.fileType.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
-                                      .frame(width: 130, height: 130)
-                                      .shadow(color: file.fileType.gradient.first?.opacity(0.5) ?? .blue.opacity(0.4), radius: 18, y: 8)
-                                  if let iconURL = importer.iconURL(for: file),
-                                     let data = try? Data(contentsOf: iconURL),
-                                     let uiImg = UIImage(data: data) {
-                                      Image(uiImage: uiImg).resizable().aspectRatio(contentMode: .fill)
-                                          .frame(width: 110, height: 110).clipShape(Circle())
-                                          .overlay(Circle().stroke(Color.white, lineWidth: 3))
-                                  } else {
-                                      Image(systemName: file.fileType.systemIcon).font(.system(size: 50)).foregroundColor(.white)
-                                  }
-                              }
-                              .padding(.top, 12)
-
-                              VStack(spacing: 4) {
-                                  Text(file.appName ?? file.originalName).font(.system(size: 22, weight: .black))
-                                  Text(file.fileType.displayName)
-                                      .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
-                                      .padding(.horizontal, 12).padding(.vertical, 4)
-                                      .background(Capsule().fill(LinearGradient(colors: file.fileType.gradient, startPoint: .leading, endPoint: .trailing)))
-                              }
-
-                              LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                                  infoCell(icon: "memorychip", label: "الحجم", value: file.formattedSize)
-                                  infoCell(icon: "calendar", label: "تاريخ الاستيراد", value: file.formattedDate)
-                                  if let b = file.bundleID { infoCell(icon: "app.badge", label: "Bundle ID", value: b) }
-                                  if let v = file.appVersion { infoCell(icon: "number", label: "النسخة", value: v) }
-                                  infoCell(icon: "doc.text", label: "الاسم الأصلي", value: file.originalName)
-                                  infoCell(icon: "tag", label: "النوع", value: file.fileType.rawValue)
-                              }
-                              .padding(.horizontal)
-
-                              VStack(alignment: .trailing, spacing: 8) {
-                                  HStack {
-                                      Spacer()
-                                      Text("ملاحظات").font(.system(size: 14, weight: .bold))
-                                  }
-                                  TextEditor(text: $notesText)
-                                      .frame(height: 90)
-                                      .padding(8)
-                                      .background(RoundedRectangle(cornerRadius: 12).fill(scheme == .dark ? Color.cardDark : Color(white: 0.96)))
-                                      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                                      .onChange(of: notesText) { newValue in
-                                          importer.updateNotes(for: file, notes: newValue)
-                                      }
-                              }
-                              .padding(.horizontal)
-
-                              VStack(spacing: 10) {
-                                  GradientButton(title: "إعادة تسمية", icon: "pencil", gradient: [.blue, .cyan]) {
-                                      renameText = file.originalName
-                                      showRename = true
-                                  }
-                                  .padding(.horizontal, 30)
-
-                                  GradientButton(title: "فتح موقع الملف", icon: "folder", gradient: [.green, .teal]) {
-                                      let url = importer.storedURL(for: file)
-                                      UIApplication.shared.open(url)
-                                  }
-                                  .padding(.horizontal, 30)
-
-                                  Button(action: {
-                                      HapticManager.shared.notification(.warning)
-                                      importer.delete(file)
-                                      dismiss()
-                                  }) {
-                                      HStack {
-                                          Image(systemName: "trash.fill")
-                                          Text("حذف الملف")
-                                      }
-                                      .font(.system(size: 14, weight: .bold))
-                                      .foregroundColor(.white)
-                                      .frame(maxWidth: .infinity).frame(height: 44)
-                                      .background(LinearGradient(colors: [.red, .pink], startPoint: .leading, endPoint: .trailing))
-                                      .cornerRadius(12)
-                                  }
-                                  .padding(.horizontal, 30)
-                              }
-                              .padding(.top, 6)
-                          }
-                          .padding(.bottom, 30)
-                      }
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarLeading) {
-                              Button("إغلاق") { dismiss() }
-                          }
-                      }
-                  }
-                  .onAppear { notesText = file.notes }
-                  .alert("إعادة تسمية", isPresented: $showRename) {
-                      TextField("اسم الملف", text: $renameText)
-                      Button("حفظ") { importer.rename(file, to: renameText) }
-                      Button("إلغاء", role: .cancel) {}
-                  }
-              }
-
-              private func infoCell(icon: String, label: String, value: String) -> some View {
-                  VStack(spacing: 6) {
-                      Image(systemName: icon).font(.system(size: 18))
-                          .foregroundStyle(LinearGradient(colors: file.fileType.gradient, startPoint: .top, endPoint: .bottom))
-                      Text(label).font(.system(size: 10)).foregroundColor(.gray)
-                      Text(value).font(.system(size: 12, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
-                  }
-                  .frame(maxWidth: .infinity).padding(12)
-                  .background(RoundedRectangle(cornerRadius: 14)
-                      .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
-                      .shadow(color: .black.opacity(0.04), radius: 4))
-              }
-          }
-          VIPEOF
-
-          # AppsTabView.swift
+      - name: Generate Source - AppsTabView.swift
+        run: |
           cat > AppsTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -1926,6 +1541,8 @@ jobs:
               @State private var searchText = ""
               @State private var isSearchFocused = false
               @State private var selectedCategory: String = "الكل"
+              @State private var selectedSource: AppSource = .all
+              @State private var newOnly: Bool = false
               @State private var sortMode: AppSortMode = .newest
               @Environment(\.colorScheme) var scheme
 
@@ -1942,9 +1559,25 @@ jobs:
 
               var filteredApps: [AppItem] {
                   var base = appsManager.apps
+
+                  // Source filter
+                  switch selectedSource {
+                  case .all:     break
+                  case .primary: base = base.filter { $0.source == .primary }
+                  case .kurd:    base = base.filter { $0.source == .kurd }
+                  }
+
+                  // Category filter
                   if selectedCategory != "الكل" {
                       base = base.filter { $0.category == selectedCategory }
                   }
+
+                  // "New this week" toggle
+                  if newOnly {
+                      base = base.filter { $0.isNew }
+                  }
+
+                  // Search
                   if !searchText.isEmpty {
                       base = base.filter {
                           $0.name.localizedCaseInsensitiveContains(searchText) ||
@@ -1952,13 +1585,16 @@ jobs:
                           $0.developerName.localizedCaseInsensitiveContains(searchText)
                       }
                   }
+
                   switch sortMode {
-                  case .newest:  return base
+                  case .newest:  return base.sorted { ($0.parsedDate ?? .distantPast) > ($1.parsedDate ?? .distantPast) }
                   case .popular: return base.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }
                   case .name:    return base.sorted { $0.name < $1.name }
                   case .size:    return base.sorted { $0.size > $1.size }
                   }
               }
+
+              var newThisWeekCount: Int { appsManager.newThisWeek.count }
 
               var body: some View {
                   NavigationView {
@@ -1969,19 +1605,23 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
+                                  // Header
                                   HStack(spacing: 12) {
                                       ZStack {
                                           RoundedRectangle(cornerRadius: 14)
-                                              .fill(LinearGradient(colors: [.vipPurple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                              .fill(LinearGradient(colors: [.vipPurple, .blue],
+                                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
                                               .frame(width: 46, height: 46)
                                               .shadow(color: .vipPurple.opacity(0.4), radius: 6, y: 3)
                                           Image(systemName: "square.grid.2x2.fill").foregroundColor(.white)
                                       }
                                       VStack(alignment: .trailing, spacing: 2) {
                                           Text("كل التطبيقات").font(.system(size: 18, weight: .heavy))
-                                          Text("\(appsManager.apps.count) تطبيق متوفر").font(.system(size: 11)).foregroundColor(.gray)
+                                          Text("\(appsManager.apps.count) تطبيق  •  \(newThisWeekCount) جديد هذا الأسبوع")
+                                              .font(.system(size: 11)).foregroundColor(.gray)
                                       }
                                       Spacer()
+                                      // Sort menu
                                       Menu {
                                           ForEach(AppSortMode.allCases, id: \.self) { mode in
                                               Button(action: { sortMode = mode }) {
@@ -1993,8 +1633,10 @@ jobs:
                                           }
                                       } label: {
                                           HStack(spacing: 4) {
-                                              Image(systemName: "arrow.up.arrow.down").font(.system(size: 12, weight: .semibold))
-                                              Text(sortMode.rawValue).font(.system(size: 12, weight: .semibold))
+                                              Image(systemName: "arrow.up.arrow.down")
+                                                  .font(.system(size: 12, weight: .semibold))
+                                              Text(sortMode.rawValue)
+                                                  .font(.system(size: 12, weight: .semibold))
                                           }
                                           .foregroundColor(.vipPurple)
                                           .padding(.horizontal, 10).padding(.vertical, 6)
@@ -2002,9 +1644,11 @@ jobs:
                                       }
                                   }.padding(.horizontal)
 
+                                  // Search Bar
                                   HStack(spacing: 10) {
                                       Image(systemName: "magnifyingglass")
-                                          .foregroundColor(isSearchFocused ? .vipPurple : .gray).font(.system(size: 15))
+                                          .foregroundColor(isSearchFocused ? .vipPurple : .gray)
+                                          .font(.system(size: 15))
                                       TextField("ابحث عن تطبيق...", text: $searchText)
                                           .font(.system(size: 15)).multilineTextAlignment(.trailing)
                                           .onTapGesture { isSearchFocused = true }
@@ -2024,6 +1668,7 @@ jobs:
                                   .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
                                   .padding(.horizontal)
 
+                                  // Recent searches
                                   if isSearchFocused && searchText.isEmpty && !appsManager.recentSearches.isEmpty {
                                       VStack(alignment: .trailing, spacing: 6) {
                                           Text("بحث سابق").font(.system(size: 12)).foregroundColor(.gray).padding(.horizontal)
@@ -2044,6 +1689,68 @@ jobs:
                                       }.transition(.opacity)
                                   }
 
+                                  // Source Filter (الكل / 21s / KurdStore)
+                                  ScrollView(.horizontal, showsIndicators: false) {
+                                      HStack(spacing: 8) {
+                                          ForEach(AppSource.allCases) { src in
+                                              Button(action: { withAnimation(.spring()) { selectedSource = src } }) {
+                                                  HStack(spacing: 5) {
+                                                      Image(systemName: src.icon)
+                                                          .font(.system(size: 11, weight: .bold))
+                                                      Text(src.displayName)
+                                                          .font(.system(size: 12, weight: selectedSource == src ? .bold : .medium))
+                                                  }
+                                                  .foregroundColor(selectedSource == src ? .white : .primary)
+                                                  .padding(.horizontal, 12).padding(.vertical, 7)
+                                                  .background(
+                                                      Capsule().fill(selectedSource == src
+                                                          ? LinearGradient(
+                                                              colors: src == .kurd
+                                                                  ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                                                                  : [.vipPurple, .blue],
+                                                              startPoint: .leading, endPoint: .trailing
+                                                          )
+                                                          : LinearGradient(colors: [scheme == .dark ? Color(white: 0.15) : Color(white: 0.93), scheme == .dark ? Color(white: 0.15) : Color(white: 0.93)], startPoint: .leading, endPoint: .trailing)
+                                                      )
+                                                  )
+                                              }
+                                          }
+
+                                          // Divider
+                                          Rectangle()
+                                              .fill(Color.gray.opacity(0.25))
+                                              .frame(width: 1, height: 18)
+                                              .padding(.horizontal, 4)
+
+                                          // "جديد هذا الأسبوع" toggle
+                                          Button(action: { withAnimation(.spring()) { newOnly.toggle() } }) {
+                                              HStack(spacing: 5) {
+                                                  Image(systemName: newOnly ? "checkmark.circle.fill" : "sparkles")
+                                                      .font(.system(size: 11, weight: .bold))
+                                                  Text("جديد هذا الأسبوع")
+                                                      .font(.system(size: 12, weight: newOnly ? .bold : .medium))
+                                              }
+                                              .foregroundColor(newOnly ? .white : .primary)
+                                              .padding(.horizontal, 12).padding(.vertical, 7)
+                                              .background(
+                                                  Capsule().fill(newOnly
+                                                      ? LinearGradient(colors: [.pink, .purple], startPoint: .leading, endPoint: .trailing)
+                                                      : LinearGradient(colors: [scheme == .dark ? Color(white: 0.15) : Color(white: 0.93), scheme == .dark ? Color(white: 0.15) : Color(white: 0.93)], startPoint: .leading, endPoint: .trailing)
+                                                  )
+                                              )
+                                          }
+
+                                          if newOnly {
+                                              Text("\(filteredApps.count)")
+                                                  .font(.system(size: 10, weight: .heavy))
+                                                  .foregroundColor(.white)
+                                                  .padding(.horizontal, 8).padding(.vertical, 3)
+                                                  .background(Capsule().fill(Color.pink))
+                                          }
+                                      }.padding(.horizontal)
+                                  }
+
+                                  // Category Filter
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(categories, id: \.self) { cat in
@@ -2063,15 +1770,20 @@ jobs:
                                       }.padding(.horizontal)
                                   }
 
+                                  // Results count
                                   HStack {
                                       Spacer()
-                                      Text("\(filteredApps.count) نتيجة").font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
+                                      Text("\(filteredApps.count) نتيجة")
+                                          .font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
                                   }
 
+                                  // App List
                                   if filteredApps.isEmpty {
                                       VStack(spacing: 16) {
-                                          Image(systemName: "magnifyingglass").font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
-                                          Text("لا توجد نتائج لـ \"\(searchText)\"").font(.system(size: 16))
+                                          Image(systemName: "magnifyingglass")
+                                              .font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
+                                          Text("لا توجد نتائج لـ \"\(searchText)\"")
+                                              .font(.system(size: 16))
                                           Text("جرب بحثاً آخر").font(.system(size: 13)).foregroundColor(.gray)
                                       }.frame(maxWidth: .infinity).padding(.top, 60)
                                   } else {
@@ -2090,7 +1802,11 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              Text("21s").font(.system(size: 20, weight: .bold)).foregroundColor(.vipPurple)
+                              HStack(spacing: 8) {
+                                  Text("21s")
+                                      .font(.system(size: 20, weight: .bold))
+                                      .foregroundColor(.vipPurple)
+                              }
                           }
                       }
                   }
@@ -2107,6 +1823,7 @@ jobs:
 
               var body: some View {
                   HStack(spacing: 14) {
+                      // App Icon
                       ZStack(alignment: .bottomTrailing) {
                           CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                               if let img = phase.image {
@@ -2115,34 +1832,49 @@ jobs:
                               } else {
                                   ZStack {
                                       RoundedRectangle(cornerRadius: 14)
-                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.2), .blue.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.2), .blue.opacity(0.1)],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
                                           .frame(width: 58, height: 58)
-                                      Image(systemName: "app.fill").font(.system(size: 22)).foregroundColor(.vipPurple.opacity(0.4))
+                                      Image(systemName: "app.fill")
+                                          .font(.system(size: 22)).foregroundColor(.vipPurple.opacity(0.4))
                                   }
                               }
                           }
                           if app.isNew {
-                              Text("NEW").font(.system(size: 7, weight: .black)).foregroundColor(.white)
+                              Text("NEW")
+                                  .font(.system(size: 7, weight: .black))
+                                  .foregroundColor(.white)
                                   .padding(.horizontal, 4).padding(.vertical, 2)
                                   .background(Capsule().fill(Color.green))
                                   .offset(x: 4, y: 4)
                           }
                       }
 
+                      // Info
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
-                              if app.isPopular { Image(systemName: "flame.fill").font(.system(size: 10)).foregroundColor(.orange) }
+                              if app.isPopular {
+                                  Image(systemName: "flame.fill")
+                                      .font(.system(size: 10)).foregroundColor(.orange)
+                              }
+                              SourceBadge(source: app.source)
                               Spacer()
-                              Text(app.name).font(.system(size: 15, weight: .bold)).lineLimit(1)
+                              Text(app.name)
+                                  .font(.system(size: 15, weight: .bold)).lineLimit(1)
                           }
-                          Text(app.developerName).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
+                          Text(app.developerName)
+                              .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                               .frame(maxWidth: .infinity, alignment: .trailing)
                           HStack(spacing: 8) {
                               Spacer()
-                              Label(app.formattedSize, systemImage: "internaldrive").font(.system(size: 10)).foregroundColor(.gray)
-                              Label(app.formattedDate, systemImage: "calendar").font(.system(size: 10)).foregroundColor(.gray)
+                              Label(app.formattedSize, systemImage: "internaldrive")
+                                  .font(.system(size: 10)).foregroundColor(.gray)
+                              Label(app.formattedDate, systemImage: "calendar")
+                                  .font(.system(size: 10)).foregroundColor(.gray)
                               if let cat = app.category {
-                                  Text(cat).font(.system(size: 9, weight: .medium)).foregroundColor(.vipPurple)
+                                  Text(cat)
+                                      .font(.system(size: 9, weight: .medium))
+                                      .foregroundColor(.vipPurple)
                                       .padding(.horizontal, 6).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                               }
@@ -2150,27 +1882,35 @@ jobs:
                           HStack(spacing: 6) {
                               Spacer()
                               Text(app.subscriptionType)
-                                  .font(.system(size: 9, weight: .semibold)).foregroundColor(.white)
+                                  .font(.system(size: 9, weight: .semibold))
+                                  .foregroundColor(.white)
                                   .padding(.horizontal, 7).padding(.vertical, 3)
-                                  .background(Capsule().fill(LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing)))
-                              let desc = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
+                                  .background(Capsule().fill(
+                                      LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing)
+                                  ))
+                              let desc = app.localizedDescription
+                                  .replacingOccurrences(of: "Injected with ", with: "")
                               if !desc.isEmpty {
                                   Text(desc.components(separatedBy: .whitespaces).prefix(4).joined(separator: " "))
                                       .font(.system(size: 9)).foregroundColor(.gray).lineLimit(1)
                               }
                           }
                       }
+
                   }
                   .padding(12)
                   .background(RoundedRectangle(cornerRadius: 18)
                       .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
                       .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 3))
-                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
+                  .overlay(RoundedRectangle(cornerRadius: 18)
+                      .stroke(app.isNew ? Color.pink.opacity(0.25) : Color.vipPurple.opacity(0.06), lineWidth: app.isNew ? 1.2 : 1))
               }
           }
           VIPEOF
+          echo "AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
 
-          # AppDetailView.swift
+      - name: Generate Source - AppDetailView.swift
+        run: |
           cat > AppDetailView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -2180,6 +1920,7 @@ jobs:
           struct AppDetailView: View {
               let app: AppItem
               @State private var isDownloading = false
+              @State private var showAlert = false
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
 
@@ -2196,16 +1937,34 @@ jobs:
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 18) {
+                                  // Banner
                                   ZStack(alignment: .bottom) {
                                       RoundedRectangle(cornerRadius: 28)
-                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                          .fill(
+                                              LinearGradient(
+                                                  colors: app.source == .kurd
+                                                      ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10), Color(red: 0.75, green: 0.15, blue: 0.05)]
+                                                      : [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)],
+                                                  startPoint: .topLeading,
+                                                  endPoint: .bottomTrailing
+                                              )
+                                          )
                                           .frame(height: 180)
-                                          .overlay(ZStack {
-                                              Circle().fill(Color.white.opacity(0.10)).frame(width: 160, height: 160).offset(x: -110, y: -50)
-                                              Circle().fill(Color.white.opacity(0.08)).frame(width: 110, height: 110).offset(x: 120, y: 40)
-                                          }.clipShape(RoundedRectangle(cornerRadius: 28)))
-                                          .overlay(RoundedRectangle(cornerRadius: 28).stroke(Color.white.opacity(0.18), lineWidth: 1))
-                                          .shadow(color: .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
+                                          .overlay(
+                                              ZStack {
+                                                  Circle().fill(Color.white.opacity(0.10))
+                                                      .frame(width: 160, height: 160)
+                                                      .offset(x: -110, y: -50)
+                                                  Circle().fill(Color.white.opacity(0.08))
+                                                      .frame(width: 110, height: 110)
+                                                      .offset(x: 120, y: 40)
+                                              }.clipShape(RoundedRectangle(cornerRadius: 28))
+                                          )
+                                          .overlay(
+                                              RoundedRectangle(cornerRadius: 28)
+                                                  .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                                          )
+                                          .shadow(color: app.source == .kurd ? Color.orange.opacity(0.45) : .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
                                           .shadow(color: .blue.opacity(0.25), radius: 30, x: 0, y: 18)
                                           .padding(.horizontal, 16)
 
@@ -2214,24 +1973,31 @@ jobs:
                                           case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
                                           default:
                                               RoundedRectangle(cornerRadius: 26)
-                                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.4), .blue.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.4), .blue.opacity(0.3)],
+                                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
                                                   .overlay(Image(systemName: "app.fill").font(.system(size: 40)).foregroundColor(.white.opacity(0.7)))
                                           }
                                       }
                                       .frame(width: 120, height: 120)
                                       .clipShape(RoundedRectangle(cornerRadius: 26))
-                                      .overlay(RoundedRectangle(cornerRadius: 26).stroke(Color.white.opacity(0.9), lineWidth: 3))
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 26)
+                                              .stroke(Color.white.opacity(0.9), lineWidth: 3)
+                                      )
                                       .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 8)
+                                      .shadow(color: .vipPurple.opacity(0.4), radius: 20, x: 0, y: 10)
                                       .offset(y: 50)
                                   }
                                   .padding(.bottom, 50)
 
                                   VStack(spacing: 6) {
                                       Text(app.name).font(.system(size: 24, weight: .black)).multilineTextAlignment(.center)
-                                      Text(app.developerName.isEmpty ? "VIP21 Store" : app.developerName).font(.system(size: 13)).foregroundColor(.gray)
+                                      Text(app.developerName.isEmpty ? "VIP21 Store" : app.developerName)
+                                          .font(.system(size: 13)).foregroundColor(.gray)
                                       HStack(spacing: 6) {
                                           if app.isNew { NewBadge() }
                                           if app.isPopular { PopularBadge() }
+                                          SourceBadge(source: app.source)
                                       }
                                   }
 
@@ -2261,7 +2027,9 @@ jobs:
                                   GradientButton(
                                       title: "تحميل IPA",
                                       icon: "arrow.down.circle.fill",
-                                      gradient: [.vipPurple, .blue],
+                                      gradient: app.source == .kurd
+                                          ? [Color(red: 0.95, green: 0.45, blue: 0.20), Color(red: 0.85, green: 0.25, blue: 0.10)]
+                                          : [.vipPurple, .blue],
                                       action: {
                                           HapticManager.shared.impact(.medium)
                                           if let url = URL(string: app._secureDownloadURL) {
@@ -2301,8 +2069,10 @@ jobs:
               }
           }
           VIPEOF
+          echo "AppDetailView.swift: $(wc -l < AppDetailView.swift) lines"
 
-          # VIP21StoreApp.swift
+      - name: Generate Source - VIP21StoreApp.swift
+        run: |
           cat > VIP21StoreApp.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -2316,7 +2086,10 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      ContentView().onAppear { requestNotifications() }
+                      ContentView()
+                          .onAppear {
+                              requestNotifications()
+                          }
                   }
               }
 
@@ -2326,6 +2099,7 @@ jobs:
           }
 
           class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+
               func application(_ application: UIApplication,
                                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
                   UNUserNotificationCenter.current().delegate = self
@@ -2345,8 +2119,7 @@ jobs:
               }
           }
           VIPEOF
-
-          echo "✅ All source files generated"
+          echo "VIP21StoreApp.swift: $(wc -l < VIP21StoreApp.swift) lines"
 
       - name: Build Application
         run: |
@@ -2356,12 +2129,10 @@ jobs:
             Constants.swift \
             HapticManager.swift \
             Models.swift \
-            FileImporterManager.swift \
             AppsManager.swift \
             SharedComponents.swift \
             ContentView.swift \
             HomeTabView.swift \
-            FilesTabView.swift \
             AppsTabView.swift \
             AppDetailView.swift \
             VIP21StoreApp.swift \
@@ -2373,8 +2144,6 @@ jobs:
             -framework UIKit \
             -framework Foundation \
             -framework UserNotifications \
-            -framework UniformTypeIdentifiers \
-            -framework Compression \
             -o VIP21Store
           file VIP21Store
 
@@ -2391,7 +2160,7 @@ jobs:
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
           cd build-output && zip -r -q ../artifacts/21s.ipa Payload/ && cd ..
-          echo "✅ IPA created: $(du -sh artifacts/21s.ipa)"
+          echo "IPA: $(du -sh artifacts/21s.ipa)"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
