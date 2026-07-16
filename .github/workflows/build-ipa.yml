@@ -308,33 +308,33 @@ jobs:
 
                   var fileExtension: String {
                       switch self {
-                      case .ipa:            return "ipa"
+                      case .ipa:             return "ipa"
                       case .mobileprovision: return "mobileprovision"
-                      case .p12:            return "p12"
+                      case .p12:             return "p12"
                       }
                   }
 
                   var systemIcon: String {
                       switch self {
-                      case .ipa:            return "app.badge.fill"
+                      case .ipa:             return "app.badge.fill"
                       case .mobileprovision: return "checkmark.shield.fill"
-                      case .p12:            return "key.fill"
+                      case .p12:             return "key.fill"
                       }
                   }
 
                   var displayName: String {
                       switch self {
-                      case .ipa:            return "تطبيق iOS"
+                      case .ipa:             return "تطبيق iOS"
                       case .mobileprovision: return "ملف التوقيع"
-                      case .p12:            return "شهادة P12"
+                      case .p12:             return "شهادة P12"
                       }
                   }
 
                   var gradient: [Color] {
                       switch self {
-                      case .ipa:            return [Color.vipPurple, .blue]
+                      case .ipa:             return [Color.vipPurple, .blue]
                       case .mobileprovision: return [.green, .teal]
-                      case .p12:            return [.orange, .red]
+                      case .p12:             return [.orange, .red]
                       }
                   }
               }
@@ -361,6 +361,7 @@ jobs:
           import UIKit
           import Foundation
           import UniformTypeIdentifiers
+          import Compression
 
           // MARK: - File Importer Manager
           @MainActor
@@ -371,7 +372,6 @@ jobs:
               @Published var lastSuccess: String?
 
               private let storageKey = "importedFiles_v1"
-              private let metadataKey = "importedFilesMeta_v1"
 
               // Storage directory
               static var storageDirectory: URL {
@@ -422,10 +422,9 @@ jobs:
                   case "mobileprovision":  return .mobileprovision
                   case "p12", "pfx":       return .p12
                   default:
-                      // UTI fallback
                       if let type = UTType(filenameExtension: ext) {
                           if type.conforms(to: .archive) { return .ipa }
-                          if type.conforms(to: .data) { return .p12 }
+                          if type.conforms(to: .data)    { return .p12 }
                       }
                       return nil
                   }
@@ -436,7 +435,6 @@ jobs:
                   isImporting = true
                   defer { isImporting = false }
 
-                  // Security-scoped resource for iCloud / Files
                   let didStart = sourceURL.startAccessingSecurityScopedResource()
                   defer { if didStart { sourceURL.stopAccessingSecurityScopedResource() } }
 
@@ -445,45 +443,39 @@ jobs:
                       return false
                   }
 
-                  // Read file data
-                  let didRead: Bool
-                  var data: Data?
+                  var fileData: Data?
                   do {
-                      data = try Data(contentsOf: sourceURL)
-                      didRead = true
+                      fileData = try Data(contentsOf: sourceURL)
                   } catch {
                       lastError = "فشل قراءة الملف: \(error.localizedDescription)"
                       return false
                   }
 
-                  guard let fileData = data, didRead else {
+                  guard let data = fileData, !data.isEmpty else {
                       lastError = "الملف فارغ أو تالف"
                       return false
                   }
 
-                  // Validate file
-                  let validation = validateFile(data: fileData, type: type, sourceURL: sourceURL)
+                  let validation = validateFile(data: data, type: type, sourceURL: sourceURL)
                   if !validation.isValid {
                       lastError = validation.error ?? "الملف غير صالح"
                       return false
                   }
 
-                  // Copy to Documents/Application Support
                   let storedName = "\(UUID().uuidString)_\(sourceURL.lastPathComponent)"
                   let dest = Self.storageDirectory.appendingPathComponent(storedName)
                   do {
-                      try fileData.write(to: dest, options: [.atomic])
+                      try data.write(to: dest, options: [.atomic])
                   } catch {
                       lastError = "فشل حفظ الملف: \(error.localizedDescription)"
                       return false
                   }
 
-                  // Build metadata
                   var metadata = ImportedFile(
                       originalName: sourceURL.lastPathComponent,
                       storedName: storedName,
                       fileType: type,
-                      sizeBytes: Int64(fileData.count),
+                      sizeBytes: Int64(data.count),
                       importedAt: Date(),
                       appName: nil,
                       appVersion: nil,
@@ -492,12 +484,11 @@ jobs:
                       notes: ""
                   )
 
-                  // Extract IPA info
                   if type == .ipa {
                       let info = IPAInspector.extract(from: dest)
-                      metadata.appName = info.name
+                      metadata.appName    = info.name
                       metadata.appVersion = info.version
-                      metadata.bundleID = info.bundleID
+                      metadata.bundleID   = info.bundleID
                       if let iconData = info.iconPNG {
                           let iconName = "\(UUID().uuidString).png"
                           let iconURL = Self.iconsDirectory.appendingPathComponent(iconName)
@@ -519,7 +510,6 @@ jobs:
 
                   switch type {
                   case .ipa:
-                      // IPA = ZIP archive: PK\x03\x04 magic bytes
                       let zipMagic: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
                       let prefix = Array(data.prefix(4))
                       if prefix != zipMagic {
@@ -527,14 +517,12 @@ jobs:
                       }
                       return (true, nil)
                   case .mobileprovision:
-                      // plist XML or binary
                       if let str = String(data: data.prefix(64), encoding: .utf8),
                          str.contains("<?xml") || str.contains("plist") {
                           return (true, nil)
                       }
                       return (false, "ملف mobileprovision غير صالح")
                   case .p12:
-                      // PKCS#12 also ZIP-based
                       let prefix = Array(data.prefix(4))
                       if prefix == [0x50, 0x4B, 0x03, 0x04] {
                           return (true, nil)
@@ -612,68 +600,48 @@ jobs:
 
               static func extract(from ipaURL: URL) -> Info {
                   var info = Info()
-                  let fm = FileManager.default
-
-                  // Read as ZIP using FileManager + NSFileCoordinator (built-in iOS unzip)
-                  // Use unzipped via Data reading of central directory is complex on iOS.
-                  // Instead, we use NSFileCoordinator to coordinate access and read the archive using
-                  // Foundation's built-in ZIP reading via Compression framework.
-
-                  // Approach: copy to a temp dir and iterate using Foundation's built-in ZIP via
-                  // libcompression. To keep this self-contained, we read the Info.plist by scanning
-                  // the ZIP central directory.
-
                   guard let data = try? Data(contentsOf: ipaURL, options: .mappedIfSafe) else { return info }
 
-                  // Locate Info.plist path inside Payload/<App>.app/Info.plist
-                  let plistPath = locateInfoPlistPath(in: data)
-                  if let path = plistPath, let plistData = readEntry(in: data, named: path) {
+                  if let path = locateInfoPlistPath(in: data),
+                     let plistData = readEntry(in: data, named: path) {
                       if let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] {
-                          info.name    = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String
-                          info.version = plist["CFBundleShortVersionString"] as? String
+                          info.name     = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String
+                          info.version  = plist["CFBundleShortVersionString"] as? String
                           info.bundleID = plist["CFBundleIdentifier"] as? String
                       }
                   }
 
-                  // Locate icon
-                  if let iconPath = locateIconPath(in: data), let iconData = readEntry(in: data, named: iconPath) {
+                  if let iconPath = locateIconPath(in: data),
+                     let iconData = readEntry(in: data, named: iconPath) {
                       info.iconPNG = iconData
                   }
 
                   return info
               }
 
-              // MARK: - ZIP Central Directory Scan
-              private static func locateInfoPlistPath(in data: Data) -> String? {
-                  let count = data.count
-                  if count < 22 { return nil }
+              // MARK: - Find EOCD record
+              private static func findEOCD(in data: Data) -> Int? {
                   let bytes = [UInt8](data)
-                  // End of Central Directory signature: 0x06054b50
+                  let count = bytes.count
+                  if count < 22 { return nil }
                   let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
-                  var eocdOffset: Int? = nil
-                  if count > 65557 {
-                      let start = count - 65557
-                      for i in stride(from: count - 22, through: start, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
+                  let searchStart = max(0, count - 65557)
+                  for i in stride(from: count - 22, through: searchStart, by: -1) {
+                      if i + 4 <= count &&
+                          bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
+                          bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
+                          return i
                       }
                   }
-                  if eocdOffset == nil {
-                      for i in stride(from: count - 22, through: 0, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
-                      }
-                  }
-                  guard let eocd = eocdOffset else { return nil }
-                  if eocd + 22 > count { return nil }
+                  return nil
+              }
+
+              // MARK: - Locate Info.plist path
+              private static func locateInfoPlistPath(in data: Data) -> String? {
+                  let bytes = [UInt8](data)
+                  let count = bytes.count
+                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
+
                   let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
                                  (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
                   let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
@@ -697,35 +665,12 @@ jobs:
                   return nil
               }
 
+              // MARK: - Locate icon path
               private static func locateIconPath(in data: Data) -> String? {
-                  let count = data.count
-                  if count < 22 { return nil }
                   let bytes = [UInt8](data)
-                  let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
-                  var eocdOffset: Int? = nil
-                  if count > 65557 {
-                      let start = count - 65557
-                      for i in stride(from: count - 22, through: start, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
-                      }
-                  }
-                  if eocdOffset == nil {
-                      for i in stride(from: count - 22, through: 0, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
-                      }
-                  }
-                  guard let eocd = eocdOffset else { return nil }
-                  if eocd + 22 > count { return nil }
+                  let count = bytes.count
+                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
+
                   let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
                                  (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
                   let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
@@ -747,50 +692,30 @@ jobs:
                           var score = 0
                           let lower = name.lowercased()
                           if lower.contains("appicon") { score += 100 }
-                          if lower.contains("icon") { score += 50 }
-                          if lower.contains("@3x") { score += 30 }
-                          if lower.contains("@2x") { score += 20 }
-                          if lower.contains("60x60") { score += 40 }
+                          if lower.contains("icon")    { score += 50 }
+                          if lower.contains("@3x")     { score += 30 }
+                          if lower.contains("@2x")     { score += 20 }
+                          if lower.contains("60x60")   { score += 40 }
                           if lower.contains("120x120") { score += 50 }
                           if lower.contains("180x180") { score += 60 }
-                          if lower.contains("1024") { score += 70 }
+                          if lower.contains("1024")    { score += 70 }
                           if !lower.contains("launch") && !lower.contains("logo") { score += 10 }
-                          if score > bestScore { bestScore = score; bestIcon = name }
+                          if score > bestScore {
+                              bestScore = score
+                              bestIcon = name
+                          }
                       }
                       p += 46 + nameLen + extraLen + commentLen
                   }
                   return bestIcon
               }
 
+              // MARK: - Read ZIP Entry by name
               private static func readEntry(in data: Data, named name: String) -> Data? {
                   let bytes = [UInt8](data)
-                  let count = data.count
-                  if count < 22 { return nil }
-                  let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
-                  var eocdOffset: Int? = nil
-                  if count > 65557 {
-                      let start = count - 65557
-                      for i in stride(from: count - 22, through: start, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
-                      }
-                  }
-                  if eocdOffset == nil {
-                      for i in stride(from: count - 22, through: 0, by: -1) {
-                          if i + 4 <= count &&
-                              bytes[i] == eocdSig[0] && bytes[i+1] == eocdSig[1] &&
-                              bytes[i+2] == eocdSig[2] && bytes[i+3] == eocdSig[3] {
-                              eocdOffset = i
-                              break
-                          }
-                      }
-                  }
-                  guard let eocd = eocdOffset else { return nil }
-                  if eocd + 22 > count { return nil }
+                  let count = bytes.count
+                  guard let eocd = findEOCD(in: data), eocd + 22 <= count else { return nil }
+
                   let cdOffset = Int(bytes[eocd + 16]) | (Int(bytes[eocd + 17]) << 8) |
                                  (Int(bytes[eocd + 18]) << 16) | (Int(bytes[eocd + 19]) << 24)
                   let totalEntries = Int(bytes[eocd + 10]) | (Int(bytes[eocd + 11]) << 8)
@@ -806,8 +731,8 @@ jobs:
                       if p + 46 + nameLen > count { break }
                       let nameData = Data(bytes[p+46..<p+46+nameLen])
                       if let entryName = String(data: nameData, encoding: .utf8), entryName == name {
-                          let compSize  = Int(bytes[p+20]) | (Int(bytes[p+21]) << 8) |
-                                          (Int(bytes[p+22]) << 16) | (Int(bytes[p+23]) << 24)
+                          let compSize = Int(bytes[p+20]) | (Int(bytes[p+21]) << 8) |
+                                         (Int(bytes[p+22]) << 16) | (Int(bytes[p+23]) << 24)
                           let uncompSize = Int(bytes[p+24]) | (Int(bytes[p+25]) << 8) |
                                            (Int(bytes[p+26]) << 16) | (Int(bytes[p+27]) << 24)
                           let localHdrOffset = Int(bytes[p+42]) | (Int(bytes[p+43]) << 8) |
@@ -818,7 +743,6 @@ jobs:
                           let dataStart = localHdrOffset + 30 + lNameLen + lExtraLen
                           if dataStart + compSize > count { return nil }
                           let compData = data.subdata(in: dataStart..<(dataStart + compSize))
-                          // Method: 0 = stored, 8 = deflate
                           let method = Int(bytes[p+10]) | (Int(bytes[p+11]) << 8)
                           if method == 0 {
                               return compData
@@ -831,20 +755,23 @@ jobs:
                   return nil
               }
 
-              // MARK: - Raw DEFLATE inflate using Compression framework
+              // MARK: - DEFLATE inflate using Apple's Compression framework
               private static func inflate(data: Data, expectedSize: Int) -> Data? {
-                  let bufferSize = max(expectedSize + 32, 65536)
+                  let bufferSize = max(expectedSize + 64, 1024 * 1024)
                   let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
                   defer { buffer.deallocate() }
 
                   let result = data.withUnsafeBytes { (rawPtr: UnsafeRawBufferPointer) -> Int in
-                      guard let baseAddr = rawPtr.baseAddress else { return -1 }
+                      guard let baseAddr = rawPtr.baseAddress else { return 0 }
+                      let src = baseAddr.assumingMemoryBound(to: UInt8.self)
                       return compression_decode_buffer(
                           buffer, bufferSize,
-                          baseAddr.assumingMemoryBound(to: UInt8.self), data.count,
-                          nil, COMPRESSION_ZLIB
+                          src, data.count,
+                          nil,
+                          COMPRESSION_ZLIB
                       )
                   }
+
                   if result <= 0 { return nil }
                   return Data(bytes: buffer, count: result)
               }
@@ -867,15 +794,9 @@ jobs:
               @Published var errorMessage: String?
               @Published var recentSearches: [String] = []
 
-              var categories: [AppCategory] {
-                  return []
-              }
+              var categories: [AppCategory] { [] }
 
-              func appsForCategory(_ cat: AppCategory) -> [AppItem] {
-                  switch cat.name {
-                  default:              return apps
-                  }
-              }
+              func appsForCategory(_ cat: AppCategory) -> [AppItem] { apps }
 
               func fetchApps() {
                   isLoading = true; errorMessage = nil
@@ -1031,437 +952,7 @@ jobs:
                       } else {
                           Circle()
                               .fill(Color.vipPurple.opacity(0.3))
-                              .frame(width: 36, height: 36)
-                              .overlay(
-                                  ProgressView()
-                                      .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                      .scaleEffect(0.6)
-                              )
-                      }
-                  }
-                  .onAppear {
-                      loadIcon()
-                  }
-              }
-              
-              private func loadIcon() {
-                  guard let url = URL(string: AppConstants.topRightIconURL) else { return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      if let data = data, let img = UIImage(data: data) {
-                          DispatchQueue.main.async {
-                              iconImage = img
-                          }
-                      }
-                  }.resume()
-              }
-          }
-          VIPEOF
-          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
-
-      - name: Generate Source - ContentView.swift
-        run: |
-          cat > ContentView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import Foundation
-          import Combine
-
-          // MARK: - Main Tab Enum
-          enum AppTab: String, CaseIterable {
-              case home = "الرئيسية"
-              case apps = "التطبيقات"
-              case files = "الملفات"
-              
-              var icon: String {
-                  switch self {
-                  case .home:  return "house"
-                  case .apps:  return "square.stack.3d.up"
-                  case .files: return "folder.fill"
-              }
-              }
-          }
-
-          // MARK: - Main Content View
-          struct ContentView: View {
-              @State private var selectedTab: AppTab = .home
-              @Environment(\.colorScheme) var scheme
-              @StateObject private var appsManager = AppsManager()
-              @StateObject private var fileImporter = FileImporterManager()
-
-              var body: some View {
-                  TabView(selection: $selectedTab) {
-                      HomeTabView(appsManager: appsManager)
-                          .tabItem {
-                              Label("الرئيسية", systemImage: AppTab.home.icon)
-                          }
-                          .tag(AppTab.home)
-                      
-                      AppsTabView(appsManager: appsManager)
-                          .tabItem {
-                              Label("التطبيقات", systemImage: AppTab.apps.icon)
-                          }
-                          .tag(AppTab.apps)
-
-                      FilesTabView(fileImporter: fileImporter)
-                          .tabItem {
-                              Label("الملفات", systemImage: AppTab.files.icon)
-                          }
-                          .tag(AppTab.files)
-                  }
-                  .preferredColorScheme(.none)
-                  .onAppear {
-                      appsManager.fetchApps()
-                      appsManager.loadRecentSearches()
-                      requestNotifications()
-                  }
-                  .accentColor(.vipPurple)
-              }
-
-              func requestNotifications() {
-                  UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-              }
-          }
-
-          // MARK: - Loading View
-          struct LoadingView: View {
-              @State private var rotate = false
-              var body: some View {
-                  VStack(spacing: 20) {
-                      ZStack {
-                          Circle().stroke(Color.vipPurple.opacity(0.2), lineWidth: 4).frame(width: 60, height: 60)
-                          Circle().trim(from: 0, to: 0.7)
-                              .stroke(LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing),
-                                      style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                              .frame(width: 60, height: 60).rotationEffect(.degrees(rotate ? 360 : 0))
-                              .onAppear { withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { rotate = true } }
-                      }
-                      Text("جاري تحميل التطبيقات...").font(.system(size: 14)).foregroundColor(.gray)
-                  }
-                  .frame(maxWidth: .infinity).padding(.top, 120)
-              }
-          }
-
-          // MARK: - Error View
-          struct ErrorView: View {
-              let message: String; let onRetry: () -> Void
-              var body: some View {
-                  VStack(spacing: 20) {
-                      Image(systemName: "wifi.slash").font(.system(size: 50)).foregroundColor(.orange)
-                      Text("حدث خطأ").font(.system(size: 20, weight: .bold))
-                      Text(message).font(.system(size: 13)).foregroundColor(.gray).multilineTextAlignment(.center)
-                      GradientButton(title: "إعادة المحاولة", icon: "arrow.clockwise", gradient: [.orange, .red], action: onRetry)
-                          .frame(width: 180)
-                  }.padding().frame(maxWidth: .infinity).padding(.top, 80)
-              }
-          }
-          VIPEOF
-          echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
-
-      - name: Generate Source - HomeTabView.swift
-        run: |
-          cat > HomeTabView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import Foundation
-
-          // MARK: - Home Tab
-          struct HomeTabView: View {
-              @ObservedObject var appsManager: AppsManager
-              @State private var selectedApp: AppItem?
-              @Environment(\.colorScheme) var scheme
-
-              private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
-              private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
-              private var trending: [AppItem] { appsManager.apps.filter { $0.isNew }.prefix(8).map { $0 } }
-              private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 22) {
-                              if appsManager.isLoading && appsManager.apps.isEmpty {
-                                  LoadingView()
-                              } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
-                                  ErrorView(message: err) { appsManager.retryFetch() }
-                              } else {
-                                  StoreHeroBanner()
-                                      .padding(.top, 6)
-                                  AdImageCarousel(images: AppConstants.adBanners)
-
-                                  if !popular.isEmpty {
-                                      sectionHeader(title: "🔥 الأكثر شعبية", icon: "flame.fill", color: .orange)
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(popular, id: \.id) { app in
-                                                  FeaturedAppCard(app: app)
-                                                      .contentShape(Rectangle())
-                                                      .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
-                                              }
-                                          }.padding(.horizontal, 16)
-                                      }
-                                  }
-
-                                  if !trending.isEmpty {
-                                      sectionHeader(title: "✨ جديد هذا الأسبوع", icon: "sparkles", color: .purple)
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(trending, id: \.id) { app in
-                                                  FeaturedAppCard(app: app)
-                                                      .contentShape(Rectangle())
-                                                      .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
-                                              }
-                                          }.padding(.horizontal, 16)
-                                      }
-                                  }
-
-                                  if !topRated.isEmpty {
-                                      sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(Array(topRated.enumerated()), id: \.element.id) { idx, app in
-                                                  TopDownloadWideCard(rank: idx + 1, app: app)
-                                                      .onTapGesture { selectedApp = app }
-                                              }
-                                          }
-                                          .padding(.horizontal, 16)
-                                          .padding(.vertical, 4)
-                                      }
-                                  }
-
-                                  sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
-                                  ForEach(newest, id: \.id) { app in
-                                      AppCardView(app: app)
-                                          .contentShape(Rectangle())
-                                          .onTapGesture { DispatchQueue.main.async { selectedApp = app } }
-                                          .padding(.horizontal)
-                                  }
-                              }
-                          }
-                          .padding(.bottom, 20)
-                      }
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .principal) {
-                              HStack(spacing: 8) {
-                                  Text("21s")
-                                      .font(.system(size: 20, weight: .bold))
-                                      .foregroundColor(.vipPurple)
-                              }
-                          }
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              TopRightIconView()
-                          }
-                      }
-                  }
-                  .sheet(item: $selectedApp) { app in
-                      AppDetailView(app: app)
-                  }
-              }
-
-              private func sectionHeader(title: String, icon: String, color: Color = .vipPurple) -> some View {
-                  HStack {
-                      Image(systemName: "chevron.left").foregroundColor(color).font(.caption)
-                      Spacer()
-                      Text(title).font(.system(size: 16, weight: .bold))
-                      Image(systemName: icon).font(.system(size: 14)).foregroundColor(color)
-                  }.padding(.horizontal)
-              }
-          }
-
-          // MARK: - Store Hero Banner
-          struct StoreHeroBanner: View {
-              @State private var pulse = false
-
-              var body: some View {
-                  HStack(spacing: 0) {
-                      ZStack {
-                          Circle()
-                              .fill(Color.white.opacity(0.15))
-                              .frame(width: 68, height: 68)
-                              .scaleEffect(pulse ? 1.08 : 1.0)
-                              .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: pulse)
-                          CachedAsyncImage(url: URL(string: AppConstants.appIconURL)) { phase in
-                              if let img = phase.image {
-                                  img.resizable().aspectRatio(contentMode: .fill)
-                                      .frame(width: 56, height: 56)
-                                      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                      .overlay(RoundedRectangle(cornerRadius: 14)
-                                          .stroke(Color.white.opacity(0.45), lineWidth: 1.5))
-                              } else {
-                                  RoundedRectangle(cornerRadius: 14)
-                                      .fill(Color.white.opacity(0.2))
-                                      .frame(width: 56, height: 56)
-                                      .overlay(Image(systemName: "storefront.fill")
-                                          .font(.system(size: 22)).foregroundColor(.white.opacity(0.6)))
-                              }
-                          }
-                      }
-                      .padding(.leading, 20)
-
-                      Spacer(minLength: 16)
-
-                      VStack(alignment: .center, spacing: 5) {
-                          Text("متجر VIP21")
-                              .font(.system(size: 19, weight: .black, design: .rounded))
-                              .foregroundColor(.white)
-
-                          Text("آخر التطبيقات المحدثة")
-                              .font(.system(size: 12, weight: .medium))
-                              .foregroundColor(.white.opacity(0.82))
-                              .multilineTextAlignment(.center)
-                      }
-                      .frame(maxWidth: .infinity)
-
-                      Spacer(minLength: 16)
-
-                      VStack(spacing: 4) {
-                          HStack(spacing: 3) {
-                              Image(systemName: "crown.fill")
-                                  .font(.system(size: 9))
-                                  .foregroundColor(.vipGold)
-                              Text("VIP")
-                                  .font(.system(size: 10, weight: .black))
-                                  .foregroundColor(.vipGold)
-                          }
-                          .padding(.horizontal, 10).padding(.vertical, 4)
-                          .background(
-                              Capsule().fill(Color.white.opacity(0.18))
-                                  .overlay(Capsule().stroke(Color.vipGold.opacity(0.5), lineWidth: 1))
-                          )
-
-                          Text("2026")
-                              .font(.system(size: 10, weight: .semibold))
-                              .foregroundColor(.white.opacity(0.65))
-                      }
-                      .padding(.trailing, 20)
-                  }
-                  .frame(height: 90)
-                  .background(
-                      ZStack {
-                          LinearGradient(
-                              colors: [
-                                  Color(red: 0.35, green: 0.10, blue: 0.85),
-                                  Color(red: 0.10, green: 0.35, blue: 0.95),
-                                  Color(red: 0.00, green: 0.55, blue: 0.90)
-                              ],
-                              startPoint: .topLeading,
-                              endPoint: .bottomTrailing
-                          )
-                          Circle().fill(Color.white.opacity(0.07))
-                              .frame(width: 140).offset(x: 60, y: -40)
-                          Circle().fill(Color.white.opacity(0.05))
-                              .frame(width: 100).offset(x: -80, y: 30)
-                      }
-                  )
-                  .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 20, style: .continuous)
-                          .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                  )
-                  .shadow(color: Color(red: 0.35, green: 0.10, blue: 0.85).opacity(0.50), radius: 16, x: 0, y: 7)
-                  .shadow(color: .blue.opacity(0.22), radius: 24, x: 0, y: 12)
-                  .padding(.horizontal, 16)
-                  .onAppear { pulse = true }
-              }
-          }
-
-          // MARK: - Ad Image Carousel
-          struct AdImageCarousel: View {
-              let images: [(image: String, link: String)]
-              @State private var current: Int = 0
-              private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-
-              var body: some View {
-                  VStack(spacing: 8) {
-                      TabView(selection: $current) {
-                          ForEach(Array(images.enumerated()), id: \.offset) { idx, item in
-                              CachedAsyncImage(url: URL(string: item.image)) { phase in
-                                  switch phase {
-                                  case .success(let img):
-                                      img.resizable().aspectRatio(contentMode: .fill)
-                                  default:
-                                      ZStack {
-                                          LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
-                                                         startPoint: .topLeading, endPoint: .bottomTrailing)
-                                          ProgressView().tint(.white)
-                                      }
-                                  }
-                              }
-                              .frame(maxWidth: .infinity)
-                              .frame(height: 90)
-                              .clipped()
-                              .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                      .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                              )
-                              .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
-                              .contentShape(Rectangle())
-                              .onTapGesture {
-                                  HapticManager.shared.impact(.light)
-                                  if let u = URL(string: item.link) { UIApplication.shared.open(u) }
-                              }
-                              .tag(idx)
-                          }
-                      }
-                      .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-                      .frame(height: 100)
-                      .onReceive(timer) { _ in
-                          withAnimation(.easeInOut(duration: 0.6)) {
-                              current = (current + 1) % max(images.count, 1)
-                          }
-                      }
-
-                      HStack(spacing: 6) {
-                          ForEach(0..<images.count, id: \.self) { idx in
-                              Capsule()
-                                  .fill(idx == current ? Color.vipPurple : Color.gray.opacity(0.35))
-                                  .frame(width: idx == current ? 18 : 6, height: 6)
-                                  .animation(.spring(response: 0.35), value: current)
-                          }
-                      }
-                  }
-                  .padding(.horizontal, 16)
-              }
-          }
-
-          // MARK: - Featured App Card
-          struct FeaturedAppCard: View {
-              let app: AppItem
-              var body: some View {
-                  ZStack(alignment: .bottomLeading) {
-                      CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                          switch phase {
-                          case .success(let img):
-                              img.resizable().aspectRatio(contentMode: .fill)
-                          default:
-                              LinearGradient(colors: [.vipPurple, .blue],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing)
-                          }
-                      }
-                      .frame(width: 220, height: 130)
-                      .clipped()
-                      .overlay(
-                          LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.75)],
-                                         startPoint: .top, endPoint: .bottom)
-                      )
-                      VStack(alignment: .leading, spacing: 3) {
-                          Text(app.name).font(.system(size: 14, weight: .bold))
-                              .foregroundColor(.white).lineLimit(1)
-                          Text(app.formattedSize).font(.system(size: 10))
-                              .foregroundColor(.white.opacity(0.85))
-                      }.padding(10)
-                  }
-                  .frame(width: 220, height: 130)
-                  .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                  .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
-              }
-          }
-
-          // MARK: - Top Download Wide Card
-          struct TopDownloadWideCard: View {
-              let rank: Int; let app: AppItem
-              @Environment(\.colorScheme) var scheme
+                              .frame(width: 36, height: 36 scheme
 
               var rankGradient: [Color] {
                   switch rank {
@@ -1485,54 +976,34 @@ jobs:
                               if let img = phase.image {
                                   img.resizable().aspectRatio(contentMode: .fill)
                               } else {
-                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
+                                  LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
                               }
                           }
                           .frame(width: 160, height: 110)
                           .clipped()
-                          .overlay(
-                              LinearGradient(colors: [.clear, .black.opacity(0.55)],
-                                             startPoint: .top, endPoint: .bottom)
-                          )
+                          .overlay(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
 
                           ZStack {
-                              Circle()
-                                  .fill(LinearGradient(colors: rankGradient,
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                              Circle().fill(LinearGradient(colors: rankGradient, startPoint: .topLeading, endPoint: .bottomTrailing))
                                   .frame(width: 32, height: 32)
                                   .shadow(color: rankGradient.first!.opacity(0.6), radius: 6, y: 2)
-                              Text("\(rank)")
-                                  .font(.system(size: 13, weight: .black))
-                                  .foregroundColor(.white)
+                              Text("\(rank)").font(.system(size: 13, weight: .black)).foregroundColor(.white)
                           }
                           .padding(8)
                       }
                       .frame(width: 160, height: 110)
 
                       VStack(alignment: .leading, spacing: 4) {
-                          Text(app.name)
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.primary)
-                              .lineLimit(1)
-
-                          Text(shortDesc)
-                              .font(.system(size: 10))
-                              .foregroundColor(.secondary)
-                              .lineLimit(2)
-                              .multilineTextAlignment(.leading)
-
+                          Text(app.name).font(.system(size: 13, weight: .bold)).foregroundColor(.primary).lineLimit(1)
+                          Text(shortDesc).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2).multilineTextAlignment(.leading)
                           HStack(spacing: 4) {
                               if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 8, weight: .semibold))
-                                      .foregroundColor(.vipPurple)
+                                  Text(cat).font(.system(size: 8, weight: .semibold)).foregroundColor(.vipPurple)
                                       .padding(.horizontal, 5).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                               }
                               Spacer()
-                              Text(app.formattedSize)
-                                  .font(.system(size: 9)).foregroundColor(.gray)
+                              Text(app.formattedSize).font(.system(size: 9)).foregroundColor(.gray)
                           }
                       }
                       .padding(.horizontal, 10)
@@ -1561,8 +1032,7 @@ jobs:
                                   .frame(width: 58, height: 58).cornerRadius(14).shadow(color: .black.opacity(0.1), radius: 5)
                           default:
                               RoundedRectangle(cornerRadius: 14)
-                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)],
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.3), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
                                   .frame(width: 58, height: 58)
                                   .overlay(Image(systemName: "app.fill").foregroundColor(.white.opacity(0.5)))
                           }
@@ -1658,10 +1128,7 @@ jobs:
                   }
                   .padding(.vertical, 6)
                   .padding(.horizontal, 10)
-                  .background(
-                      LinearGradient(colors: [.pink, .vipPurple, .blue],
-                                     startPoint: .leading, endPoint: .trailing)
-                  )
+                  .background(LinearGradient(colors: [.pink, .vipPurple, .blue], startPoint: .leading, endPoint: .trailing))
                   .clipShape(Capsule())
                   .shadow(color: .vipPurple.opacity(0.30), radius: 8, x: 0, y: 3)
                   .padding(.horizontal, 12)
@@ -1708,15 +1175,9 @@ jobs:
                   NavigationView {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 16) {
-                              // Stats Card
-                              FilesStatsCard(importer: fileImporter)
-                                  .padding(.horizontal)
+                              FilesStatsCard(importer: fileImporter).padding(.horizontal)
+                              FilesTypeFilter(selected: $filter).padding(.horizontal)
 
-                              // Type Filter
-                              FilesTypeFilter(selected: $filter)
-                                  .padding(.horizontal)
-
-                              // Search
                               HStack(spacing: 10) {
                                   Image(systemName: "magnifyingglass").foregroundColor(.gray)
                                   TextField("ابحث في الملفات...", text: $searchText)
@@ -1733,10 +1194,8 @@ jobs:
                                   .shadow(color: .black.opacity(0.05), radius: 6))
                               .padding(.horizontal)
 
-                              // File list
                               if filteredFiles.isEmpty {
-                                  EmptyFilesView(showImporter: $showImporter)
-                                      .padding(.top, 40)
+                                  EmptyFilesView(showImporter: $showImporter).padding(.top, 40)
                               } else {
                                   LazyVStack(spacing: 10) {
                                       ForEach(filteredFiles) { file in
@@ -1756,16 +1215,11 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              HStack(spacing: 8) {
-                                  Text("21s").font(.system(size: 20, weight: .bold))
-                                      .foregroundColor(.vipPurple)
-                              }
+                              Text("21s").font(.system(size: 20, weight: .bold)).foregroundColor(.vipPurple)
                           }
                           ToolbarItem(placement: .navigationBarTrailing) {
                               Button(action: { showImporter = true }) {
-                                  Image(systemName: "plus.circle.fill")
-                                      .font(.system(size: 22))
-                                      .foregroundColor(.vipPurple)
+                                  Image(systemName: "plus.circle.fill").font(.system(size: 22)).foregroundColor(.vipPurple)
                               }
                           }
                       }
@@ -1808,9 +1262,7 @@ jobs:
                           let ok = await fileImporter.importFile(from: url)
                           if ok { importedCount += 1 }
                       }
-                      if importedCount > 0 {
-                          HapticManager.shared.notification(.success)
-                      }
+                      if importedCount > 0 { HapticManager.shared.notification(.success) }
                   }
               }
           }
@@ -1835,26 +1287,22 @@ jobs:
                           Divider().frame(height: 38)
                           statBox(value: "\(p12Count)", label: "P12",   gradient: [.orange, .red])
                           Divider().frame(height: 38)
-                          statBox(value: "\(mpCount)",  label: "MobProvision", gradient: [.green, .teal])
+                          statBox(value: "\(mpCount)",  label: "MobProv", gradient: [.green, .teal])
                           Divider().frame(height: 38)
                           statBox(value: formatted(totalSize), label: "إجمالي", gradient: [.pink, .purple])
                       }
                   }
                   .padding(16)
                   .background(RoundedRectangle(cornerRadius: 20)
-                      .fill(LinearGradient(colors: [Color.vipPurple.opacity(0.15), Color.blue.opacity(0.08)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+                      .fill(LinearGradient(colors: [Color.vipPurple.opacity(0.15), Color.blue.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
                       .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.vipPurple.opacity(0.2), lineWidth: 1)))
               }
 
               private func statBox(value: String, label: String, gradient: [Color]) -> some View {
                   VStack(spacing: 5) {
-                      Text(value)
-                          .font(.system(size: 16, weight: .black))
+                      Text(value).font(.system(size: 16, weight: .black))
                           .foregroundStyle(LinearGradient(colors: gradient, startPoint: .top, endPoint: .bottom))
-                      Text(label)
-                          .font(.system(size: 10, weight: .medium))
-                          .foregroundColor(.secondary)
+                      Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
                   }.frame(maxWidth: .infinity)
               }
 
@@ -1871,13 +1319,9 @@ jobs:
               var body: some View {
                   ScrollView(.horizontal, showsIndicators: false) {
                       HStack(spacing: 8) {
-                          chip(title: "الكل", gradient: [.gray, .gray.opacity(0.7)], active: selected == nil) {
-                              selected = nil
-                          }
+                          chip(title: "الكل", gradient: [.gray, .gray.opacity(0.7)], active: selected == nil) { selected = nil }
                           ForEach(ImportedFile.FileType.allCases, id: \.self) { type in
-                              chip(title: type.rawValue, gradient: type.gradient, active: selected == type) {
-                                  selected = type
-                              }
+                              chip(title: type.rawValue, gradient: type.gradient, active: selected == type) { selected = type }
                           }
                       }
                   }
@@ -1904,18 +1348,15 @@ jobs:
               var body: some View {
                   VStack(spacing: 18) {
                       Image(systemName: "tray.and.arrow.down.fill")
-                          .font(.system(size: 64))
-                          .foregroundColor(.vipPurple.opacity(0.5))
+                          .font(.system(size: 64)).foregroundColor(.vipPurple.opacity(0.5))
                       Text("لا توجد ملفات بعد").font(.system(size: 18, weight: .bold))
                       Text("استورد ملفات IPA أو P12 أو Mobile Provision من تطبيق الملفات")
                           .font(.system(size: 13)).foregroundColor(.gray)
-                          .multilineTextAlignment(.center)
-                          .padding(.horizontal, 40)
+                          .multilineTextAlignment(.center).padding(.horizontal, 40)
                       GradientButton(title: "استيراد ملف الآن", icon: "plus", gradient: [.vipPurple, .blue]) {
                           showImporter = true
                       }
-                      .frame(width: 220)
-                      .padding(.top, 8)
+                      .frame(width: 220).padding(.top, 8)
                   }
               }
           }
@@ -1936,14 +1377,12 @@ jobs:
                               HStack(spacing: 6) {
                                   if file.fileType == .ipa, let _ = file.bundleID {
                                       Text(file.bundleID ?? "")
-                                          .font(.system(size: 9, weight: .semibold))
-                                          .foregroundColor(.white)
+                                          .font(.system(size: 9, weight: .semibold)).foregroundColor(.white)
                                           .padding(.horizontal, 5).padding(.vertical, 2)
                                           .background(Capsule().fill(Color.vipPurple))
                                   }
                                   Text(file.appName ?? file.originalName)
-                                      .font(.system(size: 14, weight: .bold))
-                                      .lineLimit(1)
+                                      .font(.system(size: 14, weight: .bold)).lineLimit(1)
                               }
                               HStack(spacing: 8) {
                                   if let v = file.appVersion, file.fileType == .ipa {
@@ -1958,11 +1397,8 @@ jobs:
                           VStack(spacing: 8) {
                               Image(systemName: "chevron.left").font(.system(size: 12)).foregroundColor(.gray)
                               Button(action: onDelete) {
-                                  Image(systemName: "trash.fill")
-                                      .font(.system(size: 13))
-                                      .foregroundColor(.red)
-                                      .padding(6)
-                                      .background(Circle().fill(Color.red.opacity(0.1)))
+                                  Image(systemName: "trash.fill").font(.system(size: 13)).foregroundColor(.red)
+                                      .padding(6).background(Circle().fill(Color.red.opacity(0.1)))
                               }
                               .buttonStyle(PlainButtonStyle())
                           }
@@ -1971,8 +1407,7 @@ jobs:
                       .background(RoundedRectangle(cornerRadius: 16)
                           .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
                           .shadow(color: .black.opacity(0.05), radius: 6, y: 2))
-                      .overlay(RoundedRectangle(cornerRadius: 16)
-                          .stroke(file.fileType.gradient.first?.opacity(0.25) ?? .gray.opacity(0.2), lineWidth: 1))
+                      .overlay(RoundedRectangle(cornerRadius: 16).stroke(file.fileType.gradient.first?.opacity(0.25) ?? .gray.opacity(0.2), lineWidth: 1))
                   }
                   .buttonStyle(PlainButtonStyle())
               }
@@ -1981,19 +1416,14 @@ jobs:
               private var iconView: some View {
                   if let iconURL = importer.iconURL(for: file), let data = try? Data(contentsOf: iconURL),
                      let uiImg = UIImage(data: data) {
-                      Image(uiImage: uiImg)
-                          .resizable().aspectRatio(contentMode: .fill)
-                          .frame(width: 54, height: 54)
-                          .clipShape(RoundedRectangle(cornerRadius: 12))
+                      Image(uiImage: uiImg).resizable().aspectRatio(contentMode: .fill)
+                          .frame(width: 54, height: 54).clipShape(RoundedRectangle(cornerRadius: 12))
                   } else {
                       ZStack {
                           RoundedRectangle(cornerRadius: 12)
-                              .fill(LinearGradient(colors: file.fileType.gradient,
-                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                              .fill(LinearGradient(colors: file.fileType.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
                               .frame(width: 54, height: 54)
-                          Image(systemName: file.fileType.systemIcon)
-                              .font(.system(size: 22))
-                              .foregroundColor(.white)
+                          Image(systemName: file.fileType.systemIcon).font(.system(size: 22)).foregroundColor(.white)
                       }
                   }
               }
@@ -2013,58 +1443,40 @@ jobs:
                   NavigationView {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 18) {
-                              // Header Icon
                               ZStack {
-                                  Circle()
-                                      .fill(LinearGradient(colors: file.fileType.gradient,
-                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+                                  Circle().fill(LinearGradient(colors: file.fileType.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
                                       .frame(width: 130, height: 130)
-                                      .shadow(color: file.fileType.gradient.first?.opacity(0.5) ?? .blue.opacity(0.4),
-                                              radius: 18, y: 8)
+                                      .shadow(color: file.fileType.gradient.first?.opacity(0.5) ?? .blue.opacity(0.4), radius: 18, y: 8)
                                   if let iconURL = importer.iconURL(for: file),
                                      let data = try? Data(contentsOf: iconURL),
                                      let uiImg = UIImage(data: data) {
-                                      Image(uiImage: uiImg)
-                                          .resizable().aspectRatio(contentMode: .fill)
-                                          .frame(width: 110, height: 110)
-                                          .clipShape(Circle())
+                                      Image(uiImage: uiImg).resizable().aspectRatio(contentMode: .fill)
+                                          .frame(width: 110, height: 110).clipShape(Circle())
                                           .overlay(Circle().stroke(Color.white, lineWidth: 3))
                                   } else {
-                                      Image(systemName: file.fileType.systemIcon)
-                                          .font(.system(size: 50))
-                                          .foregroundColor(.white)
+                                      Image(systemName: file.fileType.systemIcon).font(.system(size: 50)).foregroundColor(.white)
                                   }
                               }
                               .padding(.top, 12)
 
-                              // Name
                               VStack(spacing: 4) {
-                                  Text(file.appName ?? file.originalName)
-                                      .font(.system(size: 22, weight: .black))
+                                  Text(file.appName ?? file.originalName).font(.system(size: 22, weight: .black))
                                   Text(file.fileType.displayName)
-                                      .font(.system(size: 12, weight: .semibold))
-                                      .foregroundColor(.white)
+                                      .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
                                       .padding(.horizontal, 12).padding(.vertical, 4)
-                                      .background(Capsule().fill(LinearGradient(colors: file.fileType.gradient,
-                                                                                startPoint: .leading, endPoint: .trailing)))
+                                      .background(Capsule().fill(LinearGradient(colors: file.fileType.gradient, startPoint: .leading, endPoint: .trailing)))
                               }
 
-                              // Info grid
                               LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                                   infoCell(icon: "memorychip", label: "الحجم", value: file.formattedSize)
                                   infoCell(icon: "calendar", label: "تاريخ الاستيراد", value: file.formattedDate)
-                                  if let b = file.bundleID {
-                                      infoCell(icon: "app.badge", label: "Bundle ID", value: b)
-                                  }
-                                  if let v = file.appVersion {
-                                      infoCell(icon: "number", label: "النسخة", value: v)
-                                  }
+                                  if let b = file.bundleID { infoCell(icon: "app.badge", label: "Bundle ID", value: b) }
+                                  if let v = file.appVersion { infoCell(icon: "number", label: "النسخة", value: v) }
                                   infoCell(icon: "doc.text", label: "الاسم الأصلي", value: file.originalName)
                                   infoCell(icon: "tag", label: "النوع", value: file.fileType.rawValue)
                               }
                               .padding(.horizontal)
 
-                              // Notes
                               VStack(alignment: .trailing, spacing: 8) {
                                   HStack {
                                       Spacer()
@@ -2073,8 +1485,7 @@ jobs:
                                   TextEditor(text: $notesText)
                                       .frame(height: 90)
                                       .padding(8)
-                                      .background(RoundedRectangle(cornerRadius: 12)
-                                          .fill(scheme == .dark ? Color.cardDark : Color(white: 0.96)))
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(scheme == .dark ? Color.cardDark : Color(white: 0.96)))
                                       .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
                                       .onChange(of: notesText) { newValue in
                                           importer.updateNotes(for: file, notes: newValue)
@@ -2082,7 +1493,6 @@ jobs:
                               }
                               .padding(.horizontal)
 
-                              // Action buttons
                               VStack(spacing: 10) {
                                   GradientButton(title: "إعادة تسمية", icon: "pencil", gradient: [.blue, .cyan]) {
                                       renameText = file.originalName
@@ -2134,12 +1544,10 @@ jobs:
 
               private func infoCell(icon: String, label: String, value: String) -> some View {
                   VStack(spacing: 6) {
-                      Image(systemName: icon)
-                          .font(.system(size: 18))
+                      Image(systemName: icon).font(.system(size: 18))
                           .foregroundStyle(LinearGradient(colors: file.fileType.gradient, startPoint: .top, endPoint: .bottom))
                       Text(label).font(.system(size: 10)).foregroundColor(.gray)
-                      Text(value).font(.system(size: 12, weight: .semibold))
-                          .lineLimit(2).multilineTextAlignment(.center)
+                      Text(value).font(.system(size: 12, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
                   }
                   .frame(maxWidth: .infinity).padding(12)
                   .background(RoundedRectangle(cornerRadius: 14)
@@ -2211,16 +1619,14 @@ jobs:
                                   HStack(spacing: 12) {
                                       ZStack {
                                           RoundedRectangle(cornerRadius: 14)
-                                              .fill(LinearGradient(colors: [.vipPurple, .blue],
-                                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                                              .fill(LinearGradient(colors: [.vipPurple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
                                               .frame(width: 46, height: 46)
                                               .shadow(color: .vipPurple.opacity(0.4), radius: 6, y: 3)
                                           Image(systemName: "square.grid.2x2.fill").foregroundColor(.white)
                                       }
                                       VStack(alignment: .trailing, spacing: 2) {
                                           Text("كل التطبيقات").font(.system(size: 18, weight: .heavy))
-                                          Text("\(appsManager.apps.count) تطبيق متوفر")
-                                              .font(.system(size: 11)).foregroundColor(.gray)
+                                          Text("\(appsManager.apps.count) تطبيق متوفر").font(.system(size: 11)).foregroundColor(.gray)
                                       }
                                       Spacer()
                                       Menu {
@@ -2234,10 +1640,8 @@ jobs:
                                           }
                                       } label: {
                                           HStack(spacing: 4) {
-                                              Image(systemName: "arrow.up.arrow.down")
-                                                  .font(.system(size: 12, weight: .semibold))
-                                              Text(sortMode.rawValue)
-                                                  .font(.system(size: 12, weight: .semibold))
+                                              Image(systemName: "arrow.up.arrow.down").font(.system(size: 12, weight: .semibold))
+                                              Text(sortMode.rawValue).font(.system(size: 12, weight: .semibold))
                                           }
                                           .foregroundColor(.vipPurple)
                                           .padding(.horizontal, 10).padding(.vertical, 6)
@@ -2247,8 +1651,7 @@ jobs:
 
                                   HStack(spacing: 10) {
                                       Image(systemName: "magnifyingglass")
-                                          .foregroundColor(isSearchFocused ? .vipPurple : .gray)
-                                          .font(.system(size: 15))
+                                          .foregroundColor(isSearchFocused ? .vipPurple : .gray).font(.system(size: 15))
                                       TextField("ابحث عن تطبيق...", text: $searchText)
                                           .font(.system(size: 15)).multilineTextAlignment(.trailing)
                                           .onTapGesture { isSearchFocused = true }
@@ -2309,16 +1712,13 @@ jobs:
 
                                   HStack {
                                       Spacer()
-                                      Text("\(filteredApps.count) نتيجة")
-                                          .font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
+                                      Text("\(filteredApps.count) نتيجة").font(.system(size: 11)).foregroundColor(.gray).padding(.horizontal)
                                   }
 
                                   if filteredApps.isEmpty {
                                       VStack(spacing: 16) {
-                                          Image(systemName: "magnifyingglass")
-                                              .font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
-                                          Text("لا توجد نتائج لـ \"\(searchText)\"")
-                                              .font(.system(size: 16))
+                                          Image(systemName: "magnifyingglass").font(.system(size: 50)).foregroundColor(.gray.opacity(0.4))
+                                          Text("لا توجد نتائج لـ \"\(searchText)\"").font(.system(size: 16))
                                           Text("جرب بحثاً آخر").font(.system(size: 13)).foregroundColor(.gray)
                                       }.frame(maxWidth: .infinity).padding(.top, 60)
                                   } else {
@@ -2337,11 +1737,7 @@ jobs:
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) {
-                              HStack(spacing: 8) {
-                                  Text("21s")
-                                      .font(.system(size: 20, weight: .bold))
-                                      .foregroundColor(.vipPurple)
-                              }
+                              Text("21s").font(.system(size: 20, weight: .bold)).foregroundColor(.vipPurple)
                           }
                       }
                   }
@@ -2366,18 +1762,14 @@ jobs:
                               } else {
                                   ZStack {
                                       RoundedRectangle(cornerRadius: 14)
-                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.2), .blue.opacity(0.1)],
-                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
+                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.2), .blue.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
                                           .frame(width: 58, height: 58)
-                                      Image(systemName: "app.fill")
-                                          .font(.system(size: 22)).foregroundColor(.vipPurple.opacity(0.4))
+                                      Image(systemName: "app.fill").font(.system(size: 22)).foregroundColor(.vipPurple.opacity(0.4))
                                   }
                               }
                           }
                           if app.isNew {
-                              Text("NEW")
-                                  .font(.system(size: 7, weight: .black))
-                                  .foregroundColor(.white)
+                              Text("NEW").font(.system(size: 7, weight: .black)).foregroundColor(.white)
                                   .padding(.horizontal, 4).padding(.vertical, 2)
                                   .background(Capsule().fill(Color.green))
                                   .offset(x: 4, y: 4)
@@ -2386,27 +1778,18 @@ jobs:
 
                       VStack(alignment: .trailing, spacing: 5) {
                           HStack(spacing: 6) {
-                              if app.isPopular {
-                                  Image(systemName: "flame.fill")
-                                      .font(.system(size: 10)).foregroundColor(.orange)
-                              }
+                              if app.isPopular { Image(systemName: "flame.fill").font(.system(size: 10)).foregroundColor(.orange) }
                               Spacer()
-                              Text(app.name)
-                                  .font(.system(size: 15, weight: .bold)).lineLimit(1)
+                              Text(app.name).font(.system(size: 15, weight: .bold)).lineLimit(1)
                           }
-                          Text(app.developerName)
-                              .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
+                          Text(app.developerName).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                               .frame(maxWidth: .infinity, alignment: .trailing)
                           HStack(spacing: 8) {
                               Spacer()
-                              Label(app.formattedSize, systemImage: "internaldrive")
-                                  .font(.system(size: 10)).foregroundColor(.gray)
-                              Label(app.formattedDate, systemImage: "calendar")
-                                  .font(.system(size: 10)).foregroundColor(.gray)
+                              Label(app.formattedSize, systemImage: "internaldrive").font(.system(size: 10)).foregroundColor(.gray)
+                              Label(app.formattedDate, systemImage: "calendar").font(.system(size: 10)).foregroundColor(.gray)
                               if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 9, weight: .medium))
-                                      .foregroundColor(.vipPurple)
+                                  Text(cat).font(.system(size: 9, weight: .medium)).foregroundColor(.vipPurple)
                                       .padding(.horizontal, 6).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.vipPurple.opacity(0.1)))
                               }
@@ -2414,28 +1797,22 @@ jobs:
                           HStack(spacing: 6) {
                               Spacer()
                               Text(app.subscriptionType)
-                                  .font(.system(size: 9, weight: .semibold))
-                                  .foregroundColor(.white)
+                                  .font(.system(size: 9, weight: .semibold)).foregroundColor(.white)
                                   .padding(.horizontal, 7).padding(.vertical, 3)
-                                  .background(Capsule().fill(
-                                      LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing)
-                                  ))
-                              let desc = app.localizedDescription
-                                  .replacingOccurrences(of: "Injected with ", with: "")
+                                  .background(Capsule().fill(LinearGradient(colors: [.vipPurple, .blue], startPoint: .leading, endPoint: .trailing)))
+                              let desc = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
                               if !desc.isEmpty {
                                   Text(desc.components(separatedBy: .whitespaces).prefix(4).joined(separator: " "))
                                       .font(.system(size: 9)).foregroundColor(.gray).lineLimit(1)
                               }
                           }
                       }
-
                   }
                   .padding(12)
                   .background(RoundedRectangle(cornerRadius: 18)
                       .fill(scheme == .dark ? Color(white: 0.11) : Color.white)
                       .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 3))
-                  .overlay(RoundedRectangle(cornerRadius: 18)
-                      .stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
+                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.vipPurple.opacity(0.06), lineWidth: 1))
               }
           }
           VIPEOF
@@ -2452,7 +1829,6 @@ jobs:
           struct AppDetailView: View {
               let app: AppItem
               @State private var isDownloading = false
-              @State private var showAlert = false
               @Environment(\.dismiss) var dismiss
               @Environment(\.colorScheme) var scheme
 
@@ -2471,32 +1847,13 @@ jobs:
                               VStack(spacing: 18) {
                                   ZStack(alignment: .bottom) {
                                       RoundedRectangle(cornerRadius: 28)
-                                          .fill(
-                                              LinearGradient(
-                                                  colors: [
-                                                      .vipPurple.opacity(0.85),
-                                                      .blue.opacity(0.75),
-                                                      .indigo.opacity(0.9)
-                                                  ],
-                                                  startPoint: .topLeading,
-                                                  endPoint: .bottomTrailing
-                                              )
-                                          )
+                                          .fill(LinearGradient(colors: [.vipPurple.opacity(0.85), .blue.opacity(0.75), .indigo.opacity(0.9)], startPoint: .topLeading, endPoint: .bottomTrailing))
                                           .frame(height: 180)
-                                          .overlay(
-                                              ZStack {
-                                                  Circle().fill(Color.white.opacity(0.10))
-                                                      .frame(width: 160, height: 160)
-                                                      .offset(x: -110, y: -50)
-                                                  Circle().fill(Color.white.opacity(0.08))
-                                                      .frame(width: 110, height: 110)
-                                                      .offset(x: 120, y: 40)
-                                              }.clipShape(RoundedRectangle(cornerRadius: 28))
-                                          )
-                                          .overlay(
-                                              RoundedRectangle(cornerRadius: 28)
-                                                  .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                          )
+                                          .overlay(ZStack {
+                                              Circle().fill(Color.white.opacity(0.10)).frame(width: 160, height: 160).offset(x: -110, y: -50)
+                                              Circle().fill(Color.white.opacity(0.08)).frame(width: 110, height: 110).offset(x: 120, y: 40)
+                                          }.clipShape(RoundedRectangle(cornerRadius: 28)))
+                                          .overlay(RoundedRectangle(cornerRadius: 28).stroke(Color.white.opacity(0.18), lineWidth: 1))
                                           .shadow(color: .vipPurple.opacity(0.45), radius: 22, x: 0, y: 12)
                                           .shadow(color: .blue.opacity(0.25), radius: 30, x: 0, y: 18)
                                           .padding(.horizontal, 16)
@@ -2506,27 +1863,21 @@ jobs:
                                           case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
                                           default:
                                               RoundedRectangle(cornerRadius: 26)
-                                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.4), .blue.opacity(0.3)],
-                                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                                                  .fill(LinearGradient(colors: [.vipPurple.opacity(0.4), .blue.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
                                                   .overlay(Image(systemName: "app.fill").font(.system(size: 40)).foregroundColor(.white.opacity(0.7)))
                                           }
                                       }
                                       .frame(width: 120, height: 120)
                                       .clipShape(RoundedRectangle(cornerRadius: 26))
-                                      .overlay(
-                                          RoundedRectangle(cornerRadius: 26)
-                                              .stroke(Color.white.opacity(0.9), lineWidth: 3)
-                                      )
+                                      .overlay(RoundedRectangle(cornerRadius: 26).stroke(Color.white.opacity(0.9), lineWidth: 3))
                                       .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 8)
-                                      .shadow(color: .vipPurple.opacity(0.4), radius: 20, x: 0, y: 10)
                                       .offset(y: 50)
                                   }
                                   .padding(.bottom, 50)
 
                                   VStack(spacing: 6) {
                                       Text(app.name).font(.system(size: 24, weight: .black)).multilineTextAlignment(.center)
-                                      Text(app.developerName.isEmpty ? "VIP21 Store" : app.developerName)
-                                          .font(.system(size: 13)).foregroundColor(.gray)
+                                      Text(app.developerName.isEmpty ? "VIP21 Store" : app.developerName).font(.system(size: 13)).foregroundColor(.gray)
                                       HStack(spacing: 6) {
                                           if app.isNew { NewBadge() }
                                           if app.isPopular { PopularBadge() }
@@ -2616,10 +1967,7 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      ContentView()
-                          .onAppear {
-                              requestNotifications()
-                          }
+                      ContentView().onAppear { requestNotifications() }
                   }
               }
 
@@ -2629,7 +1977,6 @@ jobs:
           }
 
           class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-
               func application(_ application: UIApplication,
                                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
                   UNUserNotificationCenter.current().delegate = self
@@ -2677,6 +2024,7 @@ jobs:
             -framework Foundation \
             -framework UserNotifications \
             -framework UniformTypeIdentifiers \
+            -framework Compression \
             -o VIP21Store
           file VIP21Store
 
@@ -2688,6 +2036,7 @@ jobs:
           cp VIP21Store                          build-output/Payload/VIP21Store.app/VIP21Store
           cp Resources/Info.plist                build-output/Payload/VIP21Store.app/Info.plist
           cp Resources/AppIcon60x60@2x.png       build-output/Payload/VIP21Store.app/
+          cp Resources/AppIcon76x76x2x~ipad.png  build-output/Payload/VIP21Store.app/ 2>/dev/null || true
           cp Resources/AppIcon76x76@2x~ipad.png  build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
