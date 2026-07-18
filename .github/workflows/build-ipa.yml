@@ -6,11 +6,10 @@ on:
   workflow_dispatch:
 
 env:
-  # ---- متغيرات التخصيص ----
-  NEW_BUNDLE_ID: "com.vip21.store.pro"          # Bundle ID الجديد
-  NEW_APP_NAME:  "21s Pro"                     # اسم التطبيق الجديد
-  DYLIB_URL: "https://example.com/MyDylib.dylib"  # رابط تحميل المكتبة (غيّره)
-  DYLIB_NAME: "MyDylib.dylib"                  # اسم الملف المحفوظ
+  NEW_BUNDLE_ID: "com.vip21.store.pro"
+  NEW_APP_NAME:  "21s Pro"
+  DYLIB_URL: "https://example.com/MyDylib.dylib"
+  DYLIB_NAME: "MyDylib.dylib"
 
 jobs:
   build:
@@ -28,32 +27,24 @@ jobs:
 
       - name: تثبيت الأدوات المطلوبة (ldid, zip, insert_dylib)
         run: |
-          # التعامل مع تحذير tap غير الموثوق
+          # إلغاء ربط tap غير موثوق لتجنب التحذيرات
           brew untap aws/tap 2>/dev/null || true
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew install ldid zip
 
-          # محاولة تنزيل insert_dylib الثنائي من الإصدارات الرسمية
-          echo "محاولة تنزيل insert_dylib الثنائي..."
-          curl -L -H "Accept: application/octet-stream" -o insert_dylib https://github.com/tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
-          chmod +x insert_dylib
+          # إضافة مسار zip إلى PATH (لأنه keg‑only)
+          echo 'export PATH="/opt/homebrew/opt/zip/bin:$PATH"' >> ~/.bash_profile
+          export PATH="/opt/homebrew/opt/zip/bin:$PATH"
 
-          # التحقق من أن الملف هو Mach-O ثنائي (وليس نص HTML أو رسالة خطأ)
-          if file insert_dylib | grep -q "Mach-O"; then
-            echo "✅ تم تنزيل insert_dylib الثنائي بنجاح"
-            sudo mv insert_dylib /usr/local/bin/
-          else
-            echo "⚠️ فشل تنزيل الثنائي، سيتم بناء insert_dylib من المصدر..."
-            # حذف المجلد القديم إن وجد لتجنب خطأ "already exists"
-            rm -rf insert_dylib
-            git clone --depth 1 https://github.com/tyilo/insert_dylib.git
-            cd insert_dylib
-            make
-            sudo cp insert_dylib /usr/local/bin/
-            cd ..
-          fi
+          # بناء insert_dylib من المصدر (بدون الاعتماد على ثنائي مفقود)
+          echo "بناء insert_dylib من المصدر..."
+          git clone --depth 1 https://github.com/tyilo/insert_dylib.git
+          cd insert_dylib
+          make
+          sudo cp insert_dylib /usr/local/bin/
+          cd ..
 
-          # التحقق النهائي من وجود insert_dylib في المسار
+          # التحقق النهائي
           if command -v insert_dylib &> /dev/null; then
             echo "✅ insert_dylib مثبت بنجاح: $(which insert_dylib)"
             insert_dylib --version || echo "إصدار insert_dylib: غير معروف"
@@ -67,9 +58,7 @@ jobs:
           curl -L -o "$DYLIB_NAME" "$DYLIB_URL"
           ls -lh "$DYLIB_NAME"
 
-      # =========================================================
-      # RESOURCES
-      # =========================================================
+      # ========== RESOURCES ==========
       - name: توليد أيقونات التطبيق
         run: |
           mkdir -p Resources
@@ -162,7 +151,6 @@ jobs:
                   <string>UIInterfaceOrientationLandscapeRight</string>
               </array>
 
-              <!-- ====== App Icons ====== -->
               <key>CFBundleIcons</key>
               <dict>
                   <key>CFBundlePrimaryIcon</key>
@@ -194,7 +182,6 @@ jobs:
                   </dict>
               </dict>
 
-              <!-- ====== Launch / Scenes ====== -->
               <key>UILaunchScreen</key>
               <dict>
                   <key>UIColorName</key>                     <string></string>
@@ -207,13 +194,11 @@ jobs:
               <key>UIApplicationSupportsIndirectInputEvents</key>
               <true/>
 
-              <!-- ====== Background modes ====== -->
               <key>UIBackgroundModes</key>
               <array>
                   <string>fetch</string>
               </array>
 
-              <!-- ====== Document types ====== -->
               <key>LSSupportsOpeningDocumentsInPlace</key>  <true/>
               <key>UISupportsDocumentBrowser</key>           <true/>
               <key>UIFileSharingEnabled</key>                <true/>
@@ -295,7 +280,6 @@ jobs:
                   </dict>
               </array>
 
-              <!-- ====== Permission usage strings ====== -->
               <key>NSPhotoLibraryUsageDescription</key>
               <string>لاستيراد أيقونات التطبيقات</string>
               <key>NSPhotoLibraryAddUsageDescription</key>
@@ -309,7 +293,6 @@ jobs:
               <key>NSUserTrackingUsageDescription</key>
               <string>لتحسين تجربة الاستخدام داخل المتجر</string>
 
-              <!-- ====== Network ====== -->
               <key>NSAppTransportSecurity</key>
               <dict>
                   <key>NSAllowsArbitraryLoads</key>              <true/>
@@ -317,7 +300,6 @@ jobs:
                   <key>NSAllowsArbitraryLoadsForMedia</key>      <true/>
               </dict>
 
-              <!-- ====== URL schemes ====== -->
               <key>LSApplicationQueriesSchemes</key>
               <array>
                   <string>tg</string>
@@ -341,9 +323,7 @@ jobs:
           </plist>
           PEOF
 
-      # =========================================================
-      # CONSTANTS + SOURCE CODE (جميع الملفات عدا FilesTabView.swift تم تعديلها)
-      # =========================================================
+      # ========== SOURCE CODE (جميع الملفات) ==========
       - name: توليد الكود - الثوابت (Constants.swift)
         run: |
           cat > Constants.swift << 'VIPEOF'
@@ -2969,9 +2949,6 @@ jobs:
           }
           VIPEOF
 
-      # =========================================================
-      # FILES TAB (معدل - بدون كود الحقن)
-      # =========================================================
       - name: توليد الكود - FilesTabView.swift (بدون Process)
         run: |
           cat > FilesTabView.swift << 'VIPEOF'
@@ -3864,9 +3841,7 @@ jobs:
           }
           VIPEOF
 
-      # =========================================================
-      # BUILD (مع حقن dylib في الملف التنفيذي للتطبيق)
-      # =========================================================
+      # ========== BUILD & INJECT ==========
       - name: بناء التطبيق
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -3900,7 +3875,7 @@ jobs:
         run: |
           if [ -f "$DYLIB_NAME" ]; then
             cp "$DYLIB_NAME" ./VIP21Store.dylib
-            /usr/local/bin/insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
+            insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
             echo "✅ تم حقن المكتبة بنجاح"
           else
             echo "⚠️ ملف dylib غير موجود، تخطي الحقن"
