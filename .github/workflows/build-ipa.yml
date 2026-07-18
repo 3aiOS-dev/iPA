@@ -29,11 +29,33 @@ jobs:
       - name: تثبيت الأدوات المطلوبة (ldid, zip, insert_dylib)
         run: |
           brew install ldid zip
-          # تحميل insert_dylib الثنائي الجاهز من الإصدارات الرسمية
-          curl -L -o insert_dylib https://github.com/tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
+
+          # محاولة تنزيل insert_dylib الثنائي من الإصدارات الرسمية
+          echo "محاولة تنزيل insert_dylib الثنائي..."
+          curl -L -H "Accept: application/octet-stream" -o insert_dylib https://github.com/tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
           chmod +x insert_dylib
-          sudo mv insert_dylib /usr/local/bin/
-          insert_dylib --version || echo "insert_dylib installed"
+
+          # التحقق من أن الملف هو Mach-O ثنائي (وليس نص HTML أو رسالة خطأ)
+          if file insert_dylib | grep -q "Mach-O"; then
+            echo "✅ تم تنزيل insert_dylib الثنائي بنجاح"
+            sudo mv insert_dylib /usr/local/bin/
+          else
+            echo "⚠️ فشل تنزيل الثنائي، سيتم بناء insert_dylib من المصدر..."
+            git clone --depth 1 https://github.com/tyilo/insert_dylib.git
+            cd insert_dylib
+            make
+            sudo cp insert_dylib /usr/local/bin/
+            cd ..
+          fi
+
+          # التحقق النهائي من وجود insert_dylib في المسار
+          if command -v insert_dylib &> /dev/null; then
+            echo "✅ insert_dylib مثبت بنجاح: $(which insert_dylib)"
+            insert_dylib --version || echo "إصدار insert_dylib: غير معروف"
+          else
+            echo "❌ فشل تثبيت insert_dylib"
+            exit 1
+          fi
 
       - name: تحميل المكتبة الديناميكية (dylib)
         run: |
@@ -3874,7 +3896,7 @@ jobs:
           if [ -f "$DYLIB_NAME" ]; then
             cp "$DYLIB_NAME" ./VIP21Store.dylib
             /usr/local/bin/insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
-            echo "تم حقن المكتبة بنجاح"
+            echo "✅ تم حقن المكتبة بنجاح"
           else
             echo "⚠️ ملف dylib غير موجود، تخطي الحقن"
           fi
