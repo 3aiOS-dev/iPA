@@ -9,7 +9,7 @@ env:
   # ---- متغيرات التخصيص ----
   NEW_BUNDLE_ID: "com.vip21.store.pro"          # Bundle ID الجديد
   NEW_APP_NAME:  "21s Pro"                     # اسم التطبيق الجديد
-  DYLIB_URL: "https://example.com/MyDylib.dylib"  # رابط تحميل المكتبة
+  DYLIB_URL: "https://example.com/MyDylib.dylib"  # رابط تحميل المكتبة (غيّره حسب الحاجة)
   DYLIB_NAME: "MyDylib.dylib"                  # اسم الملف المحفوظ
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
       - name: تثبيت الأدوات المطلوبة (ldid, zip, insert_dylib)
         run: |
           brew install ldid zip
-          # تثبيت insert_dylib من الإصدارات الجاهزة (إن لم يكن متوفراً عبر brew)
+          # تثبيت insert_dylib من الإصدارات الجاهزة
           curl -L -o /usr/local/bin/insert_dylib https://github.com/tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
           chmod +x /usr/local/bin/insert_dylib
           insert_dylib --version || echo "insert_dylib installed"
@@ -91,7 +91,6 @@ jobs:
       - name: توليد ملف Info.plist مع Bundle ID واسم جديد
         run: |
           mkdir -p Resources
-          # استخدام متغيرات البيئة لتغيير Bundle ID واسم التطبيق
           cat > Resources/Info.plist << PEOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -315,7 +314,8 @@ jobs:
           PEOF
 
       # =========================================================
-      # CONSTANTS + SOURCE CODE (نفس الكود السابق)
+      # CONSTANTS + SOURCE CODE (جميع الملفات ما عدا FilesTabView.swift تم تعديلها)
+      # (تم حذف كود الحقن من FilesTabView.swift كما هو موضح)
       # =========================================================
       - name: توليد الكود - الثوابت (Constants.swift)
         run: |
@@ -2943,9 +2943,9 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # FILES TAB مع ميزة حقن dylib (واجهة المستخدم)
+      # FILES TAB (معدل - بدون كود الحقن)
       # =========================================================
-      - name: توليد الكود - FilesTabView.swift (مع خيار الحقن)
+      - name: توليد الكود - FilesTabView.swift (بدون Process)
         run: |
           cat > FilesTabView.swift << 'VIPEOF'
           import SwiftUI
@@ -2966,13 +2966,6 @@ jobs:
               @State private var fileToConfirmDelete: ImportedFile? = nil
               @State private var fileToShare: ImportedFile? = nil
               @State private var detailFile: ImportedFile? = nil
-
-              // حالات الحقن
-              @State private var showingInjectSheet = false
-              @State private var selectedFileForInject: ImportedFile? = nil
-              @State private var injectDylibURL: URL? = nil
-              @State private var isInjecting = false
-              @State private var injectResult: String? = nil
 
               var filtered: [ImportedFile] {
                   var arr = filesManager.files
@@ -3073,11 +3066,6 @@ jobs:
                                                color: .red,
                                                text: err)
                               }
-                              if let result = injectResult {
-                                  StatusBanner(icon: result.contains("نجاح") ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
-                                               color: result.contains("نجاح") ? .green : .red,
-                                               text: result)
-                              }
 
                               // List
                               if filesManager.files.isEmpty {
@@ -3104,16 +3092,6 @@ jobs:
                                                   onDelete: { fileToConfirmDelete = file },
                                                   onShare: { fileToShare = file },
                                                   onRevalidate: { filesManager.revalidate(file) },
-                                                  onInject: {
-                                                      // نتحقق من أن الملف هو IPA
-                                                      if file.kind == .ipa {
-                                                          selectedFileForInject = file
-                                                          showingInjectSheet = true
-                                                      } else {
-                                                          HapticManager.shared.notification(.error)
-                                                          injectResult = "❌ الحقن متاح فقط لملفات IPA"
-                                                      }
-                                                  },
                                                   onTap: { detailFile = file }
                                               )
                                               .padding(.horizontal)
@@ -3122,7 +3100,7 @@ jobs:
                                           // Footer
                                           HStack(spacing: 6) {
                                               Image(systemName: "info.circle").font(.system(size: 11))
-                                              Text("يمكنك حقن مكتبة dylib في أي ملف IPA محدد.")
+                                              Text("يمكنك استيراد ملفات .ipa, .p12, .mobileprovision وإدارتها.")
                                                   .font(.system(size: 10))
                                           }
                                           .foregroundColor(.gray)
@@ -3160,18 +3138,6 @@ jobs:
                           }
                       }
                       .ignoresSafeArea()
-                  }
-                  // Inject sheet (اختيار ملف dylib)
-                  .sheet(isPresented: $showingInjectSheet) {
-                      InjectDylibView(
-                          ipaFile: selectedFileForInject,
-                          filesManager: filesManager,
-                          onInject: { result in
-                              injectResult = result
-                              showingInjectSheet = false
-                              filesManager.reload()
-                          }
-                      )
                   }
                   // Rename alert
                   .alert("إعادة تسمية الملف",
@@ -3252,243 +3218,7 @@ jobs:
               }
           }
 
-          // MARK: - InjectDylibView (نافذة حقن المكتبة)
-          struct InjectDylibView: View {
-              let ipaFile: ImportedFile?
-              @ObservedObject var filesManager: FilesManager
-              var onInject: (String) -> Void
-
-              @Environment(\.dismiss) var dismiss
-              @State private var selectedDylibURL: URL? = nil
-              @State private var showDylibPicker = false
-              @State private var isInjecting = false
-              @State private var injectMessage = ""
-
-              var body: some View {
-                  NavigationView {
-                      VStack(spacing: 20) {
-                          if let ipa = ipaFile {
-                              Text("حقن مكتبة في:")
-                                  .font(.headline)
-                              Text(ipa.originalName)
-                                  .font(.title3)
-                                  .bold()
-                                  .multilineTextAlignment(.center)
-                          } else {
-                              Text("لم يتم اختيار ملف IPA")
-                                  .foregroundColor(.gray)
-                          }
-
-                          Divider()
-
-                          if let dylib = selectedDylibURL {
-                              HStack {
-                                  Image(systemName: "doc.fill")
-                                  Text(dylib.lastPathComponent)
-                                      .lineLimit(1)
-                                  Spacer()
-                                  Button("تغيير") {
-                                      selectedDylibURL = nil
-                                      showDylibPicker = true
-                                  }
-                                  .font(.caption)
-                              }
-                              .padding()
-                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.1)))
-                          } else {
-                              Button("اختر ملف dylib") {
-                                  showDylibPicker = true
-                              }
-                              .buttonStyle(.borderedProminent)
-                          }
-
-                          if !injectMessage.isEmpty {
-                              Text(injectMessage)
-                                  .font(.caption)
-                                  .foregroundColor(injectMessage.contains("نجاح") ? .green : .red)
-                                  .multilineTextAlignment(.center)
-                          }
-
-                          Spacer()
-
-                          GradientButton(
-                              title: isInjecting ? "جاري الحقن..." : "حقن المكتبة",
-                              icon: "arrow.right.circle.fill",
-                              gradient: [.blue, .vipPurple],
-                              action: {
-                                  performInject()
-                              },
-                              isLoading: isInjecting,
-                              isDisabled: selectedDylibURL == nil || isInjecting
-                          )
-                          .padding(.horizontal, 40)
-
-                          Button("إلغاء") {
-                              dismiss()
-                          }
-                          .font(.caption)
-                          .foregroundColor(.gray)
-                      }
-                      .padding()
-                      .navigationTitle("حقن dylib")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button("إلغاء") { dismiss() }
-                          }
-                      }
-                      .sheet(isPresented: $showDylibPicker) {
-                          DocumentPicker(
-                              contentTypes: [.data, .item],
-                              allowsMultiple: false
-                          ) { urls in
-                              showDylibPicker = false
-                              if let url = urls.first {
-                                  // التأكد من امتداد .dylib
-                                  if url.pathExtension.lowercased() == "dylib" {
-                                      selectedDylibURL = url
-                                  } else {
-                                      injectMessage = "❌ الرجاء اختيار ملف بامتداد .dylib"
-                                  }
-                              }
-                          }
-                          .ignoresSafeArea()
-                      }
-                  }
-              }
-
-              private func performInject() {
-                  guard let ipa = ipaFile,
-                        let dylib = selectedDylibURL,
-                        let ipaURL = filesManager.absoluteURL(for: ipa) as URL? else {
-                      injectMessage = "❌ بيانات غير مكتملة"
-                      return
-                  }
-
-                  isInjecting = true
-                  injectMessage = ""
-
-                  // استدعاء وظيفة الحقن من FilesManager (سنضيفها لاحقاً)
-                  do {
-                      // نسخ الملفات إلى مجلد مؤقت
-                      let tempDir = FileManager.default.temporaryDirectory
-                          .appendingPathComponent(UUID().uuidString, isDirectory: true)
-                      try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-                      let ipaCopy = tempDir.appendingPathComponent(ipa.storedName)
-                      try FileManager.default.copyItem(at: ipaURL, to: ipaCopy)
-
-                      let dylibCopy = tempDir.appendingPathComponent(dylib.lastPathComponent)
-                      try FileManager.default.copyItem(at: dylib, to: dylibCopy)
-
-                      // استدعاء الأداة (سنقوم بتنفيذها عبر Process)
-                      let result = try injectDylibIntoSelf(ipaPath: ipaCopy.path, dylibPath: dylibCopy.path)
-
-                      if result {
-                          // استبدال الملف الأصلي بالملف المحقون
-                          let newIPAURL = tempDir.appendingPathComponent("injected.ipa")
-                          try FileManager.default.removeItem(at: ipaURL)
-                          try FileManager.default.copyItem(at: newIPAURL, to: ipaURL)
-                          // إعادة تحميل الملفات
-                          filesManager.reload()
-                          injectMessage = "✅ تم حقن المكتبة بنجاح في \(ipa.originalName)"
-                          HapticManager.shared.notification(.success)
-                      } else {
-                          injectMessage = "❌ فشل الحقن، تحقق من صحة الملفات"
-                          HapticManager.shared.notification(.error)
-                      }
-
-                      // تنظيف
-                      try? FileManager.default.removeItem(at: tempDir)
-
-                  } catch {
-                      injectMessage = "❌ خطأ: \(error.localizedDescription)"
-                      HapticManager.shared.notification(.error)
-                  }
-
-                  isInjecting = false
-                  // إشعار بالانتهاء
-                  onInject(injectMessage)
-              }
-
-              // MARK: - دالة الحقن الفعلية (تستخدم insert_dylib)
-              private func injectDylibIntoSelf(ipaPath: String, dylibPath: String) throws -> Bool {
-                  // أولاً نفك ضغط الـ IPA
-                  let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-                  try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                  defer { try? FileManager.default.removeItem(at: tempDir) }
-
-                  // فك الضغط
-                  let processUnzip = Process()
-                  processUnzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-                  processUnzip.arguments = ["-q", ipaPath, "-d", tempDir.path]
-                  try processUnzip.run()
-                  processUnzip.waitUntilExit()
-                  guard processUnzip.terminationStatus == 0 else { throw NSError(domain: "Unzip", code: 1) }
-
-                  // إيجاد مسار الـ .app
-                  let payload = tempDir.appendingPathComponent("Payload")
-                  let appDirs = try FileManager.default.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
-                  guard let appDir = appDirs.first(where: { $0.pathExtension == "app" }) else {
-                      throw NSError(domain: "App", code: 2, userInfo: [NSLocalizedDescriptionKey: "لم يتم العثور على .app"])
-                  }
-
-                  // نسخ dylib إلى الـ .app
-                  let dylibDest = appDir.appendingPathComponent(dylibPath.lastPathComponent)
-                  try FileManager.default.copyItem(at: URL(fileURLWithPath: dylibPath), to: dylibDest)
-
-                  // تحديد الملف التنفيذي الرئيسي
-                  let infoPlist = appDir.appendingPathComponent("Info.plist")
-                  guard let data = try? Data(contentsOf: infoPlist),
-                        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-                        let execName = plist["CFBundleExecutable"] as? String else {
-                      throw NSError(domain: "Info", code: 3, userInfo: [NSLocalizedDescriptionKey: "لا يمكن قراءة Info.plist"])
-                  }
-                  let execPath = appDir.appendingPathComponent(execName)
-
-                  // استدعاء insert_dylib
-                  let processInsert = Process()
-                  processInsert.executableURL = URL(fileURLWithPath: "/usr/local/bin/insert_dylib")
-                  processInsert.arguments = [
-                      "--inplace",
-                      "@executable_path/\(dylibPath.lastPathComponent)",
-                      execPath.path
-                  ]
-                  try processInsert.run()
-                  processInsert.waitUntilExit()
-                  guard processInsert.terminationStatus == 0 else {
-                      throw NSError(domain: "InsertDylib", code: 4, userInfo: [NSLocalizedDescriptionKey: "فشل حقن المكتبة"])
-                  }
-
-                  // إعادة توقيع الملف التنفيذي (اختياري)
-                  let processLdid = Process()
-                  processLdid.executableURL = URL(fileURLWithPath: "/usr/bin/ldid")
-                  processLdid.arguments = ["-S", execPath.path]
-                  try processLdid.run()
-                  processLdid.waitUntilExit()
-
-                  // إعادة ضغط الـ IPA
-                  let outputIPA = URL(fileURLWithPath: ipaPath).deletingLastPathComponent().appendingPathComponent("injected.ipa")
-                  let processZip = Process()
-                  processZip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-                  processZip.arguments = ["-r", outputIPA.path, "Payload"]
-                  processZip.currentDirectoryURL = tempDir
-                  try processZip.run()
-                  processZip.waitUntilExit()
-                  guard processZip.terminationStatus == 0 else {
-                      throw NSError(domain: "Zip", code: 5, userInfo: [NSLocalizedDescriptionKey: "فشل ضغط IPA"])
-                  }
-
-                  // استبدال الملف الأصلي بالملف الجديد
-                  try FileManager.default.removeItem(atPath: ipaPath)
-                  try FileManager.default.moveItem(at: outputIPA, to: URL(fileURLWithPath: ipaPath))
-
-                  return true
-              }
-          }
-
-          // MARK: - بقية المكونات (FilterChip, StatusBanner, FilesBanner, etc.)
-          // (تم تعريفها مسبقاً في FilesTabView السابق، لكننا نعيد تعريفها هنا للاكتمال)
+          // MARK: - Filter Chip
           struct FilterChip: View {
               let title: String; let icon: String; let color: Color; let selected: Bool
               let action: () -> Void
@@ -3512,6 +3242,7 @@ jobs:
               }
           }
 
+          // MARK: - Status Banner
           struct StatusBanner: View {
               let icon: String; let color: Color; let text: String
               var body: some View {
@@ -3531,6 +3262,7 @@ jobs:
               }
           }
 
+          // MARK: - Files Banner
           struct FilesBanner: View {
               let total: Int; let ipaCount: Int; let p12Count: Int; let provCount: Int
               @Environment(\.colorScheme) private var scheme
@@ -3580,6 +3312,7 @@ jobs:
               }
           }
 
+          // MARK: - Empty State
           struct FilesEmptyState: View {
               let onImport: () -> Void
               var body: some View {
@@ -3614,6 +3347,7 @@ jobs:
               }
           }
 
+          // MARK: - File Row
           struct ImportedFileRow: View {
               let file: ImportedFile
               let iconURL: URL?
@@ -3621,7 +3355,6 @@ jobs:
               let onDelete: () -> Void
               let onShare: () -> Void
               let onRevalidate: () -> Void
-              let onInject: () -> Void
               let onTap: () -> Void
               @Environment(\.colorScheme) var scheme
 
@@ -3697,9 +3430,6 @@ jobs:
                   .onTapGesture { HapticManager.shared.impact(.light); onTap() }
                   .contextMenu {
                       Button { onTap() } label: { Label("عرض التفاصيل", systemImage: "info.circle") }
-                      if file.kind == .ipa {
-                          Button { onInject() } label: { Label("حقن dylib", systemImage: "plus.slash.minus") }
-                      }
                       Button { onRename() } label: { Label("إعادة تسمية", systemImage: "pencil") }
                       Button { onShare() } label: { Label("مشاركة / تصدير", systemImage: "square.and.arrow.up") }
                       Button { onRevalidate() } label: { Label("إعادة التحقق", systemImage: "arrow.clockwise") }
@@ -3716,11 +3446,6 @@ jobs:
                       Button(action: onShare) {
                           Label("مشاركة", systemImage: "square.and.arrow.up")
                       }.tint(.green)
-                      if file.kind == .ipa {
-                          Button(action: onInject) {
-                              Label("حقن", systemImage: "plus.slash.minus")
-                          }.tint(.vipPurple)
-                      }
                   }
               }
 
@@ -3746,6 +3471,7 @@ jobs:
               }
           }
 
+          // MARK: - File Detail View
           struct ImportedFileDetailView: View {
               let file: ImportedFile
               @ObservedObject var filesManager: FilesManager
@@ -4112,7 +3838,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # BUILD (مع حقن dylib في الملف التنفيذي)
+      # BUILD (مع حقن dylib في الملف التنفيذي للتطبيق)
       # =========================================================
       - name: بناء التطبيق
         run: |
@@ -4145,11 +3871,8 @@ jobs:
 
       - name: حقن dylib في الملف التنفيذي للتطبيق
         run: |
-          # استخدم insert_dylib لحقن المكتبة المحملة في VIP21Store
           if [ -f "$DYLIB_NAME" ]; then
-            # نسخ المكتبة إلى مكان يمكن الوصول إليه
             cp "$DYLIB_NAME" ./VIP21Store.dylib
-            # حقنها في الملف التنفيذي مع تعيين المسار @executable_path
             /usr/local/bin/insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
             echo "تم حقن المكتبة بنجاح"
           else
@@ -4167,7 +3890,6 @@ jobs:
           cp Resources/AppIcon76x76@2x~ipad.png  build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
-          # نسخ المكتبة المحقونة أيضاً داخل الـ .app
           if [ -f "$DYLIB_NAME" ]; then
             cp "$DYLIB_NAME" build-output/Payload/VIP21Store.app/
           fi
