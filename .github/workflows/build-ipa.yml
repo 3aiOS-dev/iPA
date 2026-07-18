@@ -1,4 +1,4 @@
-name: بناء تطبيق 21s (SwiftUI) مع حقن dylib وتغيير Bundle ID
+name: بناء تطبيق 21s (SwiftUI) مع تغيير Bundle ID
 
 on:
   push:
@@ -8,8 +8,6 @@ on:
 env:
   NEW_BUNDLE_ID: "com.vip21.store.pro"
   NEW_APP_NAME:  "21s Pro"
-  DYLIB_URL: "https://example.com/MyDylib.dylib"
-  DYLIB_NAME: "MyDylib.dylib"
 
 jobs:
   build:
@@ -25,40 +23,21 @@ jobs:
           xcode-select -p
           swift --version
 
-      - name: تثبيت الأدوات المطلوبة (ldid, zip, insert_dylib)
+      - name: تثبيت الأدوات المطلوبة (ldid, zip)
         run: |
-          # إلغاء ربط tap غير موثوق لتجنب التحذيرات
           brew untap aws/tap 2>/dev/null || true
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew install ldid zip
-
           # إضافة مسار zip إلى PATH (لأنه keg‑only)
           echo 'export PATH="/opt/homebrew/opt/zip/bin:$PATH"' >> ~/.bash_profile
           export PATH="/opt/homebrew/opt/zip/bin:$PATH"
+          # التحقق
+          command -v ldid || { echo "❌ ldid غير مثبت"; exit 1; }
+          command -v zip || { echo "❌ zip غير مثبت"; exit 1; }
 
-          # بناء insert_dylib من المصدر (بدون الاعتماد على ثنائي مفقود)
-          echo "بناء insert_dylib من المصدر..."
-          git clone --depth 1 https://github.com/tyilo/insert_dylib.git
-          cd insert_dylib
-          make
-          sudo cp insert_dylib /usr/local/bin/
-          cd ..
-
-          # التحقق النهائي
-          if command -v insert_dylib &> /dev/null; then
-            echo "✅ insert_dylib مثبت بنجاح: $(which insert_dylib)"
-            insert_dylib --version || echo "إصدار insert_dylib: غير معروف"
-          else
-            echo "❌ فشل تثبيت insert_dylib"
-            exit 1
-          fi
-
-      - name: تحميل المكتبة الديناميكية (dylib)
-        run: |
-          curl -L -o "$DYLIB_NAME" "$DYLIB_URL"
-          ls -lh "$DYLIB_NAME"
-
-      # ========== RESOURCES ==========
+      # =========================================================
+      # RESOURCES
+      # =========================================================
       - name: توليد أيقونات التطبيق
         run: |
           mkdir -p Resources
@@ -151,6 +130,7 @@ jobs:
                   <string>UIInterfaceOrientationLandscapeRight</string>
               </array>
 
+              <!-- ====== App Icons ====== -->
               <key>CFBundleIcons</key>
               <dict>
                   <key>CFBundlePrimaryIcon</key>
@@ -182,6 +162,7 @@ jobs:
                   </dict>
               </dict>
 
+              <!-- ====== Launch / Scenes ====== -->
               <key>UILaunchScreen</key>
               <dict>
                   <key>UIColorName</key>                     <string></string>
@@ -194,11 +175,13 @@ jobs:
               <key>UIApplicationSupportsIndirectInputEvents</key>
               <true/>
 
+              <!-- ====== Background modes ====== -->
               <key>UIBackgroundModes</key>
               <array>
                   <string>fetch</string>
               </array>
 
+              <!-- ====== Document types ====== -->
               <key>LSSupportsOpeningDocumentsInPlace</key>  <true/>
               <key>UISupportsDocumentBrowser</key>           <true/>
               <key>UIFileSharingEnabled</key>                <true/>
@@ -280,6 +263,7 @@ jobs:
                   </dict>
               </array>
 
+              <!-- ====== Permission usage strings ====== -->
               <key>NSPhotoLibraryUsageDescription</key>
               <string>لاستيراد أيقونات التطبيقات</string>
               <key>NSPhotoLibraryAddUsageDescription</key>
@@ -293,6 +277,7 @@ jobs:
               <key>NSUserTrackingUsageDescription</key>
               <string>لتحسين تجربة الاستخدام داخل المتجر</string>
 
+              <!-- ====== Network ====== -->
               <key>NSAppTransportSecurity</key>
               <dict>
                   <key>NSAllowsArbitraryLoads</key>              <true/>
@@ -300,6 +285,7 @@ jobs:
                   <key>NSAllowsArbitraryLoadsForMedia</key>      <true/>
               </dict>
 
+              <!-- ====== URL schemes ====== -->
               <key>LSApplicationQueriesSchemes</key>
               <array>
                   <string>tg</string>
@@ -323,7 +309,9 @@ jobs:
           </plist>
           PEOF
 
-      # ========== SOURCE CODE (جميع الملفات) ==========
+      # =========================================================
+      # CONSTANTS + SOURCE CODE (جميع الملفات)
+      # =========================================================
       - name: توليد الكود - الثوابت (Constants.swift)
         run: |
           cat > Constants.swift << 'VIPEOF'
@@ -3841,7 +3829,9 @@ jobs:
           }
           VIPEOF
 
-      # ========== BUILD & INJECT ==========
+      # =========================================================
+      # BUILD (بدون dylib)
+      # =========================================================
       - name: بناء التطبيق
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -3871,16 +3861,6 @@ jobs:
             -o VIP21Store
           file VIP21Store
 
-      - name: حقن dylib في الملف التنفيذي للتطبيق
-        run: |
-          if [ -f "$DYLIB_NAME" ]; then
-            cp "$DYLIB_NAME" ./VIP21Store.dylib
-            insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
-            echo "✅ تم حقن المكتبة بنجاح"
-          else
-            echo "⚠️ ملف dylib غير موجود، تخطي الحقن"
-          fi
-
       - name: إنشاء حزمة IPA
         run: |
           mkdir -p artifacts
@@ -3892,9 +3872,6 @@ jobs:
           cp Resources/AppIcon76x76@2x~ipad.png  build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
-          if [ -f "$DYLIB_NAME" ]; then
-            cp "$DYLIB_NAME" build-output/Payload/VIP21Store.app/
-          fi
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
           cd build-output && zip -r -q ../artifacts/21s.ipa Payload/ && cd ..
           echo "IPA: $(du -sh artifacts/21s.ipa)"
@@ -3912,5 +3889,5 @@ jobs:
       - name: رفع الملف الناتج
         uses: actions/upload-artifact@v4
         with:
-          name: 21s-IPA-SwiftUI-v7-injected
+          name: 21s-IPA-SwiftUI-v7-clean
           path: artifacts/21s.ipa
