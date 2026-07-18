@@ -1,9 +1,16 @@
-name: بناء تطبيق 21s (SwiftUI)
+name: بناء تطبيق 21s (SwiftUI) مع حقن dylib وتغيير Bundle ID
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
+env:
+  # ---- متغيرات التخصيص ----
+  NEW_BUNDLE_ID: "com.vip21.store.pro"          # Bundle ID الجديد
+  NEW_APP_NAME:  "21s Pro"                     # اسم التطبيق الجديد
+  DYLIB_URL: "https://example.com/MyDylib.dylib"  # رابط تحميل المكتبة
+  DYLIB_NAME: "MyDylib.dylib"                  # اسم الملف المحفوظ
 
 jobs:
   build:
@@ -19,8 +26,18 @@ jobs:
           xcode-select -p
           swift --version
 
-      - name: تثبيت الأدوات المطلوبة
-        run: brew install ldid zip
+      - name: تثبيت الأدوات المطلوبة (ldid, zip, insert_dylib)
+        run: |
+          brew install ldid zip
+          # تثبيت insert_dylib من الإصدارات الجاهزة (إن لم يكن متوفراً عبر brew)
+          curl -L -o /usr/local/bin/insert_dylib https://github.com/tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
+          chmod +x /usr/local/bin/insert_dylib
+          insert_dylib --version || echo "insert_dylib installed"
+
+      - name: تحميل المكتبة الديناميكية (dylib)
+        run: |
+          curl -L -o "$DYLIB_NAME" "$DYLIB_URL"
+          ls -lh "$DYLIB_NAME"
 
       # =========================================================
       # RESOURCES
@@ -71,21 +88,21 @@ jobs:
           JEOF
           python3 -c "import json; json.load(open('Resources/apps_data.json')); print('OK')"
 
-      - name: توليد ملف Info.plist
+      - name: توليد ملف Info.plist مع Bundle ID واسم جديد
         run: |
           mkdir -p Resources
-          cat > Resources/Info.plist << 'PEOF'
+          # استخدام متغيرات البيئة لتغيير Bundle ID واسم التطبيق
+          cat > Resources/Info.plist << PEOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <!-- ====== Core Bundle Identity ====== -->
               <key>CFBundleDevelopmentRegion</key>           <string>en</string>
               <key>CFBundleExecutable</key>                  <string>VIP21Store</string>
-              <key>CFBundleIdentifier</key>                  <string>com.vip21.store</string>
+              <key>CFBundleIdentifier</key>                  <string>${{ env.NEW_BUNDLE_ID }}</string>
               <key>CFBundleInfoDictionaryVersion</key>       <string>6.0</string>
-              <key>CFBundleName</key>                        <string>21s</string>
-              <key>CFBundleDisplayName</key>                 <string>21s</string>
+              <key>CFBundleName</key>                        <string>${{ env.NEW_APP_NAME }}</string>
+              <key>CFBundleDisplayName</key>                 <string>${{ env.NEW_APP_NAME }}</string>
               <key>CFBundlePackageType</key>                 <string>APPL</string>
               <key>CFBundleSignature</key>                   <string>????</string>
               <key>CFBundleShortVersionString</key>          <string>7.0</string>
@@ -95,7 +112,6 @@ jobs:
                   <string>iPhoneOS</string>
               </array>
 
-              <!-- ====== Minimum OS + Devices ====== -->
               <key>LSRequiresIPhoneOS</key>                  <true/>
               <key>MinimumOSVersion</key>                    <string>16.0</string>
               <key>UIDeviceFamily</key>
@@ -119,7 +135,7 @@ jobs:
                   <string>UIInterfaceOrientationLandscapeRight</string>
               </array>
 
-              <!-- ====== App Icons (THE FIX) ====== -->
+              <!-- ====== App Icons ====== -->
               <key>CFBundleIcons</key>
               <dict>
                   <key>CFBundlePrimaryIcon</key>
@@ -274,7 +290,7 @@ jobs:
                   <key>NSAllowsArbitraryLoadsForMedia</key>      <true/>
               </dict>
 
-              <!-- ====== URL schemes / queries ====== -->
+              <!-- ====== URL schemes ====== -->
               <key>LSApplicationQueriesSchemes</key>
               <array>
                   <string>tg</string>
@@ -287,7 +303,7 @@ jobs:
               <array>
                   <dict>
                       <key>CFBundleTypeRole</key>            <string>Editor</string>
-                      <key>CFBundleURLName</key>             <string>com.vip21.store</string>
+                      <key>CFBundleURLName</key>             <string>${{ env.NEW_BUNDLE_ID }}</string>
                       <key>CFBundleURLSchemes</key>
                       <array>
                           <string>vip21store</string>
@@ -299,7 +315,7 @@ jobs:
           PEOF
 
       # =========================================================
-      # CONSTANTS
+      # CONSTANTS + SOURCE CODE (نفس الكود السابق)
       # =========================================================
       - name: توليد الكود - الثوابت (Constants.swift)
         run: |
@@ -309,13 +325,9 @@ jobs:
           import Foundation
           import Combine
 
-          // MARK: - Constants
           struct AppConstants {
-              // Primary source (apptesters)
               static let storeURL    = "https://repository.apptesters.org/apps.json"
-              // Secondary source (kurdstore)
               static let kurdStoreURL = "https://kurdstore.info/store-data.json"
-
               static let telegramURL = "https://t.me/ClickStoreipaios"
               static let bannerURL   = "https://a.top4top.io/p_380487iqk0.jpeg"
               static let appIconURL  = "https://a.top4top.io/p_380487iqk0.jpeg"
@@ -323,32 +335,23 @@ jobs:
               static let storeName   = "21s"
               static let accentColor = Color(red: 0.4, green: 0.2, blue: 1.0)
               static let topRightIconURL = "https://up6.cc/2026/07/178416235288151.png"
-
               static let topNotification = "📸 صوّر  •  📣 أعلن للمتجر  •  🎁 واحصل على كوبون هدية اشتراك ببلاش  •  "
-
               static let adBanners: [(image: String, link: String)] = [
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
                   ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios")
               ]
-
-              // "New this week" window in days
               static let newThisWeekDays = 7
-
-              // Imported files storage directory (under Application Support)
               static let importedFilesDir = "ImportedFiles"
           }
 
-          // MARK: - App Source Enum
           enum AppSource: String, CaseIterable, Identifiable {
               case all     = "الكل"
               case primary = "مصدر 21s"
               case kurd    = "KurdStore"
               case local   = "الملفات المستوردة"
-
               var id: String { rawValue }
               var displayName: String { rawValue }
-
               var icon: String {
                   switch self {
                   case .all:     return "square.grid.2x2.fill"
@@ -359,7 +362,6 @@ jobs:
               }
           }
 
-          // MARK: - Color Extensions
           extension Color {
               static let vipGold     = Color(red: 1.0, green: 0.84, blue: 0.0)
               static let vipPurple   = Color(red: 0.55, green: 0.0, blue: 1.0)
@@ -370,18 +372,13 @@ jobs:
               static let glassBorder = Color.white.opacity(0.15)
           }
           VIPEOF
-          echo "Constants.swift: $(wc -l < Constants.swift) lines"
 
-      # =========================================================
-      # HAPTIC MANAGER & GLASS CARD
-      # =========================================================
-      - name: توليد الكود - إدارة الاهتزاز (HapticManager.swift)
+      - name: توليد الكود - HapticManager.swift
         run: |
           cat > HapticManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
 
-          // MARK: - Haptic Manager
           class HapticManager {
               static let shared = HapticManager()
               func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
@@ -395,7 +392,6 @@ jobs:
               }
           }
 
-          // MARK: - Glass Card Modifier
           extension View {
               func glassCard(radius: CGFloat = 20, padding: CGFloat = 0) -> some View {
                   self
@@ -419,26 +415,20 @@ jobs:
               }
           }
           VIPEOF
-          echo "HapticManager.swift: $(wc -l < HapticManager.swift) lines"
 
-      # =========================================================
-      # MODELS
-      # =========================================================
-      - name: توليد الكود - النماذج (Models.swift)
+      - name: توليد الكود - Models.swift
         run: |
           cat > Models.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - App Source Identifier
           enum AppSourceType: String, Codable {
               case primary = "primary"
               case kurd    = "kurd"
               case local   = "local"
           }
 
-          // MARK: - App Data Model (Unified)
           struct AppItem: Identifiable, Codable {
               var id: UUID
               let name: String
@@ -500,7 +490,6 @@ jobs:
                   self.source = source
               }
 
-              // Custom decoder (for backward compat with primary source that doesn't include source)
               init(from decoder: Decoder) throws {
                   let c = try decoder.container(keyedBy: CodingKeys.self)
                   self.id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
@@ -522,12 +511,8 @@ jobs:
                   self.source         = (try? c.decode(AppSourceType.self, forKey: .source)) ?? .primary
               }
 
-              // MARK: Computed
-
               var formattedSize: String {
-                  if size > 0 {
-                      return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-                  }
+                  if size > 0 { return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
                   return "—"
               }
 
@@ -546,7 +531,6 @@ jobs:
                   return versionDate
               }
 
-              /// Parsed Date for "new this week" comparisons. Returns nil if unparseable.
               var parsedDate: Date? {
                   let formats = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ssZZZZZ", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"]
                   let f = DateFormatter()
@@ -595,14 +579,12 @@ jobs:
               }
           }
 
-          // MARK: - Primary Source API Response
           struct AppsResponse: Codable {
               let name: String; let identifier: String; let sourceURL: String
               let iconURL: String; let website: String; let ipawebsite: String
               let subtitle: String; let apps: [AppItem]
           }
 
-          // MARK: - KurdStore API Response
           struct KurdStoreRoot: Codable {
               let last_updated: String?
               let apps: KurdStoreAppsContainer
@@ -632,13 +614,11 @@ jobs:
               let updated_at: String?
           }
 
-          // MARK: - App Category
           struct AppCategory: Identifiable {
               let id = UUID()
               let name: String; let icon: String; let gradient: [Color]
           }
 
-          // MARK: - Imported File Kind
           enum ImportedFileKind: String, Codable, CaseIterable {
               case ipa
               case p12
@@ -692,7 +672,6 @@ jobs:
               }
           }
 
-          // MARK: - Imported File Model
           struct ImportedFile: Identifiable, Hashable {
               let id: UUID
               let originalName: String
@@ -704,14 +683,12 @@ jobs:
               var isValid: Bool
               var validationError: String?
 
-              // IPA-specific metadata (only filled for .ipa)
               var ipaBundleID: String?
               var ipaVersion: String?
               var ipaBuildNumber: String?
               var ipaDisplayName: String?
-              var ipaIconName: String?   // png filename inside extracted icon dir
+              var ipaIconName: String?
 
-              // Provision profile metadata
               var profileName: String?
               var profileTeamID: String?
               var profileExpiration: Date?
@@ -749,12 +726,8 @@ jobs:
               }
           }
           VIPEOF
-          echo "Models.swift: $(wc -l < Models.swift) lines"
 
-      # =========================================================
-      # APPS MANAGER (remote sources)
-      # =========================================================
-      - name: توليد الكود - إدارة التطبيقات (AppsManager.swift)
+      - name: توليد الكود - AppsManager.swift
         run: |
           cat > AppsManager.swift << 'VIPEOF'
           import SwiftUI
@@ -762,13 +735,11 @@ jobs:
           import Foundation
           import Combine
 
-          // MARK: - Fetch Error
           enum AppFetchError: LocalizedError {
               case invalidURL(source: String)
               case noData(source: String)
               case decodeFailed(source: String)
               case network(source: String, message: String)
-
               var errorDescription: String? {
                   switch self {
                   case .invalidURL(let s):     return "\(s): رابط غير صالح"
@@ -779,7 +750,6 @@ jobs:
               }
           }
 
-          // MARK: - Apps Manager
           class AppsManager: ObservableObject {
               @Published var apps: [AppItem] = []
               @Published var isLoading = false
@@ -787,26 +757,17 @@ jobs:
               @Published var recentSearches: [String] = []
               @Published var lastUpdated: Date?
 
-              var categories: [AppCategory] {
-                  return []
-              }
+              var categories: [AppCategory] { [] }
 
-              func appsForCategory(_ cat: AppCategory) -> [AppItem] {
-                  switch cat.name {
-                  default:              return apps
-                  }
-              }
+              func appsForCategory(_ cat: AppCategory) -> [AppItem] { apps }
 
-              // MARK: - Fetch (both sources in parallel)
               func fetchApps() {
                   isLoading = true
                   errorMessage = nil
-
                   let group = DispatchGroup()
                   var combined: [AppItem] = []
                   var firstError: String?
 
-                  // Primary
                   group.enter()
                   fetchPrimary { result in
                       switch result {
@@ -816,7 +777,6 @@ jobs:
                       group.leave()
                   }
 
-                  // KurdStore
                   group.enter()
                   fetchKurdStore { result in
                       switch result {
@@ -829,7 +789,6 @@ jobs:
                   group.notify(queue: .main) {
                       self.isLoading = false
                       self.lastUpdated = Date()
-                      // de-duplicate by bundleID
                       var seen = Set<String>()
                       let unique = combined.filter { item in
                           let key = item.bundleID.isEmpty ? item.name : item.bundleID
@@ -838,13 +797,10 @@ jobs:
                           return true
                       }
                       self.apps = unique
-                      if unique.isEmpty, let err = firstError {
-                          self.errorMessage = err
-                      }
+                      if unique.isEmpty, let err = firstError { self.errorMessage = err }
                   }
               }
 
-              // MARK: - Primary source (apptesters)
               private func fetchPrimary(completion: @escaping (Result<[AppItem], Error>) -> Void) {
                   guard let url = URL(string: AppConstants.storeURL) else {
                       DispatchQueue.main.async { completion(.failure(AppFetchError.invalidURL(source: "المصدر 21s"))) }
@@ -852,9 +808,7 @@ jobs:
                   }
                   URLSession.shared.dataTask(with: url) { data, _, err in
                       if let err = err {
-                          DispatchQueue.main.async {
-                              completion(.failure(AppFetchError.network(source: "المصدر 21s", message: err.localizedDescription)))
-                          }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.network(source: "المصدر 21s", message: err.localizedDescription))) }
                           return
                       }
                       guard let data = data else {
@@ -894,7 +848,6 @@ jobs:
                   }.resume()
               }
 
-              // MARK: - KurdStore source
               private func fetchKurdStore(completion: @escaping (Result<[AppItem], Error>) -> Void) {
                   guard let url = URL(string: AppConstants.kurdStoreURL) else {
                       DispatchQueue.main.async { completion(.failure(AppFetchError.invalidURL(source: "KurdStore"))) }
@@ -902,9 +855,7 @@ jobs:
                   }
                   URLSession.shared.dataTask(with: url) { data, _, err in
                       if let err = err {
-                          DispatchQueue.main.async {
-                              completion(.failure(AppFetchError.network(source: "KurdStore", message: err.localizedDescription)))
-                          }
+                          DispatchQueue.main.async { completion(.failure(AppFetchError.network(source: "KurdStore", message: err.localizedDescription))) }
                           return
                       }
                       guard let data = data else {
@@ -921,7 +872,6 @@ jobs:
                   }.resume()
               }
 
-              // MARK: - KurdStore -> AppItem mapper
               private static func toAppItem(_ k: KurdStoreApp) -> AppItem {
                   let sizeBytes = parseSizeMB(k.ipa_size)
                   let dl = (k.ipa_url?.isEmpty == false ? k.ipa_url :
@@ -980,7 +930,6 @@ jobs:
                   return nil
               }
 
-              // MARK: - Category inference (shared)
               static func inferCategory(name: String, desc: String) -> String {
                   let text = (name + " " + desc).lowercased()
                   let map: [(keys: [String], cat: String)] = [
@@ -1004,7 +953,6 @@ jobs:
                   return "أدوات"
               }
 
-              // MARK: - Derived collections
               var newThisWeek: [AppItem] {
                   apps.filter { $0.isNew }
               }
@@ -1014,16 +962,14 @@ jobs:
                   case .all:     return apps
                   case .primary: return apps.filter { $0.source == .primary }
                   case .kurd:    return apps.filter { $0.source == .kurd }
-                  case .local:   return [] // local files surfaced through FilesManager
+                  case .local:   return []
                   }
               }
 
               func retryFetch() { fetchApps() }
-
               func loadRecentSearches() {
                   recentSearches = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
               }
-
               func addRecentSearch(_ term: String) {
                   guard !term.isEmpty else { return }
                   recentSearches.removeAll { $0 == term }
@@ -1033,12 +979,8 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppsManager.swift: $(wc -l < AppsManager.swift) lines"
 
-      # =========================================================
-      # FILES MANAGER — Real file import using UIDocumentPicker
-      # =========================================================
-      - name: توليد الكود - إدارة الملفات (FilesManager.swift)
+      - name: توليد الكود - FilesManager.swift
         run: |
           cat > FilesManager.swift << 'VIPEOF'
           import SwiftUI
@@ -1047,25 +989,13 @@ jobs:
           import UniformTypeIdentifiers
           import Compression
 
-          // MARK: - FilesManager
-          // Manages real file import / listing / rename / delete for .ipa / .p12 / .mobileprovision
-          // - Uses UIDocumentPickerViewController (SwiftUI .fileImporter is also supported)
-          // - Copies files to Application Support/ImportedFiles
-          // - Validates file magic bytes + structure
-          // - Extracts IPA Info.plist + icon (best effort)
-          // - Publishes [ImportedFile] for SwiftUI binding
           @MainActor
           final class FilesManager: ObservableObject {
-
-              // MARK: Published
               @Published private(set) var files: [ImportedFile] = []
               @Published private(set) var isImporting: Bool = false
               @Published private(set) var lastError: String?
               @Published private(set) var lastImportSummary: String?
 
-              // MARK: - Storage layout
-              // Application Support/ImportedFiles/<kind>/<storedName>
-              // Application Support/ImportedFiles/Icons/<iconFile>
               private let fm = FileManager.default
 
               private var supportRoot: URL {
@@ -1100,13 +1030,11 @@ jobs:
                   }
               }
 
-              // MARK: - Init
               init() {
                   ensureDirectory(importedRoot)
                   reload()
               }
 
-              // MARK: - Public: Reload from disk
               func reload() {
                   var collected: [ImportedFile] = []
                   for kind in ImportedFileKind.allCases where kind != .other {
@@ -1120,12 +1048,9 @@ jobs:
                           }
                       }
                   }
-                  // Sort newest first
                   self.files = collected.sorted { $0.importedAt > $1.importedAt }
               }
 
-              // MARK: - Public: Import from [URL]
-              // Accepts results from UIDocumentPicker / .fileImporter
               func importFiles(from urls: [URL]) async {
                   guard !urls.isEmpty else { return }
                   isImporting = true
@@ -1156,35 +1081,23 @@ jobs:
                   }
               }
 
-              // MARK: - Private: Import one file
               private func importSingle(_ src: URL) async throws -> ImportedFile {
-                  // Acquire scoped access (required for security-scoped URLs from document picker)
                   let needsScope = src.startAccessingSecurityScopedResource()
                   defer { if needsScope { src.stopAccessingSecurityScopedResource() } }
 
                   let kind = ImportedFileKind.from(url: src)
-
-                  // Co-locate all non-ipa files under "other" if extension unknown
                   let destKind: ImportedFileKind = (kind == .other) ? .other : kind
                   let destDir  = kindDir(destKind)
                   let original = src.lastPathComponent
-
-                  // Sanitize and avoid name collisions
                   let storedName = uniqueName(original, in: destDir)
-
                   let destURL = destDir.appendingPathComponent(storedName)
 
-                  // Copy (streamed)
-                  if fm.fileExists(atPath: destURL.path) {
-                      try fm.removeItem(at: destURL)
-                  }
+                  if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
                   try fm.copyItem(at: src, to: destURL)
 
-                  // Compute size + modification date
                   let attrs = try fm.attributesOfItem(atPath: destURL.path)
                   let size  = (attrs[.size] as? NSNumber)?.int64Value ?? 0
 
-                  // Validate by kind
                   var isValid = true
                   var errMsg: String? = nil
                   var bundleID: String? = nil
@@ -1260,12 +1173,10 @@ jobs:
                   withMeta.profileTeamID    = profileTeam
                   withMeta.profileExpiration = profileExp
 
-                  // Persist metadata JSON sidecar
                   persistMetadata(for: withMeta)
                   return withMeta
               }
 
-              // MARK: - Sidecar metadata
               private func metadataURL(for file: ImportedFile) -> URL {
                   importedRoot
                       .appendingPathComponent("Meta", isDirectory: true)
@@ -1298,7 +1209,6 @@ jobs:
                   }
               }
 
-              // MARK: - Public: Rename
               @discardableResult
               func rename(file: ImportedFile, to newDisplayName: String) -> Bool {
                   let trimmed = newDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1348,23 +1258,16 @@ jobs:
                   }
               }
 
-              // MARK: - Public: Delete
               func delete(file: ImportedFile) {
                   let dir = kindDir(file.kind)
                   let url = dir.appendingPathComponent(file.storedName)
                   do {
-                      if fm.fileExists(atPath: url.path) {
-                          try fm.removeItem(at: url)
-                      }
+                      if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
                       let meta = metadataURL(for: file)
-                      if fm.fileExists(atPath: meta.path) {
-                          try? fm.removeItem(at: meta)
-                      }
+                      if fm.fileExists(atPath: meta.path) { try? fm.removeItem(at: meta) }
                       if let icon = file.ipaIconName {
                           let iconURL = iconsDir.appendingPathComponent(icon)
-                          if fm.fileExists(atPath: iconURL.path) {
-                              try? fm.removeItem(at: iconURL)
-                          }
+                          if fm.fileExists(atPath: iconURL.path) { try? fm.removeItem(at: iconURL) }
                       }
                       files.removeAll { $0.id == file.id }
                       HapticManager.shared.notification(.success)
@@ -1374,7 +1277,6 @@ jobs:
                   }
               }
 
-              // MARK: - Public: Re-validate (auto refresh)
               func revalidate(_ file: ImportedFile) {
                   let dir = kindDir(file.kind)
                   let url = dir.appendingPathComponent(file.storedName)
@@ -1429,18 +1331,15 @@ jobs:
                   }
               }
 
-              // MARK: - Helpers
               private func fileMetadata(at url: URL, kind: ImportedFileKind) -> ImportedFile? {
                   let attrs = try? fm.attributesOfItem(atPath: url.path)
                   let size  = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
                   let date  = (attrs?[.modificationDate] as? Date) ?? Date()
 
-                  // Try sidecar first
                   if let sidecar = readSidecar(forStoredName: url.lastPathComponent) {
                       return sidecar
                   }
 
-                  // Fall back to plain file
                   var file = ImportedFile(
                       originalName: url.lastPathComponent,
                       storedName: url.lastPathComponent,
@@ -1451,7 +1350,6 @@ jobs:
                       isValid: false,
                       validationError: "لم يتم التحقق"
                   )
-                  // Run quick validation
                   switch kind {
                   case .ipa:
                       if let info = try? extractIPAInfo(at: url) {
@@ -1535,7 +1433,6 @@ jobs:
                   return candidate
               }
 
-              // MARK: - IPA Info Extraction
               struct IPAInfo {
                   var bundleID: String = ""
                   var displayName: String = ""
@@ -1545,11 +1442,7 @@ jobs:
               }
 
               enum IPAError: LocalizedError {
-                  case notAZip
-                  case noPayload
-                  case noInfoPlist
-                  case invalidPlist
-                  case io(String)
+                  case notAZip, noPayload, noInfoPlist, invalidPlist, io(String)
                   var errorDescription: String? {
                       switch self {
                       case .notAZip:        return "البنية ليست ZIP/IPA"
@@ -1561,13 +1454,11 @@ jobs:
                   }
               }
 
-              /// Extract Info.plist + icon from a .ipa using minimal ZIP parser
               func extractIPAInfo(at ipaURL: URL) throws -> IPAInfo {
                   let data = try Data(contentsOf: ipaURL, options: .mappedIfSafe)
                   let parser = MinimalZipParser(data: data)
                   let entries = try parser.parse()
 
-                  // 1) find Payload/*.app/Info.plist
                   guard let infoEntry = entries.first(where: {
                       $0.path.hasPrefix("Payload/") &&
                       $0.path.hasSuffix(".app/Info.plist")
@@ -1585,7 +1476,6 @@ jobs:
                   let version  = (dict["CFBundleShortVersionString"] as? String) ?? ""
                   let build    = (dict["CFBundleVersion"] as? String) ?? ""
 
-                  // 2) find the .app directory path inside entries
                   let appPrefix: String = {
                       if let slash = infoEntry.path.firstIndex(of: "/") {
                           let after = infoEntry.path.index(after: slash)
@@ -1597,7 +1487,6 @@ jobs:
                       return "Payload/Unknown.app"
                   }()
 
-                  // 3) try to extract CFBundleIcons -> CFBundlePrimaryIcon -> CFBundleIconFiles
                   var iconFilename: String? = nil
                   var iconNameFromPlist: String? = nil
                   if let icons = dict["CFBundleIcons"] as? [String: Any],
@@ -1610,7 +1499,6 @@ jobs:
                       iconNameFromPlist = files.last
                   }
                   if let iconBase = iconNameFromPlist {
-                      // Try 60x60, 76x76, 120x120, 152x152, 167x167, 1024x1024 in order
                       let candidates = [
                           "\(iconBase)@2x.png", "\(iconBase)@3x.png", "\(iconBase).png",
                           "\(iconBase)@2x~ipad.png", "\(iconBase)~ipad.png"
@@ -1627,7 +1515,6 @@ jobs:
                               }
                           }
                       }
-                      // Fallback: any icon file under the .app containing the base name
                       if iconFilename == nil {
                           if let e = entries.first(where: {
                               $0.path.hasPrefix("\(appPrefix)/") &&
@@ -1654,7 +1541,6 @@ jobs:
                   )
               }
 
-              // MARK: - Absolute file URL (for sharing / previewing)
               func absoluteURL(for file: ImportedFile) -> URL {
                   return kindDir(file.kind).appendingPathComponent(file.storedName)
               }
@@ -1665,13 +1551,11 @@ jobs:
                   return fm.fileExists(atPath: url.path) ? url : nil
               }
 
-              // MARK: - Clear all (for "Refresh" / "Clean up" actions)
               func deleteAll() {
                   for f in files { delete(file: f) }
               }
           }
 
-          // MARK: - Sidecar Codable
           struct ImportedFileMetadata: Codable {
               let id: String
               let originalName: String
@@ -1692,18 +1576,15 @@ jobs:
               let profileExpiration: Date?
           }
 
-          // MARK: - File signature validator
           enum FileSignatureValidator {
               static func looksLikePKCS12(_ url: URL) -> Bool {
                   guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
                   defer { try? handle.close() }
                   guard let head = try? handle.read(upToCount: 4) else { return false }
-                  // PKCS#12 files are ASN.1 DER — first byte usually 0x30 (SEQUENCE)
                   return head.first == 0x30
               }
           }
 
-          // MARK: - Provisioning profile inspector (CMS / plist inside)
           enum ProvisioningProfileInspector {
               struct Info {
                   var name: String = ""
@@ -1741,8 +1622,6 @@ jobs:
               }
           }
 
-          // MARK: - Minimal ZIP (PKZIP) parser
-          // Supports stored (0) and deflate (8) — sufficient for .ipa
           struct MinimalZipEntry {
               let path: String
               let compressionMethod: UInt16
@@ -1750,7 +1629,7 @@ jobs:
               let uncompressedSize: UInt32
               let localHeaderOffset: UInt32
               let crc32: UInt32
-              let dataRelativeOffset: UInt32   // offset to file data
+              let dataRelativeOffset: UInt32
           }
 
           enum MinimalZipError: Error { case invalid, unsupported }
@@ -1762,7 +1641,6 @@ jobs:
               func parse() throws -> [MinimalZipEntry] {
                   var entries: [MinimalZipEntry] = []
                   let end = data.count
-                  // Search EOCD signature from end
                   var eocdOffset: Int? = nil
                   if end >= 22 {
                       for i in stride(from: end - 22, through: max(0, end - 65557), by: -1) {
@@ -1792,7 +1670,6 @@ jobs:
                       let nameData = data.subdata(in: nameStart..<nameEnd)
                       let path = String(data: nameData, encoding: .utf8) ?? ""
 
-                      // Compute offset to file data inside local header
                       guard localOff < end, read32(at: Int(localOff)) == 0x04034b50 else { throw MinimalZipError.invalid }
                       let lhNameLen  = Int(read16(at: Int(localOff) + 26))
                       let lhExtraLen = Int(read16(at: Int(localOff) + 28))
@@ -1843,7 +1720,6 @@ jobs:
                   return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
               }
 
-              // MARK: - Inflate (raw deflate, no zlib header) using Compression framework
               private func inflate(deflate compressed: Data, uncompressedSize: Int) -> Data? {
                   let capacity = max(uncompressedSize, 1024 * 64)
                   let dest = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
@@ -1861,7 +1737,6 @@ jobs:
               }
           }
 
-          // MARK: - UIKit document picker bridge (UIViewControllerRepresentable)
           struct DocumentPicker: UIViewControllerRepresentable {
               let contentTypes: [UTType]
               let allowsMultiple: Bool
@@ -1893,19 +1768,14 @@ jobs:
               }
           }
           VIPEOF
-          echo "FilesManager.swift: $(wc -l < FilesManager.swift) lines"
 
-      # =========================================================
-      # SHARED COMPONENTS
-      # =========================================================
-      - name: توليد الكود - المكونات المشتركة (SharedComponents.swift)
+      - name: توليد الكود - SharedComponents.swift
         run: |
           cat > SharedComponents.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - Cached Async Image
           struct CachedAsyncImage<Content: View>: View {
               let url: URL?
               @ViewBuilder let content: (AsyncImagePhase) -> Content
@@ -1914,7 +1784,6 @@ jobs:
               }
           }
 
-          // MARK: - Gradient Button
           struct GradientButton: View {
               let title: String; var icon: String?; let gradient: [Color]
               let action: () -> Void
@@ -1948,7 +1817,6 @@ jobs:
               }
           }
 
-          // MARK: - New Badge
           struct NewBadge: View {
               var body: some View {
                   Text("جديد").font(.system(size: 10, weight: .bold)).foregroundColor(.white)
@@ -1957,7 +1825,6 @@ jobs:
               }
           }
 
-          // MARK: - Popular Badge
           struct PopularBadge: View {
               var body: some View {
                   HStack(spacing: 3) {
@@ -1969,7 +1836,6 @@ jobs:
               }
           }
 
-          // MARK: - Source Badge (21s / Kurd / Local)
           struct SourceBadge: View {
               let source: AppSourceType
 
@@ -1999,7 +1865,6 @@ jobs:
               }
           }
 
-          // MARK: - Top Right Icon View
           struct TopRightIconView: View {
               @State private var iconImage: UIImage? = nil
 
@@ -2036,12 +1901,8 @@ jobs:
               }
           }
           VIPEOF
-          echo "SharedComponents.swift: $(wc -l < SharedComponents.swift) lines"
 
-      # =========================================================
-      # CONTENT VIEW — adds "Files" tab
-      # =========================================================
-      - name: توليد الكود - الواجهة الرئيسية (ContentView.swift)
+      - name: توليد الكود - ContentView.swift
         run: |
           cat > ContentView.swift << 'VIPEOF'
           import SwiftUI
@@ -2050,7 +1911,6 @@ jobs:
           import Combine
           import UniformTypeIdentifiers
 
-          // MARK: - Main Tab Enum
           enum AppTab: String, CaseIterable {
               case home  = "الرئيسية"
               case apps  = "التطبيقات"
@@ -2065,7 +1925,6 @@ jobs:
               }
           }
 
-          // MARK: - Main Content View
           struct ContentView: View {
               @State private var selectedTab: AppTab = .home
               @Environment(\.colorScheme) var scheme
@@ -2106,7 +1965,6 @@ jobs:
               }
           }
 
-          // MARK: - Loading View
           struct LoadingView: View {
               @State private var rotate = false
               var body: some View {
@@ -2125,7 +1983,6 @@ jobs:
               }
           }
 
-          // MARK: - Error View
           struct ErrorView: View {
               let message: String; let onRetry: () -> Void
               var body: some View {
@@ -2139,25 +1996,19 @@ jobs:
               }
           }
           VIPEOF
-          echo "ContentView.swift: $(wc -l < ContentView.swift) lines"
 
-      # =========================================================
-      # HOME TAB (unchanged behavior)
-      # =========================================================
-      - name: توليد الكود - تبويب الرئيسية (HomeTabView.swift)
+      - name: توليد الكود - HomeTabView.swift
         run: |
           cat > HomeTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - Home Tab
           struct HomeTabView: View {
               @ObservedObject var appsManager: AppsManager
               @State private var selectedApp: AppItem?
               @Environment(\.colorScheme) var scheme
 
-              // Featured sections
               private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
               private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
               private var trending: [AppItem] { appsManager.apps.filter { $0.isNew }.prefix(8).map { $0 } }
@@ -2174,14 +2025,11 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
-                                  // 1) Hero Banner
                                   StoreHeroBanner()
                                       .padding(.top, 6)
 
-                                  // 2) Ad Carousel
                                   AdImageCarousel(images: AppConstants.adBanners)
 
-                                  // 3) NEW THIS WEEK
                                   if !newThisWeek.isEmpty {
                                       sectionHeader(title: "🆕 جديد هذا الأسبوع", icon: "sparkles", color: .pink)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2195,7 +2043,6 @@ jobs:
                                       }
                                   }
 
-                                  // 4) Popular
                                   if !popular.isEmpty {
                                       sectionHeader(title: "🔥 الأكثر شعبية", icon: "flame.fill", color: .orange)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2209,7 +2056,6 @@ jobs:
                                       }
                                   }
 
-                                  // 5) KurdStore
                                   if !kurdApps.isEmpty {
                                       sectionHeader(title: "🟧 من KurdStore", icon: "k.circle.fill",
                                                     color: Color(red: 0.95, green: 0.45, blue: 0.20))
@@ -2224,7 +2070,6 @@ jobs:
                                       }
                                   }
 
-                                  // 6) Top Downloads
                                   if !topRated.isEmpty {
                                       sectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill", color: .blue)
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2239,7 +2084,6 @@ jobs:
                                       }
                                   }
 
-                                  // 7) Latest Apps
                                   sectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill", color: .gray)
                                   ForEach(newest, id: \.id) { app in
                                       AppCardView(app: app)
@@ -2280,7 +2124,6 @@ jobs:
               }
           }
 
-          // MARK: - Store Hero Banner
           struct StoreHeroBanner: View {
               @State private var pulse = false
 
@@ -2377,7 +2220,6 @@ jobs:
               }
           }
 
-          // MARK: - Ad Image Carousel
           struct AdImageCarousel: View {
               let images: [(image: String, link: String)]
               @State private var current: Int = 0
@@ -2437,7 +2279,6 @@ jobs:
               }
           }
 
-          // MARK: - Featured App Card
           struct FeaturedAppCard: View {
               let app: AppItem
               var body: some View {
@@ -2474,7 +2315,6 @@ jobs:
               }
           }
 
-          // MARK: - New This Week Card
           struct NewThisWeekCard: View {
               let app: AppItem
               @Environment(\.colorScheme) var scheme
@@ -2526,7 +2366,6 @@ jobs:
               }
           }
 
-          // MARK: - Top Download Wide Card
           struct TopDownloadWideCard: View {
               let rank: Int; let app: AppItem
               @Environment(\.colorScheme) var scheme
@@ -2616,7 +2455,6 @@ jobs:
               }
           }
 
-          // MARK: - App Card View
           struct AppCardView: View {
               let app: AppItem
               @Environment(\.colorScheme) var scheme
@@ -2657,7 +2495,6 @@ jobs:
               }
           }
 
-          // MARK: - Marquee Text
           struct MarqueeText: View {
               let text: String
               var font: Font = .system(size: 13, weight: .semibold)
@@ -2704,7 +2541,6 @@ jobs:
               }
           }
 
-          // MARK: - Top Announcement Marquee
           struct TopAnnouncementMarquee: View {
               var body: some View {
                   HStack(spacing: 8) {
@@ -2741,19 +2577,14 @@ jobs:
               }
           }
           VIPEOF
-          echo "HomeTabView.swift: $(wc -l < HomeTabView.swift) lines"
 
-      # =========================================================
-      # APPS TAB (unchanged behavior, supports local source filter)
-      # =========================================================
-      - name: توليد الكود - تبويب التطبيقات (AppsTabView.swift)
+      - name: توليد الكود - AppsTabView.swift
         run: |
           cat > AppsTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - Apps Tab
           struct AppsTabView: View {
               @ObservedObject var appsManager: AppsManager
               @State private var selectedApp: AppItem?
@@ -2822,7 +2653,6 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
-                                  // Header
                                   HStack(spacing: 12) {
                                       ZStack {
                                           RoundedRectangle(cornerRadius: 14)
@@ -2860,7 +2690,6 @@ jobs:
                                       }
                                   }.padding(.horizontal)
 
-                                  // Search Bar
                                   HStack(spacing: 10) {
                                       Image(systemName: "magnifyingglass")
                                           .foregroundColor(isSearchFocused ? .vipPurple : .gray)
@@ -2884,7 +2713,6 @@ jobs:
                                   .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
                                   .padding(.horizontal)
 
-                                  // Recent searches
                                   if isSearchFocused && searchText.isEmpty && !appsManager.recentSearches.isEmpty {
                                       VStack(alignment: .trailing, spacing: 6) {
                                           Text("بحث سابق").font(.system(size: 12)).foregroundColor(.gray).padding(.horizontal)
@@ -2905,7 +2733,6 @@ jobs:
                                       }.transition(.opacity)
                                   }
 
-                                  // Source Filter
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(AppSource.allCases.filter { $0 != .local }) { src in
@@ -2964,7 +2791,6 @@ jobs:
                                       }.padding(.horizontal)
                                   }
 
-                                  // Category Filter
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(categories, id: \.self) { cat in
@@ -3028,7 +2854,6 @@ jobs:
               }
           }
 
-          // MARK: - Enhanced App Card
           struct EnhancedAppCard: View {
               let app: AppItem
               @Environment(\.colorScheme) var scheme
@@ -3116,12 +2941,11 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppsTabView.swift: $(wc -l < AppsTabView.swift) lines"
 
       # =========================================================
-      # FILES TAB — Real file import UI
+      # FILES TAB مع ميزة حقن dylib (واجهة المستخدم)
       # =========================================================
-      - name: توليد الكود - تبويب الملفات (FilesTabView.swift)
+      - name: توليد الكود - FilesTabView.swift (مع خيار الحقن)
         run: |
           cat > FilesTabView.swift << 'VIPEOF'
           import SwiftUI
@@ -3129,7 +2953,6 @@ jobs:
           import Foundation
           import UniformTypeIdentifiers
 
-          // MARK: - Files Tab (الملفات)
           struct FilesTabView: View {
               @ObservedObject var filesManager: FilesManager
               @Environment(\.colorScheme) var scheme
@@ -3143,6 +2966,13 @@ jobs:
               @State private var fileToConfirmDelete: ImportedFile? = nil
               @State private var fileToShare: ImportedFile? = nil
               @State private var detailFile: ImportedFile? = nil
+
+              // حالات الحقن
+              @State private var showingInjectSheet = false
+              @State private var selectedFileForInject: ImportedFile? = nil
+              @State private var injectDylibURL: URL? = nil
+              @State private var isInjecting = false
+              @State private var injectResult: String? = nil
 
               var filtered: [ImportedFile] {
                   var arr = filesManager.files
@@ -3243,6 +3073,11 @@ jobs:
                                                color: .red,
                                                text: err)
                               }
+                              if let result = injectResult {
+                                  StatusBanner(icon: result.contains("نجاح") ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                                               color: result.contains("نجاح") ? .green : .red,
+                                               text: result)
+                              }
 
                               // List
                               if filesManager.files.isEmpty {
@@ -3269,15 +3104,25 @@ jobs:
                                                   onDelete: { fileToConfirmDelete = file },
                                                   onShare: { fileToShare = file },
                                                   onRevalidate: { filesManager.revalidate(file) },
+                                                  onInject: {
+                                                      // نتحقق من أن الملف هو IPA
+                                                      if file.kind == .ipa {
+                                                          selectedFileForInject = file
+                                                          showingInjectSheet = true
+                                                      } else {
+                                                          HapticManager.shared.notification(.error)
+                                                          injectResult = "❌ الحقن متاح فقط لملفات IPA"
+                                                      }
+                                                  },
                                                   onTap: { detailFile = file }
                                               )
                                               .padding(.horizontal)
                                           }
 
-                                          // Footer note
+                                          // Footer
                                           HStack(spacing: 6) {
                                               Image(systemName: "info.circle").font(.system(size: 11))
-                                              Text("يتم تخزين الملفات في مجلد آمن داخل التطبيق (Application Support).")
+                                              Text("يمكنك حقن مكتبة dylib في أي ملف IPA محدد.")
                                                   .font(.system(size: 10))
                                           }
                                           .foregroundColor(.gray)
@@ -3302,7 +3147,7 @@ jobs:
                           }
                       }
                   }
-                  // Real document picker (UIDocumentPickerViewController)
+                  // Document picker
                   .sheet(isPresented: $showPicker) {
                       DocumentPicker(
                           contentTypes: pickerKinds.flatMap { utTypes(for: $0) },
@@ -3315,6 +3160,18 @@ jobs:
                           }
                       }
                       .ignoresSafeArea()
+                  }
+                  // Inject sheet (اختيار ملف dylib)
+                  .sheet(isPresented: $showingInjectSheet) {
+                      InjectDylibView(
+                          ipaFile: selectedFileForInject,
+                          filesManager: filesManager,
+                          onInject: { result in
+                              injectResult = result
+                              showingInjectSheet = false
+                              filesManager.reload()
+                          }
+                      )
                   }
                   // Rename alert
                   .alert("إعادة تسمية الملف",
@@ -3395,7 +3252,243 @@ jobs:
               }
           }
 
-          // MARK: - Filter Chip
+          // MARK: - InjectDylibView (نافذة حقن المكتبة)
+          struct InjectDylibView: View {
+              let ipaFile: ImportedFile?
+              @ObservedObject var filesManager: FilesManager
+              var onInject: (String) -> Void
+
+              @Environment(\.dismiss) var dismiss
+              @State private var selectedDylibURL: URL? = nil
+              @State private var showDylibPicker = false
+              @State private var isInjecting = false
+              @State private var injectMessage = ""
+
+              var body: some View {
+                  NavigationView {
+                      VStack(spacing: 20) {
+                          if let ipa = ipaFile {
+                              Text("حقن مكتبة في:")
+                                  .font(.headline)
+                              Text(ipa.originalName)
+                                  .font(.title3)
+                                  .bold()
+                                  .multilineTextAlignment(.center)
+                          } else {
+                              Text("لم يتم اختيار ملف IPA")
+                                  .foregroundColor(.gray)
+                          }
+
+                          Divider()
+
+                          if let dylib = selectedDylibURL {
+                              HStack {
+                                  Image(systemName: "doc.fill")
+                                  Text(dylib.lastPathComponent)
+                                      .lineLimit(1)
+                                  Spacer()
+                                  Button("تغيير") {
+                                      selectedDylibURL = nil
+                                      showDylibPicker = true
+                                  }
+                                  .font(.caption)
+                              }
+                              .padding()
+                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.1)))
+                          } else {
+                              Button("اختر ملف dylib") {
+                                  showDylibPicker = true
+                              }
+                              .buttonStyle(.borderedProminent)
+                          }
+
+                          if !injectMessage.isEmpty {
+                              Text(injectMessage)
+                                  .font(.caption)
+                                  .foregroundColor(injectMessage.contains("نجاح") ? .green : .red)
+                                  .multilineTextAlignment(.center)
+                          }
+
+                          Spacer()
+
+                          GradientButton(
+                              title: isInjecting ? "جاري الحقن..." : "حقن المكتبة",
+                              icon: "arrow.right.circle.fill",
+                              gradient: [.blue, .vipPurple],
+                              action: {
+                                  performInject()
+                              },
+                              isLoading: isInjecting,
+                              isDisabled: selectedDylibURL == nil || isInjecting
+                          )
+                          .padding(.horizontal, 40)
+
+                          Button("إلغاء") {
+                              dismiss()
+                          }
+                          .font(.caption)
+                          .foregroundColor(.gray)
+                      }
+                      .padding()
+                      .navigationTitle("حقن dylib")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("إلغاء") { dismiss() }
+                          }
+                      }
+                      .sheet(isPresented: $showDylibPicker) {
+                          DocumentPicker(
+                              contentTypes: [.data, .item],
+                              allowsMultiple: false
+                          ) { urls in
+                              showDylibPicker = false
+                              if let url = urls.first {
+                                  // التأكد من امتداد .dylib
+                                  if url.pathExtension.lowercased() == "dylib" {
+                                      selectedDylibURL = url
+                                  } else {
+                                      injectMessage = "❌ الرجاء اختيار ملف بامتداد .dylib"
+                                  }
+                              }
+                          }
+                          .ignoresSafeArea()
+                      }
+                  }
+              }
+
+              private func performInject() {
+                  guard let ipa = ipaFile,
+                        let dylib = selectedDylibURL,
+                        let ipaURL = filesManager.absoluteURL(for: ipa) as URL? else {
+                      injectMessage = "❌ بيانات غير مكتملة"
+                      return
+                  }
+
+                  isInjecting = true
+                  injectMessage = ""
+
+                  // استدعاء وظيفة الحقن من FilesManager (سنضيفها لاحقاً)
+                  do {
+                      // نسخ الملفات إلى مجلد مؤقت
+                      let tempDir = FileManager.default.temporaryDirectory
+                          .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                      try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+                      let ipaCopy = tempDir.appendingPathComponent(ipa.storedName)
+                      try FileManager.default.copyItem(at: ipaURL, to: ipaCopy)
+
+                      let dylibCopy = tempDir.appendingPathComponent(dylib.lastPathComponent)
+                      try FileManager.default.copyItem(at: dylib, to: dylibCopy)
+
+                      // استدعاء الأداة (سنقوم بتنفيذها عبر Process)
+                      let result = try injectDylibIntoSelf(ipaPath: ipaCopy.path, dylibPath: dylibCopy.path)
+
+                      if result {
+                          // استبدال الملف الأصلي بالملف المحقون
+                          let newIPAURL = tempDir.appendingPathComponent("injected.ipa")
+                          try FileManager.default.removeItem(at: ipaURL)
+                          try FileManager.default.copyItem(at: newIPAURL, to: ipaURL)
+                          // إعادة تحميل الملفات
+                          filesManager.reload()
+                          injectMessage = "✅ تم حقن المكتبة بنجاح في \(ipa.originalName)"
+                          HapticManager.shared.notification(.success)
+                      } else {
+                          injectMessage = "❌ فشل الحقن، تحقق من صحة الملفات"
+                          HapticManager.shared.notification(.error)
+                      }
+
+                      // تنظيف
+                      try? FileManager.default.removeItem(at: tempDir)
+
+                  } catch {
+                      injectMessage = "❌ خطأ: \(error.localizedDescription)"
+                      HapticManager.shared.notification(.error)
+                  }
+
+                  isInjecting = false
+                  // إشعار بالانتهاء
+                  onInject(injectMessage)
+              }
+
+              // MARK: - دالة الحقن الفعلية (تستخدم insert_dylib)
+              private func injectDylibIntoSelf(ipaPath: String, dylibPath: String) throws -> Bool {
+                  // أولاً نفك ضغط الـ IPA
+                  let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+                  try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(at: tempDir) }
+
+                  // فك الضغط
+                  let processUnzip = Process()
+                  processUnzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+                  processUnzip.arguments = ["-q", ipaPath, "-d", tempDir.path]
+                  try processUnzip.run()
+                  processUnzip.waitUntilExit()
+                  guard processUnzip.terminationStatus == 0 else { throw NSError(domain: "Unzip", code: 1) }
+
+                  // إيجاد مسار الـ .app
+                  let payload = tempDir.appendingPathComponent("Payload")
+                  let appDirs = try FileManager.default.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
+                  guard let appDir = appDirs.first(where: { $0.pathExtension == "app" }) else {
+                      throw NSError(domain: "App", code: 2, userInfo: [NSLocalizedDescriptionKey: "لم يتم العثور على .app"])
+                  }
+
+                  // نسخ dylib إلى الـ .app
+                  let dylibDest = appDir.appendingPathComponent(dylibPath.lastPathComponent)
+                  try FileManager.default.copyItem(at: URL(fileURLWithPath: dylibPath), to: dylibDest)
+
+                  // تحديد الملف التنفيذي الرئيسي
+                  let infoPlist = appDir.appendingPathComponent("Info.plist")
+                  guard let data = try? Data(contentsOf: infoPlist),
+                        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                        let execName = plist["CFBundleExecutable"] as? String else {
+                      throw NSError(domain: "Info", code: 3, userInfo: [NSLocalizedDescriptionKey: "لا يمكن قراءة Info.plist"])
+                  }
+                  let execPath = appDir.appendingPathComponent(execName)
+
+                  // استدعاء insert_dylib
+                  let processInsert = Process()
+                  processInsert.executableURL = URL(fileURLWithPath: "/usr/local/bin/insert_dylib")
+                  processInsert.arguments = [
+                      "--inplace",
+                      "@executable_path/\(dylibPath.lastPathComponent)",
+                      execPath.path
+                  ]
+                  try processInsert.run()
+                  processInsert.waitUntilExit()
+                  guard processInsert.terminationStatus == 0 else {
+                      throw NSError(domain: "InsertDylib", code: 4, userInfo: [NSLocalizedDescriptionKey: "فشل حقن المكتبة"])
+                  }
+
+                  // إعادة توقيع الملف التنفيذي (اختياري)
+                  let processLdid = Process()
+                  processLdid.executableURL = URL(fileURLWithPath: "/usr/bin/ldid")
+                  processLdid.arguments = ["-S", execPath.path]
+                  try processLdid.run()
+                  processLdid.waitUntilExit()
+
+                  // إعادة ضغط الـ IPA
+                  let outputIPA = URL(fileURLWithPath: ipaPath).deletingLastPathComponent().appendingPathComponent("injected.ipa")
+                  let processZip = Process()
+                  processZip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                  processZip.arguments = ["-r", outputIPA.path, "Payload"]
+                  processZip.currentDirectoryURL = tempDir
+                  try processZip.run()
+                  processZip.waitUntilExit()
+                  guard processZip.terminationStatus == 0 else {
+                      throw NSError(domain: "Zip", code: 5, userInfo: [NSLocalizedDescriptionKey: "فشل ضغط IPA"])
+                  }
+
+                  // استبدال الملف الأصلي بالملف الجديد
+                  try FileManager.default.removeItem(atPath: ipaPath)
+                  try FileManager.default.moveItem(at: outputIPA, to: URL(fileURLWithPath: ipaPath))
+
+                  return true
+              }
+          }
+
+          // MARK: - بقية المكونات (FilterChip, StatusBanner, FilesBanner, etc.)
+          // (تم تعريفها مسبقاً في FilesTabView السابق، لكننا نعيد تعريفها هنا للاكتمال)
           struct FilterChip: View {
               let title: String; let icon: String; let color: Color; let selected: Bool
               let action: () -> Void
@@ -3419,7 +3512,6 @@ jobs:
               }
           }
 
-          // MARK: - Status Banner
           struct StatusBanner: View {
               let icon: String; let color: Color; let text: String
               var body: some View {
@@ -3439,12 +3531,9 @@ jobs:
               }
           }
 
-          // MARK: - Files Banner
           struct FilesBanner: View {
-              let total: Int
-              let ipaCount: Int
-              let p12Count: Int
-              let provCount: Int
+              let total: Int; let ipaCount: Int; let p12Count: Int; let provCount: Int
+              @Environment(\.colorScheme) private var scheme
 
               var body: some View {
                   HStack(spacing: 12) {
@@ -3472,14 +3561,9 @@ jobs:
                   }
                   .padding(14)
                   .background(RoundedRectangle(cornerRadius: 18)
-                      .fill(schemeColor())
+                      .fill(scheme == .dark ? Color(white: 0.13) : Color.white)
                       .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 4))
                   .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.vipPurple.opacity(0.10), lineWidth: 1))
-              }
-
-              @Environment(\.colorScheme) private var scheme
-              private func schemeColor() -> Color {
-                  scheme == .dark ? Color(white: 0.13) : Color.white
               }
           }
 
@@ -3496,7 +3580,6 @@ jobs:
               }
           }
 
-          // MARK: - Empty State
           struct FilesEmptyState: View {
               let onImport: () -> Void
               var body: some View {
@@ -3531,7 +3614,6 @@ jobs:
               }
           }
 
-          // MARK: - File Row
           struct ImportedFileRow: View {
               let file: ImportedFile
               let iconURL: URL?
@@ -3539,12 +3621,12 @@ jobs:
               let onDelete: () -> Void
               let onShare: () -> Void
               let onRevalidate: () -> Void
+              let onInject: () -> Void
               let onTap: () -> Void
               @Environment(\.colorScheme) var scheme
 
               var body: some View {
                   HStack(spacing: 12) {
-                      // Icon
                       ZStack {
                           RoundedRectangle(cornerRadius: 14)
                               .fill(LinearGradient(
@@ -3615,6 +3697,9 @@ jobs:
                   .onTapGesture { HapticManager.shared.impact(.light); onTap() }
                   .contextMenu {
                       Button { onTap() } label: { Label("عرض التفاصيل", systemImage: "info.circle") }
+                      if file.kind == .ipa {
+                          Button { onInject() } label: { Label("حقن dylib", systemImage: "plus.slash.minus") }
+                      }
                       Button { onRename() } label: { Label("إعادة تسمية", systemImage: "pencil") }
                       Button { onShare() } label: { Label("مشاركة / تصدير", systemImage: "square.and.arrow.up") }
                       Button { onRevalidate() } label: { Label("إعادة التحقق", systemImage: "arrow.clockwise") }
@@ -3631,6 +3716,11 @@ jobs:
                       Button(action: onShare) {
                           Label("مشاركة", systemImage: "square.and.arrow.up")
                       }.tint(.green)
+                      if file.kind == .ipa {
+                          Button(action: onInject) {
+                              Label("حقن", systemImage: "plus.slash.minus")
+                          }.tint(.vipPurple)
+                      }
                   }
               }
 
@@ -3656,7 +3746,6 @@ jobs:
               }
           }
 
-          // MARK: - File Detail View
           struct ImportedFileDetailView: View {
               let file: ImportedFile
               @ObservedObject var filesManager: FilesManager
@@ -3800,7 +3889,6 @@ jobs:
               }
           }
 
-          // MARK: - Share Sheet
           struct ShareSheet: UIViewControllerRepresentable {
               let activityItems: [Any]
               func makeUIViewController(context: Context) -> UIActivityViewController {
@@ -3809,19 +3897,14 @@ jobs:
               func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
           }
           VIPEOF
-          echo "FilesTabView.swift: $(wc -l < FilesTabView.swift) lines"
 
-      # =========================================================
-      # APP DETAIL VIEW (unchanged behavior)
-      # =========================================================
-      - name: توليد الكود - تفاصيل التطبيق (AppDetailView.swift)
+      - name: توليد الكود - AppDetailView.swift
         run: |
           cat > AppDetailView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
 
-          // MARK: - App Detail View
           struct AppDetailView: View {
               let app: AppItem
               @State private var isDownloading = false
@@ -3973,12 +4056,8 @@ jobs:
               }
           }
           VIPEOF
-          echo "AppDetailView.swift: $(wc -l < AppDetailView.swift) lines"
 
-      # =========================================================
-      # APP ENTRY POINT
-      # =========================================================
-      - name: توليد الكود - نقطة انطلاق التطبيق (VIP21StoreApp.swift)
+      - name: توليد الكود - VIP21StoreApp.swift
         run: |
           cat > VIP21StoreApp.swift << 'VIPEOF'
           import SwiftUI
@@ -3986,7 +4065,6 @@ jobs:
           import Foundation
           import UserNotifications
 
-          // MARK: - App Entry Point
           @main
           struct VIP21StoreApp: App {
               @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -4002,7 +4080,7 @@ jobs:
 
               func requestNotifications() {
                   UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-          }
+              }
           }
 
           class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -4026,17 +4104,15 @@ jobs:
               }
           }
 
-          // MARK: - UIWindow helper (used by Share Sheet)
           extension UIWindowScene {
               var keyWindow: UIWindow? {
                   return windows.first(where: { $0.isKeyWindow }) ?? windows.first
               }
           }
           VIPEOF
-          echo "VIP21StoreApp.swift: $(wc -l < VIP21StoreApp.swift) lines"
 
       # =========================================================
-      # BUILD
+      # BUILD (مع حقن dylib في الملف التنفيذي)
       # =========================================================
       - name: بناء التطبيق
         run: |
@@ -4067,6 +4143,19 @@ jobs:
             -o VIP21Store
           file VIP21Store
 
+      - name: حقن dylib في الملف التنفيذي للتطبيق
+        run: |
+          # استخدم insert_dylib لحقن المكتبة المحملة في VIP21Store
+          if [ -f "$DYLIB_NAME" ]; then
+            # نسخ المكتبة إلى مكان يمكن الوصول إليه
+            cp "$DYLIB_NAME" ./VIP21Store.dylib
+            # حقنها في الملف التنفيذي مع تعيين المسار @executable_path
+            /usr/local/bin/insert_dylib --inplace @executable_path/VIP21Store.dylib VIP21Store
+            echo "تم حقن المكتبة بنجاح"
+          else
+            echo "⚠️ ملف dylib غير موجود، تخطي الحقن"
+          fi
+
       - name: إنشاء حزمة IPA
         run: |
           mkdir -p artifacts
@@ -4078,6 +4167,10 @@ jobs:
           cp Resources/AppIcon76x76@2x~ipad.png  build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
+          # نسخ المكتبة المحقونة أيضاً داخل الـ .app
+          if [ -f "$DYLIB_NAME" ]; then
+            cp "$DYLIB_NAME" build-output/Payload/VIP21Store.app/
+          fi
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
           cd build-output && zip -r -q ../artifacts/21s.ipa Payload/ && cd ..
           echo "IPA: $(du -sh artifacts/21s.ipa)"
@@ -4095,5 +4188,5 @@ jobs:
       - name: رفع الملف الناتج
         uses: actions/upload-artifact@v4
         with:
-          name: 21s-IPA-SwiftUI-v7
+          name: 21s-IPA-SwiftUI-v7-injected
           path: artifacts/21s.ipa
