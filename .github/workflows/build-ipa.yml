@@ -1,4 +1,4 @@
-name: بناء تطبيق 21s Pro (SwiftUI) - تصميم Xcode احترافي
+بناء تطبيق 21s Pro (SwiftUI) - تصميم Xcode احترافي
 
 on:
   push:
@@ -69,30 +69,49 @@ jobs:
               glow_draw.ellipse([size//4, -size//3, 3*size//4, size//3], fill=(100, 160, 255, 30))
               img = Image.alpha_composite(img, glow)
               draw = ImageDraw.Draw(img)
+
+              # حد أدنى لحجم الخط لتفادي مشاكل FreeType (division by zero) مع الأحجام الصغيرة جداً
+              font_size = max(8, int(size * 0.38))
               try:
-                  font_size = int(size * 0.38)
                   font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-              except:
+              except Exception:
                   try:
                       font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", font_size)
-                  except:
+                  except Exception:
                       font = ImageFont.load_default()
+
               text = "21"
-              bbox = draw.textbbox((0, 0), text, font=font)
-              tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-              x = (size - tw) / 2 - bbox[0]
-              y = (size - th) / 2 - bbox[1]
+              try:
+                  bbox = draw.textbbox((0, 0), text, font=font)
+                  tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                  x = (size - tw) / 2 - bbox[0]
+                  y = (size - th) / 2 - bbox[1]
+              except Exception:
+                  x, y = size * 0.2, size * 0.3
+
               draw.text((x+2, y+2), text, fill=(0, 0, 0, 100), font=font)
               draw.text((x, y), text, fill=(80, 160, 255, 255), font=font)
-              pro_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size*0.12)) if font != ImageFont.load_default() else font
-              pro_text = "PRO"
-              pbbox = draw.textbbox((0,0), pro_text, font=pro_font)
-              pw, ph = pbbox[2]-pbbox[0], pbbox[3]-pbbox[1]
-              px = size - pw - size//8
-              py = size//8
-              draw.rounded_rectangle([px-size//20, py-size//20, px+pw+size//20, py+ph+size//20], 
-                                     radius=size//30, fill=(255, 50, 80, 220))
-              draw.text((px, py), pro_text, fill=(255, 255, 255, 255), font=pro_font)
+
+              # شارة "PRO" فقط للأيقونات الأكبر من 40px (تحت هذا الحجم غير مقروءة أصلاً
+              # وهي كانت سبب انهيار FreeType عند الأحجام الصغيرة جداً)
+              if size >= 40:
+                  pro_font_size = max(8, int(size * 0.12))
+                  try:
+                      pro_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", pro_font_size)
+                  except Exception:
+                      pro_font = font
+                  pro_text = "PRO"
+                  try:
+                      pbbox = draw.textbbox((0, 0), pro_text, font=pro_font)
+                      pw, ph = pbbox[2]-pbbox[0], pbbox[3]-pbbox[1]
+                      px = size - pw - size//8
+                      py = size//8
+                      draw.rounded_rectangle([px-size//20, py-size//20, px+pw+size//20, py+ph+size//20],
+                                             radius=max(1, size//30), fill=(255, 50, 80, 220))
+                      draw.text((px, py), pro_text, fill=(255, 255, 255, 255), font=pro_font)
+                  except Exception:
+                      pass
+
               img.save(path, "PNG")
 
           make_icon(120,  "Resources/AppIcon60x60@2x.png")
@@ -357,6 +376,27 @@ jobs:
           }
           theme = themes['cyberpunk']
 
+          # حد أدنى آمن لأي حجم خط لتفادي division by zero فـ FreeType مع الأحجام الصغيرة جداً
+          MIN_FONT_SIZE = 8
+
+          def safe_font(path, size):
+              size = max(MIN_FONT_SIZE, int(size))
+              try:
+                  return ImageFont.truetype(path, size)
+              except Exception:
+                  return ImageFont.load_default()
+
+          def safe_textbbox(draw, xy, text, font, anchor=None):
+              try:
+                  if anchor:
+                      return draw.textbbox(xy, text, font=font, anchor=anchor)
+                  return draw.textbbox(xy, text, font=font)
+              except Exception:
+                  # تقدير تقريبي إذا فشل الحساب الدقيق
+                  w = len(text) * (font.size if hasattr(font, "size") else 10)
+                  h = font.size if hasattr(font, "size") else 10
+                  return (xy[0], xy[1], xy[0] + w, xy[1] + h)
+
           def make_anime_icon(size, path):
               img = Image.new("RGBA", (size*2, size*2), (0,0,0,0))
               draw = ImageDraw.Draw(img)
@@ -379,32 +419,44 @@ jobs:
               for i in range(3):
                   offset = (i+1) * size//10
                   glow_draw.ellipse([size-offset, size-offset, size+offset, size+offset],
-                                    outline=(*prim, 80-i*20), width=size//15)
+                                    outline=(*prim, 80-i*20), width=max(1, size//15))
               img = Image.alpha_composite(img, glow)
               draw = ImageDraw.Draw(img)
-              try:
-                  font_big = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size*0.9))
-                  font_small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size*0.28))
-              except:
-                  font_big = ImageFont.load_default()
-                  font_small = font_big
+
+              font_big = safe_font("/System/Library/Fonts/Helvetica.ttc", size*0.9)
+              font_small = safe_font("/System/Library/Fonts/Helvetica.ttc", size*0.28)
+
               for offset in [(3,3), (-3,3), (3,-3), (-3,-3)]:
-                  draw.text((size+offset[0], size+offset[1]), "21", font=font_big,
-                           fill=(*prim, 120), anchor="mm")
-              draw.text((size, size), "21", font=font_big, fill=(255,255,255,255), anchor="mm")
-              pro_text = "PRO"
-              pbbox = draw.textbbox((0,0), pro_text, font=font_small)
-              pw, ph = pbbox[2]-pbbox[0], pbbox[3]-pbbox[1]
-              px = size + size//3
-              py = size - size//3
-              draw.rounded_rectangle([px-size//15, py-size//15, px+pw+size//15, py+ph+size//15],
-                                     radius=size//20, fill=(*sec, 230))
-              draw.text((px, py), pro_text, font=font_small, fill=(0,0,0,255), anchor="lm")
+                  try:
+                      draw.text((size+offset[0], size+offset[1]), "21", font=font_big,
+                               fill=(*prim, 120), anchor="mm")
+                  except Exception:
+                      pass
+              try:
+                  draw.text((size, size), "21", font=font_big, fill=(255,255,255,255), anchor="mm")
+              except Exception:
+                  draw.text((size - size//4, size - size//4), "21", font=font_big, fill=(255,255,255,255))
+
+              # شارة "PRO" فقط للأيقونات الأكبر من 40px، لتفادي انهيار FreeType
+              # مع الخطوط الصغيرة جداً (كانت هذه السبب فـ "division by zero")
+              if size >= 40:
+                  pro_text = "PRO"
+                  pbbox = safe_textbbox(draw, (0,0), pro_text, font_small)
+                  pw, ph = pbbox[2]-pbbox[0], pbbox[3]-pbbox[1]
+                  px = size + size//3
+                  py = size - size//3
+                  draw.rounded_rectangle([px-size//15, py-size//15, px+pw+size//15, py+ph+size//15],
+                                         radius=max(1, size//20), fill=(*sec, 230))
+                  try:
+                      draw.text((px, py), pro_text, font=font_small, fill=(0,0,0,255), anchor="lm")
+                  except Exception:
+                      draw.text((px, py), pro_text, font=font_small, fill=(0,0,0,255))
+
               for _ in range(8):
                   sx = random.randint(size//4, size*7//4)
                   sy = random.randint(size//4, size*7//4)
                   if math.sqrt((sx-size)**2 + (sy-size)**2) < size*0.8:
-                      draw.regular_polygon((sx, sy, size//25), 4, fill=(*acc, 200))
+                      draw.regular_polygon((sx, sy, max(1, size//25)), 4, fill=(*acc, 200))
               img = img.resize((size, size), Image.LANCZOS)
               img.save(path, "PNG")
               print(f"Generated anime icon: {path}")
@@ -434,12 +486,9 @@ jobs:
               r = random.randint(2, 6)
               color = random.choice([prim, sec, acc])
               ldraw.ellipse([x-r, y-r, x+r, y+r], fill=(*color, 150))
-          try:
-              fnt = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 200)
-              fnt2 = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 60)
-          except:
-              fnt = ImageFont.load_default()
-              fnt2 = fnt
+
+          fnt = safe_font("/System/Library/Fonts/Helvetica.ttc", 200)
+          fnt2 = safe_font("/System/Library/Fonts/Helvetica.ttc", 60)
           ldraw.text((645, 1200), "21s", font=fnt, fill=(255,255,255,255), anchor="mm")
           ldraw.text((645, 1350), "PRO ANIME", font=fnt2, fill=(*prim, 255), anchor="mm")
           ldraw.text((645, 1450), "LOADING...", font=fnt2, fill=(*sec, 200), anchor="mm")
