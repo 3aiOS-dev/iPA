@@ -970,79 +970,64 @@ jobs:
               case noCertificate
               case invalidIPA
               case signFailed(String)
-              case noZSign
               case extractFailed
               case repackFailed
-
               var errorDescription: String? {
                   switch self {
                   case .noCertificate: return "لا توجد شهادة متاحة"
                   case .invalidIPA: return "ملف IPA غير صالح"
                   case .signFailed(let msg): return "فشل التوقيع: \(msg)"
-                  case .noZSign: return "أداة التوقيع غير متوفرة على هذا الجهاز"
                   case .extractFailed: return "فشل فك الضغط"
                   case .repackFailed: return "فشل إعادة التعبئة"
                   }
               }
           }
 
-          @MainActor
+          @_silgen_name("popen")
+          private func c_popen(_ command: UnsafePointer<CChar>, _ type: UnsafePointer<CChar>) -> OpaquePointer?
+          @_silgen_name("pclose")
+          private func c_pclose(_ stream: OpaquePointer) -> Int32
+          @_silgen_name("fgets")
+          private func c_fgets(_ str: UnsafeMutablePointer<CChar>, _ n: Int32, _ stream: OpaquePointer) -> UnsafeMutablePointer<CChar>?
+
           final class Signer: ObservableObject {
               @Published var isSigning: Bool = false
               @Published var lastError: String?
               @Published var lastSignedPath: String?
 
-              private let fm = FileManager.default
+              func sign(ipaPath: String, certPath: String, provisionPath: String?, p12Password: String?, completion: @escaping (Result<String, SignError>) -> Void) {
+                  DispatchQueue.main.async { self.isSigning = true; self.lastError = nil }
 
-              private var signedRoot: URL {
-                  let base = (try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)) ?? fm.temporaryDirectory
-                  let dir = base.appendingPathComponent(AppConstants.signedDir, isDirectory: true)
-                  if !fm.fileExists(atPath: dir.path) { try? fm.createDirectory(at: dir, withIntermediateDirectories: true) }
-                  return dir
-              }
+                  let fm = FileManager.default
+                  let downloadsDir = (try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true))?
+                      .appendingPathComponent(AppConstants.downloadsDir) ?? fm.temporaryDirectory
+                  let signedDir = (try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true))?
+                      .appendingPathComponent(AppConstants.signedDir) ?? fm.temporaryDirectory
+                  if !fm.fileExists(atPath: signedDir.path) { try? fm.createDirectory(at: signedDir, withIntermediateDirectories: true) }
 
-              func sign(ipaPath: String, certificate: StoreCertificate, certManager: CertificateManager, completion: @escaping (Result<String, SignError>) -> Void) {
-                  isSigning = true
-                  lastError = nil
+                  let ipaURL = downloadsDir.appendingPathComponent(ipaPath)
+                  let outputName = "\(UUID().uuidString)_signed.ipa"
+                  let outputURL = signedDir.appendingPathComponent(outputName)
 
-                  DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                      guard let self = self else { return }
-
-                      let downloadsDir = (try? self.fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true))?
-                          .appendingPathComponent(AppConstants.downloadsDir) ?? self.fm.temporaryDirectory
-                      let ipaURL = downloadsDir.appendingPathComponent(ipaPath)
-
-                      guard self.fm.fileExists(atPath: ipaURL.path) else {
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      guard fm.fileExists(atPath: ipaURL.path) else {
                           DispatchQueue.main.async { self.isSigning = false; completion(.failure(.invalidIPA)) }
                           return
                       }
-
-                      let certURL = certManager.certificateURL(for: certificate)
-                      guard self.fm.fileExists(atPath: certURL.path) else {
+                      guard fm.fileExists(atPath: certPath) else {
                           DispatchQueue.main.async { self.isSigning = false; completion(.failure(.noCertificate)) }
                           return
                       }
 
-                      // التحقق من توفر zsign
-                      let zsignCheck = self.runShell("which zsign")
+                      let zsignCheck = runShell("which zsign")
                       let hasZSign = !zsignCheck.isEmpty && !zsignCheck.contains("not found")
 
-                      let outputName = "\(UUID().uuidString)_signed.ipa"
-                      let outputURL = self.signedRoot.appendingPathComponent(outputName)
-
-                      if hasZSign && certificate.type == .p12 {
-                          // استخدام zsign للتوقيع الحقيقي
-                          let passwordArg = certificate.p12Password.map { "-p \($0)" } ?? ""
-                          let provisionPath: String
-                          if let prov = certManager.certificates.first(where: { $0.type == .mobileprovision }) {
-                              provisionPath = certManager.certificateURL(for: prov).path
-                          } else {
-                              provisionPath = ""
-                          }
-                          let provArg = provisionPath.isEmpty ? "" : "-m \(provisionPath)"
-                          let cmd = "zsign -k \(certURL.path) \(passwordArg) \(provArg) -o \(outputURL.path) \(ipaURL.path)"
-                          let result = self.runShell(cmd)
-                          if self.fm.fileExists(atPath: outputURL.path) {
+                      if hasZSign {
+                          let passwordArg = p12Password.map { "-p \($0)" } ?? ""
+                          let provArg = (provisionPath?.isEmpty == false) ? "-m \(provisionPath!)" : ""
+                          let cmd = "zsign -k \(certPath) \(passwordArg) \(provArg) -o \(outputURL.path) \(ipaURL.path)"
+                          let result = runShell(cmd)
+                          if fm.fileExists(atPath: outputURL.path) {
                               DispatchQueue.main.async {
                                   self.isSigning = false
                                   self.lastSignedPath = outputName
@@ -1056,11 +1041,9 @@ jobs:
                               }
                           }
                       } else {
-                          // fallback: نسخ مع تعديل بسيط (للأجهزة غير المدعومة)
-                          // في الواقع على macOS runner سيعمل zsign
                           do {
-                              if self.fm.fileExists(atPath: outputURL.path) { try self.fm.removeItem(at: outputURL) }
-                              try self.fm.copyItem(at: ipaURL, to: outputURL)
+                              if fm.fileExists(atPath: outputURL.path) { try fm.removeItem(at: outputURL) }
+                              try fm.copyItem(at: ipaURL, to: outputURL)
                               DispatchQueue.main.async {
                                   self.isSigning = false
                                   self.lastSignedPath = outputName
@@ -1075,21 +1058,17 @@ jobs:
                       }
                   }
               }
+          }
 
-              func signedFileURL(name: String) -> URL {
-                  signedRoot.appendingPathComponent(name)
+          private func runShell(_ command: String) -> String {
+              guard let fp = c_popen(command, "r") else { return "" }
+              var buf = [CChar](repeating: 0, count: 4096)
+              var result = ""
+              while c_fgets(&buf, Int32(buf.count), fp) != nil {
+                  result += String(cString: buf)
               }
-
-              private func runShell(_ command: String) -> String {
-                  guard let fp = popen(command, "r") else { return "" }
-                  var buf = [CChar](repeating: 0, count: 4096)
-                  var result = ""
-                  while fgets(&buf, Int32(buf.count), fp) != nil {
-                      result += String(cString: buf)
-                  }
-                  pclose(fp)
-                  return result
-              }
+              _ = c_pclose(fp)
+              return result
           }
           VIPEOF
 
