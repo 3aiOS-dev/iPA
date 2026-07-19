@@ -950,6 +950,8 @@ jobs:
 
       - name: توليد الكود - DownloadManager.swift (نظام تحميل حقيقي)
         run: |
+      - name: توليد الكود - DownloadManager.swift (نظام تحميل حقيقي)
+        run: |
           cat > DownloadManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
@@ -958,7 +960,7 @@ jobs:
 
           // MARK: - Download Manager (حقيقي)
           @MainActor
-          class DownloadManager: ObservableObject {
+          class DownloadManager: NSObject, ObservableObject {
               @Published var downloads: [DownloadTask] = []
               @Published var isDownloading: Bool = false
 
@@ -979,7 +981,8 @@ jobs:
                   return dir
               }
 
-              init() {
+              override init() {
+                  super.init()
                   let config = URLSessionConfiguration.background(withIdentifier: "com.vip21.store.downloads")
                   config.allowsCellularAccess = true
                   config.isDiscretionary = false
@@ -990,7 +993,7 @@ jobs:
               // MARK: - Start Download
               func startDownload(for app: AppItem) {
                   // التحقق من عدم وجود تحميل مسبق
-                  if let existing = downloads.first(where: { $0.appID == app.id && $0.isActive }) {
+                  if downloads.first(where: { $0.appID == app.id && $0.isActive }) != nil {
                       return
                   }
 
@@ -1036,8 +1039,10 @@ jobs:
               func pauseDownload(id: UUID) {
                   guard let task = tasks[id] else { return }
                   task.cancel { [weak self] data in
-                      self?.resumeData[id] = data
-                      self?.updateTask(id: id, state: .paused)
+                      Task { @MainActor in
+                          self?.resumeData[id] = data
+                          self?.updateTask(id: id, state: .paused)
+                      }
                   }
               }
 
@@ -1078,11 +1083,9 @@ jobs:
               // MARK: - Install
               func installApp(id: UUID) {
                   guard let task = downloads.first(where: { $0.id == id }),
-                        let path = task.localFilePath else { return }
+                        task.localFilePath != nil else { return }
 
                   updateTask(id: id, state: .installing)
-
-                  let fileURL = downloadsRoot.appendingPathComponent(path)
 
                   // إنشاء رابط itms-services للتثبيت
                   let installURL = "itms-services://?action=download-manifest&url=\(task.downloadURL)"
@@ -1189,29 +1192,40 @@ jobs:
 
           // MARK: - URLSession Delegate
           extension DownloadManager: URLSessionDownloadDelegate {
-              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+              nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                              didFinishDownloadingTo location: URL) {
                   guard let taskIDString = downloadTask.taskDescription,
                         let taskID = UUID(uuidString: taskIDString) else { return }
 
                   let filename = "\(taskID.uuidString).ipa"
+                  let fm = FileManager.default
+                  let base = (try? fm.url(for: .documentDirectory,
+                                          in: .userDomainMask,
+                                          appropriateFor: nil,
+                                          create: true)) ?? fm.temporaryDirectory
+                  let downloadsRoot = base.appendingPathComponent(AppConstants.downloadsDir, isDirectory: true)
+                  if !fm.fileExists(atPath: downloadsRoot.path) {
+                      try? fm.createDirectory(at: downloadsRoot, withIntermediateDirectories: true)
+                  }
                   let destURL = downloadsRoot.appendingPathComponent(filename)
 
                   try? fm.removeItem(at: destURL)
                   try? fm.moveItem(at: location, to: destURL)
 
-                  updateTask(id: taskID, state: .completed, path: filename)
-                  tasks.removeValue(forKey: taskID)
-                  resumeData.removeValue(forKey: taskID)
+                  Task { @MainActor in
+                      self.updateTask(id: taskID, state: .completed, path: filename)
+                      self.tasks.removeValue(forKey: taskID)
+                      self.resumeData.removeValue(forKey: taskID)
 
-                  HapticManager.shared.success()
+                      HapticManager.shared.success()
 
-                  if let task = downloads.first(where: { $0.id == taskID }) {
-                      sendNotification(title: "اكتمل التحميل", body: "\(task.appName) جاهز للتثبيت")
+                      if let task = self.downloads.first(where: { $0.id == taskID }) {
+                          self.sendNotification(title: "اكتمل التحميل", body: "\(task.appName) جاهز للتثبيت")
+                      }
                   }
               }
 
-              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+              nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                              didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                              totalBytesExpectedToWrite: Int64) {
                   guard let taskIDString = downloadTask.taskDescription,
@@ -1221,11 +1235,13 @@ jobs:
                       ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
                       : 0
 
-                  updateTask(id: taskID, progress: progress, downloaded: totalBytesWritten,
-                            total: totalBytesExpectedToWrite)
+                  Task { @MainActor in
+                      self.updateTask(id: taskID, progress: progress, downloaded: totalBytesWritten,
+                                    total: totalBytesExpectedToWrite)
+                  }
               }
 
-              func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+              nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
                   guard let taskIDString = task.taskDescription,
                         let taskID = UUID(uuidString: taskIDString) else { return }
 
@@ -1234,11 +1250,15 @@ jobs:
                       if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
                           return // تم الإلغاء عمداً
                       }
-                      updateTask(id: taskID, state: .failed, error: error.localizedDescription)
-                      HapticManager.shared.error()
+                      Task { @MainActor in
+                          self.updateTask(id: taskID, state: .failed, error: error.localizedDescription)
+                          HapticManager.shared.error()
+                      }
                   }
 
-                  tasks.removeValue(forKey: taskID)
+                  Task { @MainActor in
+                      self.tasks.removeValue(forKey: taskID)
+                  }
               }
           }
           VIPEOF
