@@ -874,7 +874,7 @@ jobs:
                   try? fm.removeItem(at: url)
                   certificates.remove(at: idx)
                   // إذا كانت الافتراضية، اجعل أول واحدة افتراضية
-                  if cert.isDefault, let first = certificates.first {
+                  if cert.isDefault, certificates.first != nil {
                       certificates[0].isDefault = true
                   }
                   saveCertificates()
@@ -930,7 +930,7 @@ jobs:
                         let dict = obj as? [String: Any] else {
                       throw NSError(domain: "Profile", code: 3)
                   }
-                  var name = (dict["Name"] as? String) ?? ""
+                  let name = (dict["Name"] as? String) ?? ""
                   var teamID = ""
                   if let ent = dict["Entitlements"] as? [String: Any] {
                       teamID = (ent["com.apple.developer.team-identifier"] as? String) ?? ""
@@ -1032,7 +1032,7 @@ jobs:
 
                       if hasZSign && certificate.type == .p12 {
                           // استخدام zsign للتوقيع الحقيقي
-                          let passwordArg = certificate.p12Password.map { "-p \(\($0))" } ?? ""
+                          let passwordArg = certificate.p12Password.map { "-p \($0)" } ?? ""
                           let provisionPath: String
                           if let prov = certManager.certificates.first(where: { $0.type == .mobileprovision }) {
                               provisionPath = certManager.certificateURL(for: prov).path
@@ -1081,16 +1081,14 @@ jobs:
               }
 
               private func runShell(_ command: String) -> String {
-                  let task = Process()
-                  task.launchPath = "/bin/zsh"
-                  task.arguments = ["-c", command]
-                  let pipe = Pipe()
-                  task.standardOutput = pipe
-                  task.standardError = pipe
-                  task.launch()
-                  task.waitUntilExit()
-                  let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                  return String(data: data, encoding: .utf8) ?? ""
+                  guard let fp = popen(command, "r") else { return "" }
+                  var buf = [CChar](repeating: 0, count: 4096)
+                  var result = ""
+                  while fgets(&buf, Int32(buf.count), fp) != nil {
+                      result += String(cString: buf)
+                  }
+                  pclose(fp)
+                  return result
               }
           }
           VIPEOF
