@@ -7,10 +7,9 @@ on:
 
 env:
   NEW_BUNDLE_ID: "com.vip21.store.pro"
-  NEW_APP_NAME:  "21s Pro Anime"
-  ANIME_THEME: "cyberpunk"
-  ENABLE_3D: "true"
-  ENABLE_PARTICLES: "true"
+  NEW_APP_NAME:  "21s Pro"
+  ENABLE_3D: "false"  # معطل
+  ENABLE_PARTICLES: "false" # معطل
 
 jobs:
   build:
@@ -38,7 +37,7 @@ jobs:
           command -v zsign && echo "✅ zsign متوفر" || echo "⚠️ zsign غير متوفر، سيتم محاولة البناء من المصدر"
 
       # =========================================================
-      # RESOURCES & ASSETS
+      # RESOURCES & ASSETS (أيقونات فقط، بدون أنمي)
       # =========================================================
       - name: توليد أيقونات التطبيق الاحترافية
         run: |
@@ -70,7 +69,6 @@ jobs:
               img = Image.alpha_composite(img, glow)
               draw = ImageDraw.Draw(img)
 
-              # حد أدنى لحجم الخط لتفادي مشاكل FreeType (division by zero) مع الأحجام الصغيرة جداً
               font_size = max(8, int(size * 0.38))
               try:
                   font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
@@ -92,8 +90,6 @@ jobs:
               draw.text((x+2, y+2), text, fill=(0, 0, 0, 100), font=font)
               draw.text((x, y), text, fill=(80, 160, 255, 255), font=font)
 
-              # شارة "PRO" فقط للأيقونات الأكبر من 40px (تحت هذا الحجم غير مقروءة أصلاً
-              # وهي كانت سبب انهيار FreeType عند الأحجام الصغيرة جداً)
               if size >= 40:
                   pro_font_size = max(8, int(size * 0.12))
                   try:
@@ -352,399 +348,8 @@ jobs:
           </plist>
           PEOF
 
-
       # =========================================================
-      # ANIME ASSETS & 3D RESOURCES
-      # =========================================================
-      - name: توليد أصول الأنمي والأيقونات 3D
-        run: |
-          mkdir -p Resources/AnimeAssets/Icons Resources/AnimeAssets/Characters
-          python3 << 'PYANIME'
-          from PIL import Image, ImageDraw, ImageFont, ImageFilter
-          import math, random
-
-          def hex_to_rgb(h):
-              h = h.lstrip('#')
-              return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-          themes = {
-              'cyberpunk': {'bg': '#0a0a1a', 'primary': '#00f0ff', 'secondary': '#ff00aa', 'accent': '#ffe600'},
-              'naruto': {'bg': '#1a0f00', 'primary': '#ff6b00', 'secondary': '#ffd700', 'accent': '#ff4500'},
-              'demon_slayer': {'bg': '#0a001a', 'primary': '#00d4ff', 'secondary': '#ff0066', 'accent': '#7b2cbf'},
-              'one_piece': {'bg': '#001a33', 'primary': '#ff3333', 'secondary': '#ffd700', 'accent': '#0066cc'},
-              'attack_on_titan': {'bg': '#1a1a1a', 'primary': '#8b0000', 'secondary': '#daa520', 'accent': '#2f4f4f'}
-          }
-          theme = themes['cyberpunk']
-
-          # نعرّفو الألوان هنا على مستوى الموديول (module-level) باش تبقى متاحة
-          # فالدالة make_anime_icon() وفكود توليد LaunchImage.png من بعد الحلقة.
-          # (هادي كانت السبب فـ NameError: name 'prim' is not defined)
-          bg   = hex_to_rgb(theme['bg'])
-          prim = hex_to_rgb(theme['primary'])
-          sec  = hex_to_rgb(theme['secondary'])
-          acc  = hex_to_rgb(theme['accent'])
-
-          # حد أدنى آمن لأي حجم خط لتفادي division by zero فـ FreeType مع الأحجام الصغيرة جداً
-          MIN_FONT_SIZE = 8
-
-          def safe_font(path, size):
-              size = max(MIN_FONT_SIZE, int(size))
-              try:
-                  return ImageFont.truetype(path, size)
-              except Exception:
-                  return ImageFont.load_default()
-
-          def safe_textbbox(draw, xy, text, font, anchor=None):
-              try:
-                  if anchor:
-                      return draw.textbbox(xy, text, font=font, anchor=anchor)
-                  return draw.textbbox(xy, text, font=font)
-              except Exception:
-                  # تقدير تقريبي إذا فشل الحساب الدقيق
-                  w = len(text) * (font.size if hasattr(font, "size") else 10)
-                  h = font.size if hasattr(font, "size") else 10
-                  return (xy[0], xy[1], xy[0] + w, xy[1] + h)
-
-          def make_anime_icon(size, path):
-              img = Image.new("RGBA", (size*2, size*2), (0,0,0,0))
-              draw = ImageDraw.Draw(img)
-              bg = hex_to_rgb(theme['bg'])
-              prim = hex_to_rgb(theme['primary'])
-              sec = hex_to_rgb(theme['secondary'])
-              acc = hex_to_rgb(theme['accent'])
-              for y in range(size*2):
-                  for x in range(size*2):
-                      dx, dy = x - size, y - size
-                      dist = math.sqrt(dx*dx + dy*dy)
-                      if dist <= size:
-                          ratio = dist / size
-                          r = int(bg[0]*(1-ratio) + prim[0]*ratio*0.5)
-                          g = int(bg[1]*(1-ratio) + prim[1]*ratio*0.5)
-                          b = int(bg[2]*(1-ratio) + prim[2]*ratio*0.5)
-                          draw.point((x,y), fill=(r,g,b,255))
-              glow = Image.new("RGBA", (size*2, size*2), (0,0,0,0))
-              glow_draw = ImageDraw.Draw(glow)
-              for i in range(3):
-                  offset = (i+1) * size//10
-                  glow_draw.ellipse([size-offset, size-offset, size+offset, size+offset],
-                                    outline=(*prim, 80-i*20), width=max(1, size//15))
-              img = Image.alpha_composite(img, glow)
-              draw = ImageDraw.Draw(img)
-
-              font_big = safe_font("/System/Library/Fonts/Helvetica.ttc", size*0.9)
-              font_small = safe_font("/System/Library/Fonts/Helvetica.ttc", size*0.28)
-
-              for offset in [(3,3), (-3,3), (3,-3), (-3,-3)]:
-                  try:
-                      draw.text((size+offset[0], size+offset[1]), "21", font=font_big,
-                               fill=(*prim, 120), anchor="mm")
-                  except Exception:
-                      pass
-              try:
-                  draw.text((size, size), "21", font=font_big, fill=(255,255,255,255), anchor="mm")
-              except Exception:
-                  draw.text((size - size//4, size - size//4), "21", font=font_big, fill=(255,255,255,255))
-
-              # شارة "PRO" فقط للأيقونات الأكبر من 40px، لتفادي انهيار FreeType
-              # مع الخطوط الصغيرة جداً (كانت هذه السبب فـ "division by zero")
-              if size >= 40:
-                  pro_text = "PRO"
-                  pbbox = safe_textbbox(draw, (0,0), pro_text, font_small)
-                  pw, ph = pbbox[2]-pbbox[0], pbbox[3]-pbbox[1]
-                  px = size + size//3
-                  py = size - size//3
-                  draw.rounded_rectangle([px-size//15, py-size//15, px+pw+size//15, py+ph+size//15],
-                                         radius=max(1, size//20), fill=(*sec, 230))
-                  try:
-                      draw.text((px, py), pro_text, font=font_small, fill=(0,0,0,255), anchor="lm")
-                  except Exception:
-                      draw.text((px, py), pro_text, font=font_small, fill=(0,0,0,255))
-
-              for _ in range(8):
-                  sx = random.randint(size//4, size*7//4)
-                  sy = random.randint(size//4, size*7//4)
-                  if math.sqrt((sx-size)**2 + (sy-size)**2) < size*0.8:
-                      draw.regular_polygon((sx, sy, max(1, size//25)), 4, fill=(*acc, 200))
-              img = img.resize((size, size), Image.LANCZOS)
-              img.save(path, "PNG")
-              print(f"Generated anime icon: {path}")
-
-          sizes = [
-              (120, "Resources/AnimeAssets/Icons/AppIcon60x60@2x.png"),
-              (180, "Resources/AnimeAssets/Icons/AppIcon60x60@3x.png"),
-              (152, "Resources/AnimeAssets/Icons/AppIcon76x76@2x~ipad.png"),
-              (167, "Resources/AnimeAssets/Icons/AppIcon83.5x83.5@2x~ipad.png"),
-              (1024, "Resources/AnimeAssets/Icons/AppIcon1024x1024.png"),
-              (76, "Resources/AnimeAssets/Icons/AppIcon76x76~ipad.png"),
-              (40, "Resources/AnimeAssets/Icons/AppIcon40x40.png"),
-              (80, "Resources/AnimeAssets/Icons/AppIcon40x40@2x.png"),
-              (58, "Resources/AnimeAssets/Icons/AppIcon29x29@2x.png"),
-              (87, "Resources/AnimeAssets/Icons/AppIcon29x29@3x.png"),
-              (20, "Resources/AnimeAssets/Icons/AppIcon20x20.png"),
-              (40, "Resources/AnimeAssets/Icons/AppIcon20x20@2x.png"),
-              (60, "Resources/AnimeAssets/Icons/AppIcon20x20@3x.png"),
-          ]
-          for s, p in sizes:
-              make_anime_icon(s, p)
-
-          launch = Image.new("RGBA", (1290, 2796), hex_to_rgb(theme['bg']))
-          ldraw = ImageDraw.Draw(launch)
-          for _ in range(100):
-              x, y = random.randint(0, 1290), random.randint(0, 2796)
-              r = random.randint(2, 6)
-              color = random.choice([prim, sec, acc])
-              ldraw.ellipse([x-r, y-r, x+r, y+r], fill=(*color, 150))
-
-          fnt = safe_font("/System/Library/Fonts/Helvetica.ttc", 200)
-          fnt2 = safe_font("/System/Library/Fonts/Helvetica.ttc", 60)
-          ldraw.text((645, 1200), "21s", font=fnt, fill=(255,255,255,255), anchor="mm")
-          ldraw.text((645, 1350), "PRO ANIME", font=fnt2, fill=(*prim, 255), anchor="mm")
-          ldraw.text((645, 1450), "LOADING...", font=fnt2, fill=(*sec, 200), anchor="mm")
-          launch.save("Resources/AnimeAssets/LaunchImage.png", "PNG")
-          print("Launch image generated")
-          PYANIME
-
-      - name: توليد محرك Three.js 3D Anime
-        run: |
-          mkdir -p Resources/WebEngine
-          cat > Resources/WebEngine/anime-3d-engine.js << 'JSEOF'
-          class Anime3DEngine {
-              constructor(containerId, theme) {
-                  this.container = document.getElementById(containerId);
-                  this.theme = theme || 'cyberpunk';
-                  this.scene = new THREE.Scene();
-                  this.camera = new THREE.PerspectiveCamera(75, this.container.clientWidth / this.container.clientHeight, 0.1, 1000);
-                  this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-                  this.init();
-              }
-              init() {
-                  this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-                  this.renderer.setPixelRatio(window.devicePixelRatio);
-                  this.renderer.shadowMap.enabled = true;
-                  this.container.appendChild(this.renderer.domElement);
-                  this.camera.position.z = 5;
-                  this.setupLights();
-                  this.createAnimeScene();
-                  this.animate();
-                  window.addEventListener('resize', () => this.onResize());
-              }
-              setupLights() {
-                  const ambient = new THREE.AmbientLight(0x404040, 2);
-                  this.scene.add(ambient);
-                  const dirLight = new THREE.DirectionalLight(0x00f0ff, 1);
-                  dirLight.position.set(5, 5, 5);
-                  dirLight.castShadow = true;
-                  this.scene.add(dirLight);
-                  const pointLight = new THREE.PointLight(0xff00aa, 2, 10);
-                  pointLight.position.set(-3, 2, 3);
-                  this.scene.add(pointLight);
-              }
-              createAnimeScene() {
-                  const sphereGeo = new THREE.IcosahedronGeometry(1.5, 4);
-                  const sphereMat = new THREE.MeshPhongMaterial({
-                      color: 0x00f0ff, emissive: 0x0044aa, specular: 0xffffff,
-                      shininess: 100, transparent: true, opacity: 0.9
-                  });
-                  this.energySphere = new THREE.Mesh(sphereGeo, sphereMat);
-                  this.energySphere.castShadow = true;
-                  this.scene.add(this.energySphere);
-                  this.rings = [];
-                  for (let i = 0; i < 3; i++) {
-                      const ringGeo = new THREE.TorusGeometry(2 + i * 0.5, 0.02, 16, 100);
-                      const ringMat = new THREE.MeshBasicMaterial({
-                          color: i === 0 ? 0xff00aa : i === 1 ? 0x00f0ff : 0xffe600,
-                          transparent: true, opacity: 0.6
-                      });
-                      const ring = new THREE.Mesh(ringGeo, ringMat);
-                      ring.rotation.x = Math.PI / 2 + i * 0.5;
-                      this.rings.push(ring);
-                      this.scene.add(ring);
-                  }
-                  const particlesGeo = new THREE.BufferGeometry();
-                  const particleCount = 200;
-                  const posArray = new Float32Array(particleCount * 3);
-                  for (let i = 0; i < particleCount * 3; i++) {
-                      posArray[i] = (Math.random() - 0.5) * 10;
-                  }
-                  particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-                  const particlesMat = new THREE.PointsMaterial({ size: 0.05, color: 0xffffff, transparent: true, opacity: 0.8 });
-                  this.particles = new THREE.Points(particlesGeo, particlesMat);
-                  this.scene.add(this.particles);
-                  this.createChibiCharacter();
-              }
-              createChibiCharacter() {
-                  const group = new THREE.Group();
-                  const headGeo = new THREE.SphereGeometry(0.6, 32, 32);
-                  const headMat = new THREE.MeshPhongMaterial({ color: 0xffdbac });
-                  const head = new THREE.Mesh(headGeo, headMat);
-                  head.position.y = 1.2;
-                  group.add(head);
-                  const eyeGeo = new THREE.SphereGeometry(0.12, 16, 16);
-                  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x00aaff });
-                  const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-                  leftEye.position.set(-0.2, 1.25, 0.5);
-                  const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
-                  rightEye.position.set(0.2, 1.25, 0.5);
-                  group.add(leftEye, rightEye);
-                  const hairGeo = new THREE.SphereGeometry(0.65, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2);
-                  const hairMat = new THREE.MeshPhongMaterial({ color: 0x3366ff });
-                  const hair = new THREE.Mesh(hairGeo, hairMat);
-                  hair.position.y = 1.25;
-                  group.add(hair);
-                  const bodyGeo = new THREE.CylinderGeometry(0.3, 0.4, 0.8, 16);
-                  const bodyMat = new THREE.MeshPhongMaterial({ color: 0x222244 });
-                  const body = new THREE.Mesh(bodyGeo, bodyMat);
-                  body.position.y = 0.4;
-                  group.add(body);
-                  group.position.set(2, -0.5, 0);
-                  group.scale.set(0.8, 0.8, 0.8);
-                  this.character = group;
-                  this.scene.add(group);
-              }
-              animate() {
-                  requestAnimationFrame(() => this.animate());
-                  const time = Date.now() * 0.001;
-                  this.energySphere.rotation.y += 0.01;
-                  this.energySphere.rotation.x += 0.005;
-                  this.energySphere.scale.setScalar(1 + Math.sin(time * 2) * 0.05);
-                  this.rings.forEach((ring, i) => {
-                      ring.rotation.z += 0.01 * (i + 1);
-                      ring.rotation.x = Math.PI / 2 + Math.sin(time + i) * 0.2;
-                  });
-                  this.particles.rotation.y += 0.002;
-                  if (this.character) {
-                      this.character.position.y = -0.5 + Math.sin(time * 2) * 0.1;
-                      this.character.rotation.y = Math.sin(time * 0.5) * 0.3;
-                  }
-                  this.renderer.render(this.scene, this.camera);
-              }
-              onResize() {
-                  this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
-                  this.camera.updateProjectionMatrix();
-                  this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-              }
-          }
-          JSEOF
-
-      - name: توليد HTML/CSS/JS WebViews Anime
-        run: |
-          mkdir -p Resources/WebEngine
-          cat > Resources/WebEngine/anime-home.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html lang="ar" dir="rtl">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-              <title>21s Pro Anime</title>
-              <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-              <style>
-                  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-                  body { background: #0a0a1a; color: #fff; font-family: -apple-system, sans-serif; overflow-x: hidden; min-height: 100vh; }
-                  #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
-                  .content { position: relative; z-index: 1; padding: 20px; }
-                  .hero { text-align: center; padding: 60px 20px; background: rgba(10,10,30,0.6); border-radius: 24px; margin-bottom: 20px; border: 1px solid rgba(0,240,255,0.2); }
-                  .hero h1 { font-size: 2.5em; background: linear-gradient(135deg, #00f0ff, #ff00aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
-                  .hero p { color: #8899aa; font-size: 1.1em; }
-                  .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
-                  .stat-card { background: rgba(0,240,255,0.05); border: 1px solid rgba(0,240,255,0.15); border-radius: 16px; padding: 16px; text-align: center; }
-                  .stat-card .value { font-size: 1.8em; font-weight: bold; color: #00f0ff; }
-                  .stat-card .label { font-size: 0.85em; color: #667788; margin-top: 4px; }
-                  .app-list { display: flex; flex-direction: column; gap: 12px; }
-                  .app-item { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 12px; transition: all 0.3s; }
-                  .app-item:active { transform: scale(0.98); background: rgba(0,240,255,0.1); }
-                  .app-icon { width: 56px; height: 56px; border-radius: 14px; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; font-size: 24px; }
-                  .app-info { flex: 1; }
-                  .app-name { font-weight: 600; font-size: 1em; }
-                  .app-meta { font-size: 0.8em; color: #667788; margin-top: 2px; }
-                  .download-btn { background: linear-gradient(135deg, #00f0ff, #0080ff); color: #000; border: none; border-radius: 12px; padding: 8px 16px; font-weight: bold; font-size: 0.85em; }
-                  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.7em; font-weight: bold; margin-right: 6px; }
-                  .badge-new { background: #00ff88; color: #000; }
-                  .badge-pro { background: #ff00aa; color: #fff; }
-                  .section-title { font-size: 1.2em; font-weight: bold; margin: 20px 0 12px; display: flex; align-items: center; gap: 8px; }
-                  .section-title::before { content: ''; display: inline-block; width: 4px; height: 20px; background: linear-gradient(180deg, #00f0ff, #ff00aa); border-radius: 2px; }
-              </style>
-          </head>
-          <body>
-              <div id="canvas-container"></div>
-              <div class="content">
-                  <div class="hero"><h1>21s Pro Anime</h1><p>أقوى متجر تطبيقات بأسلوب الأنمي الياباني</p></div>
-                  <div class="stats-grid" id="stats">
-                      <div class="stat-card"><div class="value" id="stat-apps">0</div><div class="label">تطبيق</div></div>
-                      <div class="stat-card"><div class="value" id="stat-size">0</div><div class="label">إجمالي</div></div>
-                      <div class="stat-card"><div class="value" id="stat-new">0</div><div class="label">جديد</div></div>
-                      <div class="stat-card"><div class="value" id="stat-cats">0</div><div class="label">تصنيف</div></div>
-                  </div>
-                  <div class="section-title">🔥 الأكثر شعبية</div>
-                  <div class="app-list" id="app-list">جاري التحميل...</div>
-              </div>
-              <script src="anime-3d-engine.js"></script>
-              <script>
-                  const engine = new Anime3DEngine('canvas-container', 'cyberpunk');
-                  function updateStats(apps, size, newApps, categories) {
-                      document.getElementById('stat-apps').innerText = apps;
-                      document.getElementById('stat-size').innerText = size;
-                      document.getElementById('stat-new').innerText = newApps;
-                      document.getElementById('stat-cats').innerText = categories;
-                  }
-                  function renderApps(appsJson) {
-                      const apps = JSON.parse(appsJson);
-                      const list = document.getElementById('app-list');
-                      list.innerHTML = apps.map(app => `
-                          <div class="app-item" onclick="window.webkit.messageHandlers.appTap.postMessage('${app.id}')">
-                              <div class="app-icon">${app.name.charAt(0)}</div>
-                              <div class="app-info">
-                                  <div class="app-name">${app.name}
-                                      ${app.isNew ? '<span class="badge badge-new">NEW</span>' : ''}
-                                      <span class="badge badge-pro">PRO</span>
-                                  </div>
-                                  <div class="app-meta">${app.version} • ${app.size}</div>
-                              </div>
-                              <button class="download-btn" onclick="event.stopPropagation(); window.webkit.messageHandlers.download.postMessage('${app.id}')">تحميل</button>
-                          </div>
-                      `).join('');
-                  }
-              </script>
-          </body>
-          </html>
-          HTMLEOF
-
-      - name: توليد Anime Launch Screen HTML
-        run: |
-          cat > Resources/WebEngine/anime-launch.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html lang="ar">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-              <title>Launch</title>
-              <style>
-                  * { margin: 0; padding: 0; box-sizing: border-box; }
-                  body { background: #0a0a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-                  .logo-container { position: relative; width: 150px; height: 150px; }
-                  .logo-ring { position: absolute; border: 3px solid transparent; border-top-color: #00f0ff; border-radius: 50%; animation: spin 1.5s linear infinite; }
-                  .ring1 { width: 100%; height: 100%; top: 0; left: 0; animation-duration: 2s; }
-                  .ring2 { width: 80%; height: 80%; top: 10%; left: 10%; border-top-color: #ff00aa; animation-duration: 1.5s; animation-direction: reverse; }
-                  .ring3 { width: 60%; height: 60%; top: 20%; left: 20%; border-top-color: #ffe600; animation-duration: 1s; }
-                  @keyframes spin { to { transform: rotate(360deg); } }
-                  .logo-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 48px; font-weight: bold; background: linear-gradient(135deg, #00f0ff, #ff00aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-                  .subtitle { margin-top: 40px; color: #667788; font-size: 14px; letter-spacing: 4px; animation: pulse 2s infinite; }
-                  @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-              </style>
-          </head>
-          <body>
-              <div class="logo-container">
-                  <div class="logo-ring ring1"></div>
-                  <div class="logo-ring ring2"></div>
-                  <div class="logo-ring ring3"></div>
-                  <div class="logo-text">21</div>
-              </div>
-              <div class="subtitle">PRO ANIME</div>
-          </body>
-          </html>
-          HTMLEOF
-
-      # =========================================================
-      # SOURCE CODE - تصميم Xcode احترافي مع ميزات فعلية
+      # SOURCE CODE - تصميم Xcode احترافي (بدون أنمي، بدون إنجازات، بدون QR)
       # =========================================================
       - name: توليد الكود - الثوابت والألوان (Constants.swift)
         run: |
@@ -762,14 +367,10 @@ jobs:
               static let appIconURL     = "https://a.top4top.io/p_380487iqk0.jpeg"
               static let appVersion     = "8.0"
               static let storeName      = "21s Pro"
-              static let accentColor    = Color.xcodeBlue
+              static let accentColor    = Color.blue
               static let topRightIconURL = "https://up6.cc/2026/07/178416235288151.png"
-              static let topNotification = "🎉 21s Pro - أقوى متجر تطبيقات معدلة  •  📸 صوّر وشارك  •  🎁 احصل على اشتراك مجاني"
-              static let adBanners: [(image: String, link: String)] = [
-                  ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
-                  ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios"),
-                  ("https://i.ibb.co/VpgthQ09/F50-B1-F96-40-EB-43-C9-BD64-38-B0-EA105817.jpg", "https://t.me/ClickStoreipaios")
-              ]
+              static let topNotification = "🎉 21s Pro - أقوى متجر تطبيقات معدلة"
+              static let adBanners: [(image: String, link: String)] = []
               static let newThisWeekDays = 7
               static let downloadsDir = "Downloads"
               static let certificatesDir = "Certificates"
@@ -777,26 +378,26 @@ jobs:
           }
 
           extension Color {
-              static let xcodeBackground   = Color(red: 0.06, green: 0.07, blue: 0.09)
-              static let xcodeSidebar      = Color(red: 0.08, green: 0.09, blue: 0.11)
-              static let xcodeEditor       = Color(red: 0.10, green: 0.11, blue: 0.14)
-              static let xcodeBlue         = Color(red: 0.20, green: 0.55, blue: 1.00)
-              static let xcodeCyan         = Color(red: 0.30, green: 0.75, blue: 0.95)
-              static let xcodePurple       = Color(red: 0.65, green: 0.35, blue: 0.95)
-              static let xcodeGreen        = Color(red: 0.25, green: 0.85, blue: 0.45)
-              static let xcodeOrange       = Color(red: 1.00, green: 0.60, blue: 0.20)
-              static let xcodeRed          = Color(red: 1.00, green: 0.30, blue: 0.25)
-              static let xcodeYellow       = Color(red: 1.00, green: 0.85, blue: 0.20)
-              static let xcodePink         = Color(red: 1.00, green: 0.40, blue: 0.60)
-              static let xcodeText         = Color(red: 0.90, green: 0.90, blue: 0.92)
-              static let xcodeSecondary    = Color(red: 0.55, green: 0.56, blue: 0.58)
-              static let xcodeComment      = Color(red: 0.40, green: 0.45, blue: 0.50)
-              static let xcodeDivider      = Color(red: 0.15, green: 0.16, blue: 0.18)
+              static let xcodeBackground   = Color(red: 0.94, green: 0.94, blue: 0.96) // رمادي فاتح
+              static let xcodeSidebar      = Color(red: 0.92, green: 0.92, blue: 0.94)
+              static let xcodeEditor       = Color.white
+              static let xcodeBlue         = Color(red: 0.0, green: 0.48, blue: 1.0)
+              static let xcodeCyan         = Color(red: 0.0, green: 0.6, blue: 0.8)
+              static let xcodePurple       = Color(red: 0.5, green: 0.2, blue: 0.9)
+              static let xcodeGreen        = Color(red: 0.0, green: 0.7, blue: 0.3)
+              static let xcodeOrange       = Color(red: 1.0, green: 0.6, blue: 0.0)
+              static let xcodeRed          = Color(red: 0.9, green: 0.2, blue: 0.2)
+              static let xcodeYellow       = Color(red: 0.9, green: 0.8, blue: 0.0)
+              static let xcodePink         = Color(red: 1.0, green: 0.4, blue: 0.6)
+              static let xcodeText         = Color(red: 0.1, green: 0.1, blue: 0.12)
+              static let xcodeSecondary    = Color(red: 0.4, green: 0.4, blue: 0.42)
+              static let xcodeComment      = Color(red: 0.4, green: 0.45, blue: 0.5)
+              static let xcodeDivider      = Color(red: 0.88, green: 0.88, blue: 0.90)
               static let xcodeSelection    = Color(red: 0.18, green: 0.35, blue: 0.60)
-              static let xcodeLineHighlight = Color(red: 0.13, green: 0.14, blue: 0.16)
+              static let xcodeLineHighlight = Color(red: 0.95, green: 0.95, blue: 0.97)
               static let xcodeLightBg      = Color(red: 0.96, green: 0.96, blue: 0.98)
               static let xcodeLightSidebar = Color(red: 0.94, green: 0.94, blue: 0.96)
-              static let xcodeLightEditor  = Color(red: 1.00, green: 1.00, blue: 1.00)
+              static let xcodeLightEditor  = Color.white
               static let xcodeLightText    = Color(red: 0.10, green: 0.10, blue: 0.12)
               static let xcodeLightSecondary = Color(red: 0.40, green: 0.40, blue: 0.42)
               static let xcodeLightDivider = Color(red: 0.88, green: 0.88, blue: 0.90)
@@ -817,9 +418,9 @@ jobs:
               }
               var color: Color {
                   switch self {
-                  case .all:     return .xcodeBlue
-                  case .primary: return .xcodePurple
-                  case .kurd:    return .xcodeOrange
+                  case .all:     return .blue
+                  case .primary: return .purple
+                  case .kurd:    return .orange
                   }
               }
           }
@@ -860,14 +461,14 @@ jobs:
               }
               var color: Color {
                   switch self {
-                  case .pending:     return .xcodeSecondary
-                  case .downloading: return .xcodeBlue
-                  case .paused:      return .xcodeOrange
-                  case .completed:   return .xcodeGreen
-                  case .failed:      return .xcodeRed
-                  case .installing:  return .xcodePurple
-                  case .signing:     return .xcodeCyan
-                  case .signed:      return .xcodeYellow
+                  case .pending:     return .gray
+                  case .downloading: return .blue
+                  case .paused:      return .orange
+                  case .completed:   return .green
+                  case .failed:      return .red
+                  case .installing:  return .purple
+                  case .signing:     return .cyan
+                  case .signed:      return .yellow
                   }
               }
           }
@@ -889,8 +490,8 @@ jobs:
               }
               var color: Color {
                   switch self {
-                  case .p12: return .xcodeOrange
-                  case .mobileprovision: return .xcodeGreen
+                  case .p12: return .orange
+                  case .mobileprovision: return .green
                   }
               }
           }
@@ -928,7 +529,7 @@ jobs:
                   content
                       .background(
                           RoundedRectangle(cornerRadius: radius)
-                              .fill(scheme == .dark ? Color.xcodeEditor : Color.xcodeLightEditor)
+                              .fill(scheme == .dark ? Color.xcodeEditor.opacity(0.8) : Color.xcodeLightEditor)
                               .overlay(
                                   RoundedRectangle(cornerRadius: radius)
                                       .stroke(scheme == .dark ? Color.xcodeDivider : Color.xcodeLightDivider, lineWidth: 0.5)
@@ -939,7 +540,7 @@ jobs:
           }
 
           struct XcodeButtonModifier: ViewModifier {
-              var color: Color = .xcodeBlue
+              var color: Color = .blue
               var isDisabled: Bool = false
               func body(content: Content) -> some View {
                   content
@@ -948,7 +549,7 @@ jobs:
                       .frame(height: 44)
                       .background(
                           RoundedRectangle(cornerRadius: 10)
-                              .fill(isDisabled ? Color.xcodeSecondary : color)
+                              .fill(isDisabled ? Color.gray : color)
                       )
                       .opacity(isDisabled ? 0.6 : 1.0)
               }
@@ -958,7 +559,7 @@ jobs:
               func xcodeCard(radius: CGFloat = 12) -> some View {
                   modifier(XcodeCardModifier(radius: radius))
               }
-              func xcodeButton(color: Color = .xcodeBlue, isDisabled: Bool = false) -> some View {
+              func xcodeButton(color: Color = .blue, isDisabled: Bool = false) -> some View {
                   modifier(XcodeButtonModifier(color: color, isDisabled: isDisabled))
               }
           }
@@ -1088,8 +689,8 @@ jobs:
               }
               var sourceColor: Color {
                   switch source {
-                  case .primary: return .xcodePurple
-                  case .kurd:    return .xcodeOrange
+                  case .primary: return .purple
+                  case .kurd:    return .orange
                   }
               }
               static func == (lhs: AppItem, rhs: AppItem) -> Bool { lhs.id == rhs.id }
@@ -1263,7 +864,6 @@ jobs:
                           }
                       }
 
-                      // إذا كانت أول شهادة، اجعلها افتراضية
                       if !certificates.contains(where: { $0.isDefault }) {
                           cert.isDefault = true
                       }
@@ -1286,7 +886,6 @@ jobs:
                   let url = certRoot.appendingPathComponent(cert.storedName)
                   try? fm.removeItem(at: url)
                   certificates.remove(at: idx)
-                  // إذا كانت الافتراضية، اجعل أول واحدة افتراضية
                   if cert.isDefault, certificates.first != nil {
                       certificates[0].isDefault = true
                   }
@@ -1319,7 +918,6 @@ jobs:
                   guard let data = UserDefaults.standard.data(forKey: "savedCertificates_v2"),
                         let saved = try? JSONDecoder().decode([StoreCertificate].self, from: data) else { return }
                   certificates = saved
-                  // التحقق من وجود الملفات
                   for i in certificates.indices {
                       let url = certRoot.appendingPathComponent(certificates[i].storedName)
                       if !fm.fileExists(atPath: url.path) {
@@ -1359,13 +957,9 @@ jobs:
 
               private func inspectP12(_ url: URL, password: String?) throws -> (teamID: String?, isValid: Bool) {
                   guard let data = try? Data(contentsOf: url) else { return (nil, false) }
-                  // التحقق البسقي من البنية
                   if data.count < 4 { return (nil, false) }
                   if data[0] != 0x30 { return (nil, false) }
-                  // محاولة فك تشفير بسيطة للتحقق من كلمة المرور
                   if let password = password, !password.isEmpty {
-                      // في الإصدار الكامل يمكن استخدام Security framework لفك التشفير
-                      // هنا نفترض صحة البنية فقط
                       return (nil, true)
                   }
                   return (nil, true)
@@ -2024,7 +1618,7 @@ jobs:
           struct XcodeButton: View {
               let title: String
               var icon: String?
-              var color: Color = .xcodeBlue
+              var color: Color = .blue
               let action: () -> Void
               var isLoading: Bool = false
               var isDisabled: Bool = false
@@ -2051,7 +1645,7 @@ jobs:
                       .frame(height: 44)
                       .background(
                           RoundedRectangle(cornerRadius: 10)
-                              .fill(isDisabled ? Color.xcodeSecondary : color)
+                              .fill(isDisabled ? Color.gray : color)
                       )
                       .opacity(isDisabled ? 0.5 : 1.0)
                       .scaleEffect(pressed ? 0.97 : 1.0)
@@ -2073,7 +1667,7 @@ jobs:
                       .foregroundColor(.white)
                       .padding(.horizontal, 6)
                       .padding(.vertical, 2)
-                      .background(Capsule().fill(Color.xcodeGreen))
+                      .background(Capsule().fill(Color.green))
               }
           }
 
@@ -2086,7 +1680,7 @@ jobs:
                   .foregroundColor(.white)
                   .padding(.horizontal, 6)
                   .padding(.vertical, 2)
-                  .background(Capsule().fill(Color.xcodeOrange))
+                  .background(Capsule().fill(Color.orange))
               }
           }
 
@@ -2103,7 +1697,7 @@ jobs:
                   .padding(.horizontal, 6)
                   .padding(.vertical, 2)
                   .background(
-                      Capsule().fill(source == .primary ? Color.xcodePurple : Color.xcodeOrange)
+                      Capsule().fill(source == .primary ? Color.purple : Color.orange)
                   )
               }
           }
@@ -2118,10 +1712,10 @@ jobs:
                               .aspectRatio(contentMode: .fill)
                               .frame(width: 32, height: 32)
                               .clipShape(Circle())
-                              .overlay(Circle().stroke(Color.xcodeBlue.opacity(0.3), lineWidth: 1.5))
+                              .overlay(Circle().stroke(Color.blue.opacity(0.3), lineWidth: 1.5))
                       } else {
                           Circle()
-                              .fill(Color.xcodeBlue.opacity(0.2))
+                              .fill(Color.blue.opacity(0.2))
                               .frame(width: 32, height: 32)
                               .overlay(
                                   ProgressView()
@@ -2144,7 +1738,7 @@ jobs:
 
           struct XcodeProgressBar: View {
               let progress: Double
-              var color: Color = .xcodeBlue
+              var color: Color = .blue
               var height: CGFloat = 6
               var body: some View {
                   GeometryReader { geo in
@@ -2172,7 +1766,7 @@ jobs:
                           Button(action: action) {
                               Image(systemName: "arrow.left")
                                   .font(.system(size: 12, weight: .semibold))
-                                  .foregroundColor(.xcodeBlue)
+                                  .foregroundColor(.blue)
                           }
                       }
                       Spacer()
@@ -2183,7 +1777,7 @@ jobs:
                           if let icon {
                               Image(systemName: icon)
                                   .font(.system(size: 12))
-                                  .foregroundColor(.xcodeBlue)
+                                  .foregroundColor(.blue)
                           }
                       }
                   }
@@ -2202,16 +1796,16 @@ jobs:
                       Spacer()
                       Image(systemName: icon)
                           .font(.system(size: 50, weight: .light))
-                          .foregroundColor(.xcodeSecondary.opacity(0.5))
+                          .foregroundColor(.gray.opacity(0.5))
                       Text(title)
                           .font(.system(size: 18, weight: .semibold))
                           .foregroundColor(.primary)
                       Text(subtitle)
                           .font(.system(size: 13))
-                          .foregroundColor(.xcodeSecondary)
+                          .foregroundColor(.gray)
                           .multilineTextAlignment(.center)
                       if let action = action, let actionTitle = actionTitle {
-                          XcodeButton(title: actionTitle, color: .xcodeBlue, action: action)
+                          XcodeButton(title: actionTitle, color: .blue, action: action)
                               .frame(maxWidth: 220)
                               .padding(.top, 8)
                       }
@@ -2256,7 +1850,7 @@ jobs:
           }
           VIPEOF
 
-      - name: توليد الكود - ContentView.swift (Anime Edition)
+      - name: توليد الكود - ContentView.swift (بدون أنمي، بدون إنجازات، بدون QR)
         run: |
           cat > ContentView.swift << 'VIPEOF'
           import SwiftUI
@@ -2268,15 +1862,13 @@ jobs:
           enum AppTab: String, CaseIterable {
               case home      = "الرئيسية"
               case apps      = "التطبيقات"
-              case downloads = "التحميلات"
-              case achievements = "الإنجازات"
+              case signing   = "التوقيع"
 
               var icon: String {
                   switch self {
                   case .home:      return "house.fill"
                   case .apps:      return "square.stack.3d.up.fill"
-                  case .downloads: return "arrow.down.circle.fill"
-                  case .achievements: return "trophy.fill"
+                  case .signing:   return "signature"
                   }
               }
           }
@@ -2288,9 +1880,7 @@ jobs:
               @StateObject private var downloadManager = DownloadManager()
               @StateObject private var certificateManager = CertificateManager()
               @StateObject private var signer = Signer()
-              @StateObject private var gamification = GamificationManager()
               @State private var showSettings = false
-              @State private var showQRScanner = false
 
               var body: some View {
                   ZStack {
@@ -2304,20 +1894,15 @@ jobs:
                               .tabItem { Label("التطبيقات", systemImage: AppTab.apps.icon) }
                               .tag(AppTab.apps)
 
-                          DownloadsTabView(
+                          SigningTabView(
                               downloadManager: downloadManager,
                               certificateManager: certificateManager,
                               signer: signer
                           )
-                              .tabItem { Label("التحميلات", systemImage: AppTab.downloads.icon) }
-                              .tag(AppTab.downloads)
-
-                          AchievementsView()
-                              .environmentObject(gamification)
-                              .tabItem { Label("الإنجازات", systemImage: AppTab.achievements.icon) }
-                              .tag(AppTab.achievements)
+                          .tabItem { Label("التوقيع", systemImage: AppTab.signing.icon) }
+                          .tag(AppTab.signing)
                       }
-                      .accentColor(.xcodeBlue)
+                      .accentColor(.blue)
                       .onAppear {
                           appsManager.fetchApps()
                           appsManager.loadRecentSearches()
@@ -2326,32 +1911,16 @@ jobs:
                       .sheet(isPresented: $showSettings) {
                           SettingsView()
                       }
-                      .sheet(isPresented: $showQRScanner) {
-                          QRScannerView { code in
-                              if code.hasPrefix("http"), let url = URL(string: code) {
-                                  UIApplication.shared.open(url)
-                              }
-                          }
-                      }
 
                       VStack {
                           HStack {
                               Spacer()
-                              HStack(spacing: 12) {
-                                  Button { showQRScanner = true } label: {
-                                      Image(systemName: "qrcode")
-                                          .font(.system(size: 16, weight: .semibold))
-                                          .foregroundColor(.xcodeBlue)
-                                          .frame(width: 36, height: 36)
-                                          .background(Circle().fill(Color.xcodeEditor).overlay(Circle().stroke(Color.xcodeBlue.opacity(0.3))))
-                                  }
-                                  Button { showSettings = true } label: {
-                                      Image(systemName: "gear")
-                                          .font(.system(size: 16, weight: .semibold))
-                                          .foregroundColor(.xcodeBlue)
-                                          .frame(width: 36, height: 36)
-                                          .background(Circle().fill(Color.xcodeEditor).overlay(Circle().stroke(Color.xcodeBlue.opacity(0.3))))
-                                  }
+                              Button { showSettings = true } label: {
+                                  Image(systemName: "gear")
+                                      .font(.system(size: 16, weight: .semibold))
+                                      .foregroundColor(.blue)
+                                      .frame(width: 36, height: 36)
+                                      .background(Circle().fill(Color.xcodeEditor).overlay(Circle().stroke(Color.blue.opacity(0.3))))
                               }
                               .padding(.top, 8)
                               .padding(.trailing, 16)
@@ -2373,11 +1942,11 @@ jobs:
                   VStack(spacing: 20) {
                       ZStack {
                           Circle()
-                              .stroke(Color.xcodeBlue.opacity(0.2), lineWidth: 3)
+                              .stroke(Color.blue.opacity(0.2), lineWidth: 3)
                               .frame(width: 50, height: 50)
                           Circle()
                               .trim(from: 0, to: 0.7)
-                              .stroke(Color.xcodeBlue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                              .stroke(Color.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                               .frame(width: 50, height: 50)
                               .rotationEffect(.degrees(rotate ? 360 : 0))
                               .onAppear {
@@ -2388,7 +1957,7 @@ jobs:
                       }
                       Text("جاري التحميل...")
                           .font(.system(size: 13))
-                          .foregroundColor(.xcodeSecondary)
+                          .foregroundColor(.gray)
                   }
                   .frame(maxWidth: .infinity)
                   .padding(.top, 100)
@@ -2402,14 +1971,14 @@ jobs:
                   VStack(spacing: 20) {
                       Image(systemName: "wifi.slash")
                           .font(.system(size: 48))
-                          .foregroundColor(.xcodeOrange)
+                          .foregroundColor(.orange)
                       Text("حدث خطأ")
                           .font(.system(size: 18, weight: .bold))
                       Text(message)
                           .font(.system(size: 12))
-                          .foregroundColor(.xcodeSecondary)
+                          .foregroundColor(.gray)
                           .multilineTextAlignment(.center)
-                      XcodeButton(title: "إعادة المحاولة", icon: "arrow.clockwise", color: .xcodeOrange, action: onRetry)
+                      XcodeButton(title: "إعادة المحاولة", icon: "arrow.clockwise", color: .orange, action: onRetry)
                           .frame(width: 160)
                   }
                   .padding()
@@ -2418,7 +1987,8 @@ jobs:
               }
           }
           VIPEOF
-      - name: توليد الكود - HomeTabView.swift
+
+      - name: توليد الكود - HomeTabView.swift (بدون ترحيب، بدون بنر، بدون مربعات، فقط جديد هذا الأسبوع)
         run: |
           cat > HomeTabView.swift << 'VIPEOF'
           import SwiftUI
@@ -2431,11 +2001,7 @@ jobs:
               @State private var selectedApp: AppItem?
               @Environment(\.colorScheme) var scheme
 
-              private var newest: [AppItem]   { Array(appsManager.apps.prefix(8)) }
-              private var popular: [AppItem]  { appsManager.apps.filter { $0.isPopular }.prefix(8).map { $0 } }
               private var newThisWeek: [AppItem] { appsManager.newThisWeek }
-              private var kurdApps: [AppItem] { appsManager.apps(for: .kurd) }
-              private var topRated: [AppItem] { appsManager.apps.sorted { (Int($0.down) ?? 0) > (Int($1.down) ?? 0) }.prefix(5).map { $0 } }
 
               var body: some View {
                   NavigationView {
@@ -2446,9 +2012,7 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
-                                  StoreHeroBanner(stats: appsManager.stats)
-                                      .padding(.top, 6)
-                                  AdImageCarousel(images: AppConstants.adBanners)
+                                  // قسم جديد هذا الأسبوع
                                   if !newThisWeek.isEmpty {
                                       XcodeSectionHeader(title: "🆕 جديد هذا الأسبوع", icon: "sparkles")
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2461,52 +2025,12 @@ jobs:
                                           }
                                           .padding(.horizontal, 16)
                                       }
-                                  }
-                                  if !popular.isEmpty {
-                                      XcodeSectionHeader(title: "🔥 الأكثر شعبية", icon: "flame.fill")
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(popular, id: \.id) { app in
-                                                  FeaturedAppCard(app: app)
-                                                      .contentShape(Rectangle())
-                                                      .onTapGesture { selectedApp = app }
-                                              }
-                                          }
-                                          .padding(.horizontal, 16)
-                                      }
-                                  }
-                                  if !kurdApps.isEmpty {
-                                      XcodeSectionHeader(title: "🟧 من KurdStore", icon: "k.circle.fill")
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(kurdApps.prefix(8), id: \.id) { app in
-                                                  FeaturedAppCard(app: app)
-                                                      .contentShape(Rectangle())
-                                                      .onTapGesture { selectedApp = app }
-                                              }
-                                          }
-                                          .padding(.horizontal, 16)
-                                      }
-                                  }
-                                  if !topRated.isEmpty {
-                                      XcodeSectionHeader(title: "⬇️ الأعلى تحميلاً", icon: "arrow.down.circle.fill")
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(Array(topRated.enumerated()), id: \.element.id) { idx, app in
-                                                  TopDownloadWideCard(rank: idx + 1, app: app)
-                                                      .onTapGesture { selectedApp = app }
-                                              }
-                                          }
-                                          .padding(.horizontal, 16)
-                                          .padding(.vertical, 4)
-                                      }
-                                  }
-                                  XcodeSectionHeader(title: "🕐 أحدث التطبيقات", icon: "clock.fill")
-                                  ForEach(newest, id: \.id) { app in
-                                      AppCardView(app: app)
-                                          .contentShape(Rectangle())
-                                          .onTapGesture { selectedApp = app }
-                                          .padding(.horizontal)
+                                  } else {
+                                      XcodeEmptyState(
+                                          icon: "clock",
+                                          title: "لا توجد تطبيقات جديدة",
+                                          subtitle: "سيعودون قريباً"
+                                      )
                                   }
                               }
                           }
@@ -2518,7 +2042,7 @@ jobs:
                               HStack(spacing: 8) {
                                   Text("21s Pro")
                                       .font(.system(size: 18, weight: .bold))
-                                      .foregroundColor(.xcodeBlue)
+                                      .foregroundColor(.blue)
                               }
                           }
                           ToolbarItem(placement: .navigationBarTrailing) {
@@ -2532,232 +2056,12 @@ jobs:
               }
           }
 
-          struct StoreHeroBanner: View {
-              let stats: StoreStats
-              @State private var pulse = false
-              var body: some View {
-                  VStack(spacing: 12) {
-                      HStack(spacing: 0) {
-                          ZStack {
-                              Circle()
-                                  .fill(Color.xcodeBlue.opacity(0.15))
-                                  .frame(width: 60, height: 60)
-                                  .scaleEffect(pulse ? 1.05 : 1.0)
-                                  .animation(.easeInOut(duration: 2).repeatForever(autoreverses: true), value: pulse)
-                              CachedAsyncImage(url: URL(string: AppConstants.appIconURL)) { phase in
-                                  if let img = phase.image {
-                                      img.resizable().aspectRatio(contentMode: .fill)
-                                          .frame(width: 48, height: 48)
-                                          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                          .overlay(RoundedRectangle(cornerRadius: 12)
-                                              .stroke(Color.white.opacity(0.3), lineWidth: 1))
-                                  } else {
-                                      RoundedRectangle(cornerRadius: 12)
-                                          .fill(Color.xcodeBlue.opacity(0.3))
-                                          .frame(width: 48, height: 48)
-                                          .overlay(Image(systemName: "storefront.fill")
-                                              .font(.system(size: 20))
-                                              .foregroundColor(.white.opacity(0.7)))
-                                  }
-                              }
-                          }
-                          .padding(.leading, 16)
-                          Spacer(minLength: 12)
-                          VStack(alignment: .center, spacing: 4) {
-                              Text("متجر 21s Pro")
-                                  .font(.system(size: 17, weight: .black, design: .rounded))
-                                  .foregroundColor(.white)
-                              Text("\(stats.totalApps) تطبيق  •  \(stats.formattedTotalSize)")
-                                  .font(.system(size: 11, weight: .medium))
-                                  .foregroundColor(.white.opacity(0.75))
-                          }
-                          .frame(maxWidth: .infinity)
-                          Spacer(minLength: 12)
-                          VStack(spacing: 4) {
-                              HStack(spacing: 3) {
-                                  Image(systemName: "crown.fill")
-                                      .font(.system(size: 8))
-                                      .foregroundColor(.xcodeYellow)
-                                  Text("PRO")
-                                      .font(.system(size: 9, weight: .black))
-                                      .foregroundColor(.xcodeYellow)
-                              }
-                              .padding(.horizontal, 8)
-                              .padding(.vertical, 3)
-                              .background(
-                                  Capsule().fill(Color.white.opacity(0.15))
-                                      .overlay(Capsule().stroke(Color.xcodeYellow.opacity(0.4), lineWidth: 0.5))
-                              )
-                              Text("v\(AppConstants.appVersion)")
-                                  .font(.system(size: 9, weight: .semibold))
-                                  .foregroundColor(.white.opacity(0.6))
-                          }
-                          .padding(.trailing, 16)
-                      }
-                      .frame(height: 80)
-                      .background(
-                          ZStack {
-                              LinearGradient(
-                                  colors: [Color(red: 0.12, green: 0.14, blue: 0.22), Color(red: 0.08, green: 0.10, blue: 0.16)],
-                                  startPoint: .topLeading, endPoint: .bottomTrailing
-                              )
-                              Circle().fill(Color.xcodeBlue.opacity(0.08))
-                                  .frame(width: 120).offset(x: 50, y: -30)
-                              Circle().fill(Color.xcodePurple.opacity(0.05))
-                                  .frame(width: 80).offset(x: -60, y: 25)
-                          }
-                      )
-                      .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                      .overlay(
-                          RoundedRectangle(cornerRadius: 16, style: .continuous)
-                              .stroke(Color.xcodeBlue.opacity(0.15), lineWidth: 0.5)
-                      )
-                      .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
-                      .padding(.horizontal, 16)
-                      .onAppear { pulse = true }
-
-                      HStack(spacing: 10) {
-                          StatPill(icon: "app.fill", value: "\(stats.totalApps)", label: "تطبيق")
-                          StatPill(icon: "sparkles", value: "\(stats.newApps)", label: "جديد")
-                          StatPill(icon: "flame.fill", value: "\(stats.popularApps)", label: "مشهور")
-                          StatPill(icon: "tag.fill", value: "\(stats.categories)", label: "تصنيف")
-                      }
-                      .padding(.horizontal, 16)
-                  }
-              }
-          }
-
-          struct StatPill: View {
-              let icon: String
-              let value: String
-              let label: String
-              var body: some View {
-                  VStack(spacing: 2) {
-                      HStack(spacing: 3) {
-                          Image(systemName: icon).font(.system(size: 10))
-                          Text(value).font(.system(size: 13, weight: .bold))
-                      }
-                      .foregroundColor(.xcodeBlue)
-                      Text(label)
-                          .font(.system(size: 9))
-                          .foregroundColor(.xcodeSecondary)
-                  }
-                  .frame(maxWidth: .infinity)
-                  .padding(.vertical, 8)
-                  .background(
-                      RoundedRectangle(cornerRadius: 10)
-                          .fill(Color.xcodeBlue.opacity(0.08))
-                          .overlay(
-                              RoundedRectangle(cornerRadius: 10)
-                                  .stroke(Color.xcodeBlue.opacity(0.12), lineWidth: 0.5)
-                          )
-                  )
-              }
-          }
-
-          struct AdImageCarousel: View {
-              let images: [(image: String, link: String)]
-              @State private var current: Int = 0
-              private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-              var body: some View {
-                  VStack(spacing: 8) {
-                      TabView(selection: $current) {
-                          ForEach(Array(images.enumerated()), id: \.offset) { idx, item in
-                              CachedAsyncImage(url: URL(string: item.image)) { phase in
-                                  switch phase {
-                                  case .success(let img):
-                                      img.resizable().aspectRatio(contentMode: .fill)
-                                  default:
-                                      ZStack {
-                                          Color.xcodeBlue.opacity(0.1)
-                                          ProgressView().tint(.xcodeBlue)
-                                      }
-                                  }
-                              }
-                              .frame(maxWidth: .infinity)
-                              .frame(height: 85)
-                              .clipped()
-                              .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                      .stroke(Color.xcodeBlue.opacity(0.1), lineWidth: 0.5)
-                              )
-                              .contentShape(Rectangle())
-                              .onTapGesture {
-                                  HapticManager.shared.impact(.light)
-                                  if let u = URL(string: item.link) { UIApplication.shared.open(u) }
-                              }
-                              .tag(idx)
-                          }
-                      }
-                      .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-                      .frame(height: 95)
-                      .onReceive(timer) { _ in
-                          withAnimation(.easeInOut(duration: 0.5)) {
-                              current = (current + 1) % max(images.count, 1)
-                          }
-                      }
-                      HStack(spacing: 5) {
-                          ForEach(0..<images.count, id: \.self) { idx in
-                              Capsule()
-                                  .fill(idx == current ? Color.xcodeBlue : Color.gray.opacity(0.3))
-                                  .frame(width: idx == current ? 16 : 5, height: 5)
-                                  .animation(.spring(response: 0.3), value: current)
-                          }
-                      }
-                  }
-                  .padding(.horizontal, 16)
-              }
-          }
-
-          struct FeaturedAppCard: View {
-              let app: AppItem
-              var body: some View {
-                  ZStack(alignment: .bottomLeading) {
-                      CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                          switch phase {
-                          case .success(let img):
-                              img.resizable().aspectRatio(contentMode: .fill)
-                          default:
-                              LinearGradient(colors: [.xcodePurple, .xcodeBlue], startPoint: .topLeading, endPoint: .bottomTrailing)
-                          }
-                      }
-                      .frame(width: 200, height: 120)
-                      .clipped()
-                      .overlay(
-                          LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
-                      )
-                      VStack(alignment: .leading, spacing: 3) {
-                          HStack(spacing: 4) {
-                              if app.isNew { NewBadge() }
-                              SourceBadge(source: app.source)
-                          }
-                          Text(app.name)
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.white)
-                              .lineLimit(1)
-                          Text(app.formattedSize)
-                              .font(.system(size: 10))
-                              .foregroundColor(.white.opacity(0.8))
-                      }
-                      .padding(10)
-                  }
-                  .frame(width: 200, height: 120)
-                  .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                  .shadow(color: .black.opacity(0.15), radius: 6, y: 3)
-              }
-          }
-
           struct NewThisWeekCard: View {
               let app: AppItem
               var body: some View {
                   ZStack(alignment: .bottomLeading) {
-                      LinearGradient(
-                          colors: app.source == .kurd
-                              ? [Color.xcodeOrange, Color.xcodeOrange.opacity(0.7)]
-                              : [Color.xcodePurple, Color.xcodeBlue],
-                          startPoint: .topLeading, endPoint: .bottomTrailing
-                      )
+                      // خلفية بسيطة
+                      Color.gray.opacity(0.1)
                       CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
                           switch phase {
                           case .success(let img):
@@ -2777,11 +2081,11 @@ jobs:
                           Spacer()
                           Text(app.name)
                               .font(.system(size: 14, weight: .heavy))
-                              .foregroundColor(.white)
+                              .foregroundColor(.primary)
                               .lineLimit(2)
                           Text(app.formattedSize)
                               .font(.system(size: 10, weight: .medium))
-                              .foregroundColor(.white.opacity(0.8))
+                              .foregroundColor(.gray)
                       }
                       .padding(10)
                       .frame(width: 160, height: 180, alignment: .bottomLeading)
@@ -2790,138 +2094,14 @@ jobs:
                   .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                   .overlay(
                       RoundedRectangle(cornerRadius: 16, style: .continuous)
-                          .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                          .stroke(Color.blue.opacity(0.15), lineWidth: 1)
                   )
-                  .shadow(color: .xcodePurple.opacity(0.25), radius: 8, y: 4)
-              }
-          }
-
-          struct TopDownloadWideCard: View {
-              let rank: Int
-              let app: AppItem
-              var rankColor: Color {
-                  switch rank {
-                  case 1: return .xcodeYellow
-                  case 2: return Color(white: 0.7)
-                  case 3: return Color(red: 0.8, green: 0.5, blue: 0.3)
-                  default: return .xcodeBlue
-                  }
-              }
-              var shortDesc: String {
-                  let d = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
-                  let words = d.components(separatedBy: .whitespaces).prefix(6).joined(separator: " ")
-                  return words.isEmpty ? app.developerName : words
-              }
-              var body: some View {
-                  VStack(spacing: 0) {
-                      ZStack(alignment: .topLeading) {
-                          CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                              if let img = phase.image {
-                                  img.resizable().aspectRatio(contentMode: .fill)
-                              } else {
-                                  Color.xcodeBlue.opacity(0.15)
-                              }
-                          }
-                          .frame(width: 140, height: 95)
-                          .clipped()
-                          .overlay(
-                              LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
-                          )
-                          ZStack {
-                              Circle().fill(rankColor).frame(width: 28, height: 28)
-                              Text("\(rank)")
-                                  .font(.system(size: 12, weight: .black))
-                                  .foregroundColor(.white)
-                          }
-                          .padding(6)
-                      }
-                      .frame(width: 140, height: 95)
-                      VStack(alignment: .leading, spacing: 3) {
-                          Text(app.name)
-                              .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.primary)
-                              .lineLimit(1)
-                          Text(shortDesc)
-                              .font(.system(size: 9))
-                              .foregroundColor(.xcodeSecondary)
-                              .lineLimit(2)
-                              .multilineTextAlignment(.leading)
-                          HStack(spacing: 4) {
-                              SourceBadge(source: app.source)
-                              if let cat = app.category {
-                                  Text(cat)
-                                      .font(.system(size: 8, weight: .semibold))
-                                      .foregroundColor(.xcodeBlue)
-                                      .padding(.horizontal, 4)
-                                      .padding(.vertical, 2)
-                                      .background(Capsule().fill(Color.xcodeBlue.opacity(0.1)))
-                              }
-                              Spacer()
-                              Text(app.formattedSize)
-                                  .font(.system(size: 8))
-                                  .foregroundColor(.xcodeSecondary)
-                          }
-                      }
-                      .padding(.horizontal, 8)
-                      .padding(.vertical, 6)
-                      .frame(width: 140, alignment: .leading)
-                  }
-                  .frame(width: 140)
-                  .xcodeCard(radius: 14)
-                  .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
-              }
-          }
-
-          struct AppCardView: View {
-              let app: AppItem
-              var body: some View {
-                  HStack(spacing: 12) {
-                      CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                          switch phase {
-                          case .success(let img):
-                              img.resizable().aspectRatio(contentMode: .fill)
-                                  .frame(width: 52, height: 52)
-                                  .clipShape(RoundedRectangle(cornerRadius: 12))
-                                  .shadow(color: .black.opacity(0.08), radius: 4)
-                          default:
-                              RoundedRectangle(cornerRadius: 12)
-                                  .fill(Color.xcodeBlue.opacity(0.15))
-                                  .frame(width: 52, height: 52)
-                                  .overlay(Image(systemName: "app.fill")
-                                      .foregroundColor(.xcodeBlue.opacity(0.4)))
-                          }
-                      }
-                      .frame(width: 52, height: 52)
-                      VStack(alignment: .trailing, spacing: 4) {
-                          HStack(spacing: 5) {
-                              if app.isNew { NewBadge() }
-                              if app.isPopular { PopularBadge() }
-                              Text(app.name)
-                                  .font(.system(size: 14, weight: .bold))
-                                  .lineLimit(1)
-                          }
-                          Text(app.localizedDescription.replacingOccurrences(of: "Injected with ", with: ""))
-                              .font(.system(size: 11))
-                              .foregroundColor(.xcodeSecondary)
-                              .lineLimit(1)
-                          HStack(spacing: 8) {
-                              SourceBadge(source: app.source)
-                              Label(app.formattedSize, systemImage: "memorychip")
-                                  .font(.system(size: 9))
-                              Label(app.formattedDate, systemImage: "calendar")
-                                  .font(.system(size: 9))
-                          }
-                          .foregroundColor(.xcodeSecondary.opacity(0.7))
-                      }
-                      Spacer()
-                  }
-                  .padding(12)
-                  .xcodeCard(radius: 14)
+                  .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
               }
           }
           VIPEOF
 
-      - name: توليد الكود - AppsTabView.swift
+      - name: توليد الكود - AppsTabView.swift (تحسين الفئات والمصادر، إخفاء العدد)
         run: |
           cat > AppsTabView.swift << 'VIPEOF'
           import SwiftUI
@@ -2987,21 +2167,19 @@ jobs:
                               } else if let err = appsManager.errorMessage, appsManager.apps.isEmpty {
                                   ErrorView(message: err) { appsManager.retryFetch() }
                               } else {
+                                  // شريط البحث
                                   HStack(spacing: 12) {
                                       ZStack {
                                           RoundedRectangle(cornerRadius: 12)
-                                              .fill(Color.xcodeBlue.opacity(0.15))
+                                              .fill(Color.blue.opacity(0.15))
                                               .frame(width: 44, height: 44)
                                           Image(systemName: "square.grid.2x2.fill")
-                                              .foregroundColor(.xcodeBlue)
+                                              .foregroundColor(.blue)
                                               .font(.system(size: 20))
                                       }
                                       VStack(alignment: .trailing, spacing: 2) {
                                           Text("كل التطبيقات")
                                               .font(.system(size: 17, weight: .heavy))
-                                          Text("\(appsManager.apps.count) تطبيق  •  \(appsManager.newThisWeek.count) جديد هذا الأسبوع")
-                                              .font(.system(size: 11))
-                                              .foregroundColor(.xcodeSecondary)
                                       }
                                       Spacer()
                                       Menu {
@@ -3020,17 +2198,18 @@ jobs:
                                               Text(sortMode.rawValue)
                                                   .font(.system(size: 11, weight: .semibold))
                                           }
-                                          .foregroundColor(.xcodeBlue)
+                                          .foregroundColor(.blue)
                                           .padding(.horizontal, 10)
                                           .padding(.vertical, 6)
-                                          .background(Capsule().fill(Color.xcodeBlue.opacity(0.1)))
+                                          .background(Capsule().fill(Color.blue.opacity(0.1)))
                                       }
                                   }
                                   .padding(.horizontal)
 
+                                  // حقل البحث
                                   HStack(spacing: 10) {
                                       Image(systemName: "magnifyingglass")
-                                          .foregroundColor(isSearchFocused ? .xcodeBlue : .xcodeSecondary)
+                                          .foregroundColor(isSearchFocused ? .blue : .gray)
                                           .font(.system(size: 14))
                                       TextField("ابحث عن تطبيق...", text: $searchText)
                                           .font(.system(size: 14))
@@ -3043,7 +2222,7 @@ jobs:
                                       if !searchText.isEmpty {
                                           Button(action: { searchText = ""; isSearchFocused = false }) {
                                               Image(systemName: "xmark.circle.fill")
-                                                  .foregroundColor(.xcodeSecondary)
+                                                  .foregroundColor(.gray)
                                           }
                                       }
                                   }
@@ -3051,16 +2230,17 @@ jobs:
                                   .xcodeCard(radius: 12)
                                   .overlay(
                                       RoundedRectangle(cornerRadius: 12)
-                                          .stroke(isSearchFocused ? Color.xcodeBlue.opacity(0.4) : Color.clear, lineWidth: 1.5)
+                                          .stroke(isSearchFocused ? Color.blue.opacity(0.4) : Color.clear, lineWidth: 1.5)
                                   )
                                   .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
                                   .padding(.horizontal)
 
+                                  // البحث السابق
                                   if isSearchFocused && searchText.isEmpty && !appsManager.recentSearches.isEmpty {
                                       VStack(alignment: .trailing, spacing: 6) {
                                           Text("بحث سابق")
                                               .font(.system(size: 11))
-                                              .foregroundColor(.xcodeSecondary)
+                                              .foregroundColor(.gray)
                                               .padding(.horizontal)
                                           ScrollView(.horizontal, showsIndicators: false) {
                                               HStack(spacing: 8) {
@@ -3085,6 +2265,7 @@ jobs:
                                       .transition(.opacity)
                                   }
 
+                                  // أزرار المصادر
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(AppSource.allCases) { src in
@@ -3101,30 +2282,23 @@ jobs:
                                           FilterChip(
                                               title: "جديد هذا الأسبوع",
                                               icon: "sparkles",
-                                              color: .xcodePink,
+                                              color: .pink,
                                               selected: newOnly
                                           ) {
                                               withAnimation(.spring()) { newOnly.toggle() }
-                                          }
-                                          if newOnly {
-                                              Text("\(filteredApps.count)")
-                                                  .font(.system(size: 9, weight: .heavy))
-                                                  .foregroundColor(.white)
-                                                  .padding(.horizontal, 6)
-                                                  .padding(.vertical, 2)
-                                                  .background(Capsule().fill(Color.xcodePink))
                                           }
                                       }
                                       .padding(.horizontal)
                                   }
 
+                                  // أزرار الفئات
                                   ScrollView(.horizontal, showsIndicators: false) {
                                       HStack(spacing: 8) {
                                           ForEach(categories, id: \.self) { cat in
                                               FilterChip(
                                                   title: cat,
                                                   icon: nil,
-                                                  color: .xcodeBlue,
+                                                  color: .blue,
                                                   selected: selectedCategory == cat
                                               ) {
                                                   withAnimation(.spring()) { selectedCategory = cat }
@@ -3134,14 +2308,7 @@ jobs:
                                       .padding(.horizontal)
                                   }
 
-                                  HStack {
-                                      Spacer()
-                                      Text("\(filteredApps.count) نتيجة")
-                                          .font(.system(size: 11))
-                                          .foregroundColor(.xcodeSecondary)
-                                          .padding(.horizontal)
-                                  }
-
+                                  // عرض التطبيقات (بدون عرض العدد)
                                   if filteredApps.isEmpty {
                                       XcodeEmptyState(
                                           icon: "magnifyingglass",
@@ -3166,7 +2333,7 @@ jobs:
                           ToolbarItem(placement: .principal) {
                               Text("21s Pro")
                                   .font(.system(size: 17, weight: .bold))
-                                  .foregroundColor(.xcodeBlue)
+                                  .foregroundColor(.blue)
                           }
                       }
                   }
@@ -3223,11 +2390,11 @@ jobs:
                                       .clipShape(RoundedRectangle(cornerRadius: 12))
                               } else {
                                   RoundedRectangle(cornerRadius: 12)
-                                      .fill(Color.xcodeBlue.opacity(0.1))
+                                      .fill(Color.blue.opacity(0.1))
                                       .frame(width: 52, height: 52)
                                       .overlay(Image(systemName: "app.fill")
                                           .font(.system(size: 20))
-                                          .foregroundColor(.xcodeBlue.opacity(0.3)))
+                                          .foregroundColor(.blue.opacity(0.3)))
                               }
                           }
                           if app.isNew {
@@ -3236,7 +2403,7 @@ jobs:
                                   .foregroundColor(.white)
                                   .padding(.horizontal, 3)
                                   .padding(.vertical, 1)
-                                  .background(Capsule().fill(Color.xcodeGreen))
+                                  .background(Capsule().fill(Color.green))
                                   .offset(x: 3, y: 3)
                           }
                       }
@@ -3245,7 +2412,7 @@ jobs:
                               if app.isPopular {
                                   Image(systemName: "flame.fill")
                                       .font(.system(size: 9))
-                                      .foregroundColor(.xcodeOrange)
+                                      .foregroundColor(.orange)
                               }
                               SourceBadge(source: app.source)
                               Spacer()
@@ -3255,24 +2422,24 @@ jobs:
                           }
                           Text(app.developerName)
                               .font(.system(size: 10))
-                              .foregroundColor(.xcodeSecondary)
+                              .foregroundColor(.gray)
                               .lineLimit(1)
                               .frame(maxWidth: .infinity, alignment: .trailing)
                           HStack(spacing: 6) {
                               Spacer()
                               Label(app.formattedSize, systemImage: "internaldrive")
                                   .font(.system(size: 9))
-                                  .foregroundColor(.xcodeSecondary)
+                                  .foregroundColor(.gray)
                               Label(app.formattedDate, systemImage: "calendar")
                                   .font(.system(size: 9))
-                                  .foregroundColor(.xcodeSecondary)
+                                  .foregroundColor(.gray)
                               if let cat = app.category {
                                   Text(cat)
                                       .font(.system(size: 8, weight: .medium))
-                                      .foregroundColor(.xcodeBlue)
+                                      .foregroundColor(.blue)
                                       .padding(.horizontal, 5)
                                       .padding(.vertical, 2)
-                                      .background(Capsule().fill(Color.xcodeBlue.opacity(0.1)))
+                                      .background(Capsule().fill(Color.blue.opacity(0.1)))
                               }
                           }
                           HStack(spacing: 5) {
@@ -3282,12 +2449,12 @@ jobs:
                                   .foregroundColor(.white)
                                   .padding(.horizontal, 6)
                                   .padding(.vertical, 2)
-                                  .background(Capsule().fill(Color.xcodePurple))
+                                  .background(Capsule().fill(Color.purple))
                               let desc = app.localizedDescription.replacingOccurrences(of: "Injected with ", with: "")
                               if !desc.isEmpty {
                                   Text(desc.components(separatedBy: .whitespaces).prefix(3).joined(separator: " "))
                                       .font(.system(size: 8))
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                                       .lineLimit(1)
                               }
                           }
@@ -3297,27 +2464,26 @@ jobs:
                   .xcodeCard(radius: 14)
                   .overlay(
                       RoundedRectangle(cornerRadius: 14)
-                          .stroke(app.isNew ? Color.xcodeGreen.opacity(0.2) : Color.clear, lineWidth: app.isNew ? 1 : 0)
+                          .stroke(app.isNew ? Color.green.opacity(0.2) : Color.clear, lineWidth: app.isNew ? 1 : 0)
                   )
               }
           }
           VIPEOF
 
-      - name: توليد الكود - DownloadsTabView.swift
+      - name: توليد الكود - SigningTabView.swift (بدلاً من DownloadsTabView، تصميم جديد مع أيقونة ثلاث نقاط)
         run: |
-          cat > DownloadsTabView.swift << 'VIPEOF'
+          cat > SigningTabView.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
           import Foundation
           import UniformTypeIdentifiers
 
-          struct DownloadsTabView: View {
+          struct SigningTabView: View {
               @ObservedObject var downloadManager: DownloadManager
               @ObservedObject var certificateManager: CertificateManager
               @ObservedObject var signer: Signer
               @Environment(\.colorScheme) var scheme
 
-              @State private var showCertPicker = false
               @State private var showCertImport = false
               @State private var showIPAPicker = false
               @State private var showPasswordAlert = false
@@ -3345,27 +2511,48 @@ jobs:
                   NavigationView {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 16) {
-                              // Header
-                              DownloadsBanner(
-                                  activeCount: activeDownloads.count,
-                                  completedCount: completedDownloads.count,
-                                  totalBytes: downloadManager.totalDownloadedBytes
-                              )
-                              .padding(.horizontal)
-                              .padding(.top, 4)
-
-                              // Import IPA Button
-                              XcodeButton(
-                                  title: "استيراد ملف IPA محلي",
-                                  icon: "doc.badge.plus",
-                                  color: .xcodePurple
-                              ) {
-                                  HapticManager.shared.impact(.light)
-                                  showIPAPicker = true
+                              // رأس التبويب
+                              HStack {
+                                  VStack(alignment: .trailing, spacing: 4) {
+                                      Text("التوقيع وإدارة الشهادات")
+                                          .font(.system(size: 18, weight: .heavy))
+                                      Text("قم بتوقيع التطبيقات باستخدام شهاداتك الخاصة")
+                                          .font(.system(size: 11))
+                                          .foregroundColor(.gray)
+                                  }
+                                  Spacer()
+                                  Image(systemName: "signature")
+                                      .font(.system(size: 30))
+                                      .foregroundColor(.blue)
+                                      .padding(.trailing, 8)
                               }
                               .padding(.horizontal)
 
-                              // Certificates Section
+                              // أزرار الإجراءات السريعة
+                              HStack(spacing: 12) {
+                                  XcodeButton(
+                                      title: "استيراد IPA",
+                                      icon: "doc.badge.plus",
+                                      color: .purple
+                                  ) {
+                                      HapticManager.shared.impact(.light)
+                                      showIPAPicker = true
+                                  }
+                                  .frame(maxWidth: .infinity)
+
+                                  XcodeButton(
+                                      title: "استيراد شهادة",
+                                      icon: "lock.shield.fill",
+                                      color: .orange
+                                  ) {
+                                      HapticManager.shared.impact(.light)
+                                      showCertImport = true
+                                  }
+                                  .frame(maxWidth: .infinity)
+                              }
+                              .padding(.horizontal)
+
+                              // قسم الشهادات
                               VStack(spacing: 0) {
                                   Button {
                                       withAnimation(.spring()) { expandCertificates.toggle() }
@@ -3373,19 +2560,19 @@ jobs:
                                       HStack(spacing: 10) {
                                           Image(systemName: "lock.shield.fill")
                                               .font(.system(size: 18))
-                                              .foregroundColor(.xcodeOrange)
+                                              .foregroundColor(.orange)
                                           VStack(alignment: .trailing, spacing: 2) {
-                                              Text("الشهادات والتوقيع")
+                                              Text("الشهادات المحفوظة")
                                                   .font(.system(size: 15, weight: .heavy))
                                                   .foregroundColor(.primary)
-                                              Text("\(certificateManager.certificates.count) شهادة محفوظة")
+                                              Text("\(certificateManager.certificates.count) شهادة")
                                                   .font(.system(size: 11))
-                                                  .foregroundColor(.xcodeSecondary)
+                                                  .foregroundColor(.gray)
                                           }
                                           Spacer()
                                           Image(systemName: expandCertificates ? "chevron.up" : "chevron.down")
                                               .font(.system(size: 12, weight: .semibold))
-                                              .foregroundColor(.xcodeSecondary)
+                                              .foregroundColor(.gray)
                                       }
                                       .padding(12)
                                       .xcodeCard(radius: 12)
@@ -3398,14 +2585,14 @@ jobs:
                                           if certificateManager.certificates.isEmpty {
                                               HStack(spacing: 8) {
                                                   Image(systemName: "exclamationmark.triangle.fill")
-                                                      .foregroundColor(.xcodeOrange)
+                                                      .foregroundColor(.orange)
                                                   Text("لا توجد شهادات. استورد P12 وملف تزويد للتوقيع.")
                                                       .font(.system(size: 12))
-                                                      .foregroundColor(.xcodeSecondary)
+                                                      .foregroundColor(.gray)
                                               }
                                               .padding(10)
                                               .frame(maxWidth: .infinity)
-                                              .background(RoundedRectangle(cornerRadius: 8).fill(Color.xcodeOrange.opacity(0.08)))
+                                              .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
                                               .padding(.horizontal)
                                           } else {
                                               ScrollView(.horizontal, showsIndicators: false) {
@@ -3422,36 +2609,28 @@ jobs:
                                                   .padding(.horizontal)
                                               }
                                           }
-
-                                          XcodeButton(
-                                              title: "إضافة شهادة جديدة",
-                                              icon: "plus.circle.fill",
-                                              color: .xcodeOrange
-                                          ) {
-                                              HapticManager.shared.impact(.light)
-                                              showCertImport = true
-                                          }
-                                          .padding(.horizontal)
                                       }
                                       .padding(.top, 8)
                                   }
                               }
 
+                              // رسائل الحالة
                               if let success = certificateManager.lastSuccess {
-                                  StatusBanner(icon: "checkmark.seal.fill", color: .xcodeGreen, text: success)
+                                  StatusBanner(icon: "checkmark.seal.fill", color: .green, text: success)
                               }
                               if let err = certificateManager.lastError {
-                                  StatusBanner(icon: "exclamationmark.triangle.fill", color: .xcodeRed, text: err)
+                                  StatusBanner(icon: "exclamationmark.triangle.fill", color: .red, text: err)
                               }
                               if showSignSuccess {
-                                  StatusBanner(icon: "signature", color: .xcodeYellow, text: signSuccessMessage)
+                                  StatusBanner(icon: "signature", color: .yellow, text: signSuccessMessage)
                               }
 
+                              // قائمة المهام
                               if downloadManager.downloads.isEmpty {
                                   XcodeEmptyState(
                                       icon: "arrow.down.circle",
-                                      title: "لا توجد تحميلات",
-                                      subtitle: "انتقل إلى التطبيقات واضغط تحميل، أو استورد ملف IPA"
+                                      title: "لا توجد مهام",
+                                      subtitle: "قم باستيراد IPA أو تحميل تطبيق من التبويب السابق"
                                   )
                               } else {
                                   if !activeDownloads.isEmpty {
@@ -3498,24 +2677,11 @@ jobs:
                       .toolbar {
                           ToolbarItem(placement: .principal) {
                               HStack(spacing: 6) {
-                                  Image(systemName: "arrow.down.circle.fill")
-                                      .foregroundColor(.xcodeBlue)
-                                  Text("التحميلات والتوقيع")
+                                  Image(systemName: "signature")
+                                      .foregroundColor(.blue)
+                                  Text("التوقيع")
                                       .font(.system(size: 17, weight: .heavy))
                                       .foregroundColor(.primary)
-                              }
-                          }
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              if !downloadManager.downloads.isEmpty {
-                                  Button {
-                                      HapticManager.shared.impact(.light)
-                                      for task in downloadManager.downloads where task.state == .completed || task.state == .failed || task.state == .signed {
-                                          downloadManager.deleteDownload(id: task.id)
-                                      }
-                                  } label: {
-                                      Image(systemName: "trash")
-                                          .foregroundColor(.xcodeRed)
-                                  }
                               }
                           }
                       }
@@ -3653,49 +2819,6 @@ jobs:
               }
           }
 
-          struct DownloadsBanner: View {
-              let activeCount: Int
-              let completedCount: Int
-              let totalBytes: Int64
-              var body: some View {
-                  HStack(spacing: 12) {
-                      ZStack {
-                          Circle().fill(Color.xcodeBlue.opacity(0.15)).frame(width: 48, height: 48)
-                          Image(systemName: "arrow.down.circle.fill")
-                              .font(.system(size: 24))
-                              .foregroundColor(.xcodeBlue)
-                      }
-                      VStack(alignment: .trailing, spacing: 3) {
-                          Text("إدارة التحميلات")
-                              .font(.system(size: 16, weight: .heavy))
-                          HStack(spacing: 8) {
-                              Text("\(activeCount) نشط")
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.xcodeBlue)
-                              Text("\(completedCount) مكتمل")
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.xcodeGreen)
-                          }
-                      }
-                      Spacer()
-                      VStack(alignment: .trailing, spacing: 2) {
-                          Text(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))
-                              .font(.system(size: 16, weight: .black, design: .rounded))
-                              .foregroundColor(.xcodeBlue)
-                          Text("إجمالي المحمل")
-                              .font(.system(size: 9))
-                              .foregroundColor(.xcodeSecondary)
-                      }
-                  }
-                  .padding(12)
-                  .xcodeCard(radius: 14)
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 14)
-                          .stroke(Color.xcodeBlue.opacity(0.1), lineWidth: 0.5)
-                  )
-              }
-          }
-
           struct CertificateCard: View {
               let cert: StoreCertificate
               let isDefault: Bool
@@ -3710,7 +2833,7 @@ jobs:
                                   .foregroundColor(.white)
                                   .padding(.horizontal, 5)
                                   .padding(.vertical, 2)
-                                  .background(Capsule().fill(Color.xcodeBlue))
+                                  .background(Capsule().fill(Color.blue))
                           }
                           Spacer()
                           Image(systemName: cert.type.icon)
@@ -3725,25 +2848,25 @@ jobs:
                           Spacer()
                           Text(cert.formattedSize)
                               .font(.system(size: 9))
-                              .foregroundColor(.xcodeSecondary)
+                              .foregroundColor(.gray)
                           Text(cert.formattedDate)
                               .font(.system(size: 9))
-                              .foregroundColor(.xcodeSecondary)
+                              .foregroundColor(.gray)
                       }
                       if cert.isValid {
                           HStack(spacing: 3) {
                               Spacer()
                               Image(systemName: "checkmark.seal.fill")
                                   .font(.system(size: 8))
-                                  .foregroundColor(.xcodeGreen)
+                                  .foregroundColor(.green)
                               Text("صالحة")
                                   .font(.system(size: 8, weight: .semibold))
-                                  .foregroundColor(.xcodeGreen)
+                                  .foregroundColor(.green)
                           }
                       } else if let err = cert.validationError {
                           Text(err)
                               .font(.system(size: 8))
-                              .foregroundColor(.xcodeRed)
+                              .foregroundColor(.red)
                               .lineLimit(1)
                       }
                       HStack(spacing: 6) {
@@ -3753,9 +2876,9 @@ jobs:
                           } label: {
                               Image(systemName: "trash.fill")
                                   .font(.system(size: 10))
-                                  .foregroundColor(.xcodeRed)
+                                  .foregroundColor(.red)
                                   .frame(width: 28, height: 28)
-                                  .background(RoundedRectangle(cornerRadius: 6).fill(Color.xcodeRed.opacity(0.1)))
+                                  .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.1)))
                           }
                           if !isDefault {
                               Button {
@@ -3764,10 +2887,10 @@ jobs:
                               } label: {
                                   Text("تعيين افتراضية")
                                       .font(.system(size: 9, weight: .bold))
-                                      .foregroundColor(.xcodeBlue)
+                                      .foregroundColor(.blue)
                                       .padding(.horizontal, 8)
                                       .padding(.vertical, 4)
-                                      .background(Capsule().fill(Color.xcodeBlue.opacity(0.1)))
+                                      .background(Capsule().fill(Color.blue.opacity(0.1)))
                               }
                           }
                       }
@@ -3777,7 +2900,7 @@ jobs:
                   .xcodeCard(radius: 12)
                   .overlay(
                       RoundedRectangle(cornerRadius: 12)
-                          .stroke(isDefault ? Color.xcodeBlue.opacity(0.3) : Color.clear, lineWidth: isDefault ? 1.5 : 0)
+                          .stroke(isDefault ? Color.blue.opacity(0.3) : Color.clear, lineWidth: isDefault ? 1.5 : 0)
                   )
               }
           }
@@ -3790,7 +2913,7 @@ jobs:
                       HStack(spacing: 12) {
                           ZStack {
                               RoundedRectangle(cornerRadius: 10)
-                                  .fill(Color.xcodeBlue.opacity(0.1))
+                                  .fill(Color.blue.opacity(0.1))
                                   .frame(width: 44, height: 44)
                               CachedAsyncImage(url: URL(string: task.appIconURL)) { phase in
                                   if let img = phase.image {
@@ -3800,7 +2923,7 @@ jobs:
                                   } else {
                                       Image(systemName: "app.fill")
                                           .font(.system(size: 20))
-                                          .foregroundColor(.xcodeBlue.opacity(0.4))
+                                          .foregroundColor(.blue.opacity(0.4))
                                   }
                               }
                           }
@@ -3814,7 +2937,7 @@ jobs:
                                       .foregroundColor(task.state.color)
                                   Text("\(task.formattedDownloaded) / \(task.formattedTotal)")
                                       .font(.system(size: 10))
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                               }
                           }
                           Spacer()
@@ -3823,19 +2946,19 @@ jobs:
                                   Button { downloadManager.pauseDownload(id: task.id) } label: {
                                       Image(systemName: "pause.circle.fill")
                                           .font(.system(size: 26))
-                                          .foregroundColor(.xcodeOrange)
+                                          .foregroundColor(.orange)
                                   }
                               } else if task.state == .paused {
                                   Button { downloadManager.resumeDownload(id: task.id) } label: {
                                       Image(systemName: "play.circle.fill")
                                           .font(.system(size: 26))
-                                          .foregroundColor(.xcodeGreen)
+                                          .foregroundColor(.green)
                                   }
                               }
                               Button { downloadManager.cancelDownload(id: task.id) } label: {
                                   Image(systemName: "xmark.circle.fill")
                                       .font(.system(size: 22))
-                                      .foregroundColor(.xcodeRed.opacity(0.7))
+                                      .foregroundColor(.red.opacity(0.7))
                               }
                           }
                       }
@@ -3865,11 +2988,11 @@ jobs:
                   HStack(spacing: 12) {
                       ZStack {
                           RoundedRectangle(cornerRadius: 10)
-                              .fill(Color.xcodeRed.opacity(0.1))
+                              .fill(Color.red.opacity(0.1))
                               .frame(width: 44, height: 44)
                           Image(systemName: "app.fill")
                               .font(.system(size: 20))
-                              .foregroundColor(.xcodeRed.opacity(0.4))
+                              .foregroundColor(.red.opacity(0.4))
                       }
                       VStack(alignment: .trailing, spacing: 3) {
                           Text(task.appName)
@@ -3877,7 +3000,7 @@ jobs:
                               .lineLimit(1)
                           Text(task.errorMessage ?? "فشل التحميل")
                               .font(.system(size: 10))
-                              .foregroundColor(.xcodeRed)
+                              .foregroundColor(.red)
                               .lineLimit(1)
                       }
                       Spacer()
@@ -3885,12 +3008,12 @@ jobs:
                           Button { downloadManager.resumeDownload(id: task.id) } label: {
                               Image(systemName: "arrow.clockwise.circle.fill")
                                   .font(.system(size: 24))
-                                  .foregroundColor(.xcodeBlue)
+                                  .foregroundColor(.blue)
                           }
                           Button { downloadManager.cancelDownload(id: task.id) } label: {
                               Image(systemName: "xmark.circle.fill")
                                   .font(.system(size: 22))
-                                  .foregroundColor(.xcodeRed.opacity(0.7))
+                                  .foregroundColor(.red.opacity(0.7))
                           }
                       }
                   }
@@ -3898,7 +3021,7 @@ jobs:
                   .xcodeCard(radius: 12)
                   .overlay(
                       RoundedRectangle(cornerRadius: 12)
-                          .stroke(Color.xcodeRed.opacity(0.2), lineWidth: 1)
+                          .stroke(Color.red.opacity(0.2), lineWidth: 1)
                   )
               }
           }
@@ -3913,13 +3036,15 @@ jobs:
               let onShare: () -> Void
               let onDelete: () -> Void
 
+              @State private var showMenu = false
+
               var isSigned: Bool { task.state == .signed }
 
               var body: some View {
                   HStack(spacing: 12) {
                       ZStack {
                           RoundedRectangle(cornerRadius: 10)
-                              .fill(isSigned ? Color.xcodeYellow.opacity(0.1) : Color.xcodeGreen.opacity(0.1))
+                              .fill(isSigned ? Color.yellow.opacity(0.1) : Color.green.opacity(0.1))
                               .frame(width: 44, height: 44)
                           CachedAsyncImage(url: URL(string: task.appIconURL)) { phase in
                               if let img = phase.image {
@@ -3929,7 +3054,7 @@ jobs:
                               } else {
                                   Image(systemName: isSigned ? "seal.fill" : "app.fill")
                                       .font(.system(size: 20))
-                                      .foregroundColor(isSigned ? Color.xcodeYellow.opacity(0.6) : Color.xcodeGreen.opacity(0.4))
+                                      .foregroundColor(isSigned ? .yellow.opacity(0.6) : .green.opacity(0.4))
                               }
                           }
                       }
@@ -3941,102 +3066,44 @@ jobs:
                               if isSigned {
                                   Image(systemName: "signature")
                                       .font(.system(size: 9))
-                                      .foregroundColor(.xcodeYellow)
+                                      .foregroundColor(.yellow)
                                   Text("موقّع")
                                       .font(.system(size: 9, weight: .bold))
-                                      .foregroundColor(.xcodeYellow)
+                                      .foregroundColor(.yellow)
                               }
                               Text(task.version)
                                   .font(.system(size: 10))
-                                  .foregroundColor(.xcodeSecondary)
+                                  .foregroundColor(.gray)
                               Text(task.formattedTotal)
                                   .font(.system(size: 10))
-                                  .foregroundColor(.xcodeSecondary)
+                                  .foregroundColor(.gray)
                           }
                       }
                       Spacer()
-                      HStack(spacing: 6) {
-                          // Sign & Install
+                      // زر القائمة (ثلاث نقاط)
+                      Button {
+                          HapticManager.shared.impact(.light)
+                          showMenu = true
+                      } label: {
+                          Image(systemName: "ellipsis.circle.fill")
+                              .font(.system(size: 26))
+                              .foregroundColor(.blue)
+                      }
+                      .confirmationDialog("الإجراءات", isPresented: $showMenu, titleVisibility: .visible) {
                           if !isSigned {
-                              Button {
-                                  HapticManager.shared.impact(.medium)
-                                  onSign()
-                              } label: {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: "signature")
-                                          .font(.system(size: 16))
-                                      Text("توقيع")
-                                          .font(.system(size: 8, weight: .bold))
-                                  }
-                                  .foregroundColor(.xcodeCyan)
-                                  .frame(width: 48, height: 44)
-                                  .background(
-                                      RoundedRectangle(cornerRadius: 8)
-                                          .fill(Color.xcodeCyan.opacity(0.1))
-                                  )
-                              }
+                              Button("توقيع") { onSign() }
                           }
-                          // Install
-                          Button {
-                              HapticManager.shared.impact(.medium)
-                              onInstall()
-                          } label: {
-                              VStack(spacing: 2) {
-                                  Image(systemName: "arrow.down.app.fill")
-                                      .font(.system(size: 16))
-                                  Text("تثبيت")
-                                      .font(.system(size: 8, weight: .bold))
-                              }
-                              .foregroundColor(.xcodeGreen)
-                              .frame(width: 48, height: 44)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 8)
-                                      .fill(Color.xcodeGreen.opacity(0.1))
-                              )
-                          }
-                          // Share
-                          Button {
-                              HapticManager.shared.impact(.light)
-                              onShare()
-                          } label: {
-                              VStack(spacing: 2) {
-                                  Image(systemName: "square.and.arrow.up.fill")
-                                      .font(.system(size: 16))
-                                  Text("مشاركة")
-                                      .font(.system(size: 8, weight: .bold))
-                              }
-                              .foregroundColor(.xcodeBlue)
-                              .frame(width: 48, height: 44)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 8)
-                                      .fill(Color.xcodeBlue.opacity(0.1))
-                              )
-                          }
-                          // Delete
-                          Button {
-                              HapticManager.shared.impact(.light)
-                              onDelete()
-                          } label: {
-                              VStack(spacing: 2) {
-                                  Image(systemName: "trash.fill")
-                                      .font(.system(size: 16))
-                                  Text("حذف")
-                                      .font(.system(size: 8, weight: .bold))
-                              }
-                              .foregroundColor(.xcodeRed)
-                              .frame(width: 48, height: 44)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 8)
-                                      .fill(Color.xcodeRed.opacity(0.1))
-                              )
-                          }
+                          Button("تثبيت") { onInstall() }
+                          Button("مشاركة") { onShare() }
+                          Button("حذف", role: .destructive) { onDelete() }
+                          Button("إلغاء", role: .cancel) {}
                       }
                   }
                   .padding(12)
                   .xcodeCard(radius: 12)
                   .overlay(
                       RoundedRectangle(cornerRadius: 12)
-                          .stroke(isSigned ? Color.xcodeYellow.opacity(0.3) : Color.xcodeGreen.opacity(0.2), lineWidth: isSigned ? 1.5 : 1)
+                          .stroke(isSigned ? Color.yellow.opacity(0.3) : Color.green.opacity(0.2), lineWidth: isSigned ? 1.5 : 1)
                   )
               }
           }
@@ -4056,12 +3123,12 @@ jobs:
                               VStack(spacing: 12) {
                                   Image(systemName: "lock.shield.fill")
                                       .font(.system(size: 50))
-                                      .foregroundColor(.xcodeOrange)
+                                      .foregroundColor(.orange)
                                   Text("إضافة شهادة")
                                       .font(.system(size: 20, weight: .black))
                                   Text("استورد ملف P12 وملف تزويد (mobileprovision) لتوقيع التطبيقات")
                                       .font(.system(size: 12))
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                                       .multilineTextAlignment(.center)
                               }
                               .padding(.top, 20)
@@ -4070,7 +3137,7 @@ jobs:
                                   XcodeButton(
                                       title: "استيراد شهادة P12",
                                       icon: "lock.shield.fill",
-                                      color: .xcodeOrange
+                                      color: .orange
                                   ) {
                                       pickerType = .p12
                                       showPicker = true
@@ -4080,7 +3147,7 @@ jobs:
                                       HStack {
                                           Text("كلمة المرور (اختياري):")
                                               .font(.system(size: 12))
-                                              .foregroundColor(.xcodeSecondary)
+                                              .foregroundColor(.gray)
                                           SecureField("Password", text: $password)
                                               .font(.system(size: 13))
                                               .multilineTextAlignment(.trailing)
@@ -4093,7 +3160,7 @@ jobs:
                                   XcodeButton(
                                       title: "استيراد ملف تزويد",
                                       icon: "doc.badge.gearshape.fill",
-                                      color: .xcodeGreen
+                                      color: .green
                                   ) {
                                       pickerType = .mobileprovision
                                       showPicker = true
@@ -4105,13 +3172,13 @@ jobs:
                                   VStack(spacing: 8) {
                                       Text("تم استيراد P12 بنجاح")
                                           .font(.system(size: 13, weight: .bold))
-                                          .foregroundColor(.xcodeGreen)
+                                          .foregroundColor(.green)
                                       Text("الآن استورد ملف التزويد المطابق")
                                           .font(.system(size: 11))
-                                          .foregroundColor(.xcodeSecondary)
+                                          .foregroundColor(.gray)
                                   }
                                   .padding(12)
-                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.xcodeGreen.opacity(0.08)))
+                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.08)))
                                   .padding(.horizontal)
                               }
 
@@ -4123,7 +3190,7 @@ jobs:
                           ToolbarItem(placement: .navigationBarTrailing) {
                               Button { dismiss() } label: {
                                   Image(systemName: "xmark.circle.fill")
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                               }
                           }
                       }
@@ -4185,19 +3252,19 @@ jobs:
                                                           .foregroundColor(.primary)
                                                       Text(cert.type.displayName)
                                                           .font(.system(size: 11))
-                                                          .foregroundColor(.xcodeSecondary)
+                                                          .foregroundColor(.gray)
                                                   }
                                                   Spacer()
                                                   if cert.isDefault {
                                                       Image(systemName: "checkmark.circle.fill")
-                                                          .foregroundColor(.xcodeBlue)
+                                                          .foregroundColor(.blue)
                                                   }
                                               }
                                               .padding(12)
                                               .xcodeCard(radius: 12)
                                               .overlay(
                                                   RoundedRectangle(cornerRadius: 12)
-                                                      .stroke(cert.isDefault ? Color.xcodeBlue.opacity(0.3) : Color.clear, lineWidth: 1.5)
+                                                      .stroke(cert.isDefault ? Color.blue.opacity(0.3) : Color.clear, lineWidth: 1.5)
                                               )
                                           }
                                           .buttonStyle(PlainButtonStyle())
@@ -4212,7 +3279,7 @@ jobs:
                           ToolbarItem(placement: .navigationBarTrailing) {
                               Button { dismiss() } label: {
                                   Image(systemName: "xmark.circle.fill")
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                               }
                           }
                       }
@@ -4221,7 +3288,7 @@ jobs:
           }
           VIPEOF
 
-      - name: توليد الكود - AppDetailView.swift
+      - name: توليد الكود - AppDetailView.swift (تصميم كلاسيكي)
         run: |
           cat > AppDetailView.swift << 'VIPEOF'
           import SwiftUI
@@ -4249,7 +3316,7 @@ jobs:
                               Button(action: { dismiss() }) {
                                   Image(systemName: "xmark.circle.fill")
                                       .font(.title2)
-                                      .foregroundColor(.xcodeSecondary)
+                                      .foregroundColor(.gray)
                               }
                               Spacer()
                           }
@@ -4258,56 +3325,26 @@ jobs:
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 16) {
-                                  ZStack(alignment: .bottom) {
-                                      RoundedRectangle(cornerRadius: 24)
-                                          .fill(
-                                              LinearGradient(
-                                                  colors: app.source == .kurd
-                                                      ? [Color.xcodeOrange.opacity(0.8), Color.xcodeOrange.opacity(0.5)]
-                                                      : [Color.xcodePurple.opacity(0.7), Color.xcodeBlue.opacity(0.6)],
-                                                  startPoint: .topLeading, endPoint: .bottomTrailing
-                                              )
-                                          )
-                                          .frame(height: 160)
-                                          .overlay(
-                                              ZStack {
-                                                  Circle().fill(Color.white.opacity(0.08))
-                                                      .frame(width: 140).offset(x: -100, y: -40)
-                                                  Circle().fill(Color.white.opacity(0.05))
-                                                      .frame(width: 100).offset(x: 110, y: 35)
-                                              }
-                                              .clipShape(RoundedRectangle(cornerRadius: 24))
-                                          )
-                                          .overlay(
-                                              RoundedRectangle(cornerRadius: 24)
-                                                  .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-                                          )
-                                          .shadow(color: app.source == .kurd ? Color.xcodeOrange.opacity(0.3) : Color.xcodePurple.opacity(0.3),
-                                                  radius: 18, x: 0, y: 8)
-                                          .padding(.horizontal, 16)
-
-                                      CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
-                                          switch phase {
-                                          case .success(let img):
-                                              img.resizable().aspectRatio(contentMode: .fill)
-                                          default:
-                                              RoundedRectangle(cornerRadius: 22)
-                                                  .fill(Color.xcodeBlue.opacity(0.3))
-                                                  .overlay(Image(systemName: "app.fill")
-                                                      .font(.system(size: 36))
-                                                      .foregroundColor(.white.opacity(0.6)))
-                                          }
-                                      }
-                                      .frame(width: 110, height: 110)
-                                      .clipShape(RoundedRectangle(cornerRadius: 22))
-                                      .overlay(
+                                  // أيقونة التطبيق
+                                  CachedAsyncImage(url: URL(string: app.iconURL)) { phase in
+                                      switch phase {
+                                      case .success(let img):
+                                          img.resizable().aspectRatio(contentMode: .fill)
+                                      default:
                                           RoundedRectangle(cornerRadius: 22)
-                                              .stroke(Color.white.opacity(0.8), lineWidth: 2.5)
-                                      )
-                                      .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 6)
-                                      .offset(y: 45)
+                                              .fill(Color.blue.opacity(0.3))
+                                              .overlay(Image(systemName: "app.fill")
+                                                  .font(.system(size: 36))
+                                                  .foregroundColor(.white.opacity(0.6)))
+                                      }
                                   }
-                                  .padding(.bottom, 45)
+                                  .frame(width: 110, height: 110)
+                                  .clipShape(RoundedRectangle(cornerRadius: 22))
+                                  .overlay(
+                                      RoundedRectangle(cornerRadius: 22)
+                                          .stroke(Color.blue.opacity(0.3), lineWidth: 1.5)
+                                  )
+                                  .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
 
                                   VStack(spacing: 5) {
                                       Text(app.name)
@@ -4315,7 +3352,7 @@ jobs:
                                           .multilineTextAlignment(.center)
                                       Text(app.developerName.isEmpty ? "VIP21 Store" : app.developerName)
                                           .font(.system(size: 12))
-                                          .foregroundColor(.xcodeSecondary)
+                                          .foregroundColor(.gray)
                                       HStack(spacing: 6) {
                                           if app.isNew { NewBadge() }
                                           if app.isPopular { PopularBadge() }
@@ -4325,9 +3362,9 @@ jobs:
 
                                   HStack(spacing: 0) {
                                       DetailStat(icon: "memorychip", value: app.formattedSize, label: "الحجم")
-                                      Divider().frame(height: 36).background(Color.xcodeDivider)
+                                      Divider().frame(height: 36).background(Color.gray.opacity(0.3))
                                       DetailStat(icon: "number", value: app.version, label: "النسخة")
-                                      Divider().frame(height: 36).background(Color.xcodeDivider)
+                                      Divider().frame(height: 36).background(Color.gray.opacity(0.3))
                                       DetailStat(icon: "calendar", value: app.formattedDate, label: "التحديث")
                                   }
                                   .padding(.vertical, 14)
@@ -4344,13 +3381,13 @@ jobs:
                                       HStack {
                                           Spacer()
                                           Image(systemName: "text.alignright")
-                                              .foregroundColor(.xcodeBlue)
+                                              .foregroundColor(.blue)
                                           Text("الوصف")
                                               .font(.system(size: 14, weight: .semibold))
                                       }
                                       Text(app.localizedDescription.replacingOccurrences(of: "Injected with ", with: ""))
                                           .font(.system(size: 12))
-                                          .foregroundColor(.xcodeSecondary)
+                                          .foregroundColor(.gray)
                                           .multilineTextAlignment(.trailing)
                                           .lineSpacing(3)
                                   }
@@ -4362,7 +3399,7 @@ jobs:
                                       XcodeButton(
                                           title: "جاري التحميل...",
                                           icon: "arrow.down.circle.fill",
-                                          color: .xcodeOrange,
+                                          color: .orange,
                                           action: {},
                                           isLoading: true,
                                           isDisabled: true
@@ -4374,7 +3411,7 @@ jobs:
                                           XcodeButton(
                                               title: "تثبيت",
                                               icon: "arrow.down.app.fill",
-                                              color: .xcodeGreen
+                                              color: .green
                                           ) {
                                               if let task = downloadManager.downloads.first(where: { $0.appID == app.id }) {
                                                   downloadManager.installApp(id: task.id)
@@ -4383,7 +3420,7 @@ jobs:
                                           XcodeButton(
                                               title: "تحميل مجدداً",
                                               icon: "arrow.down.circle.fill",
-                                              color: .xcodeBlue
+                                              color: .blue
                                           ) {
                                               downloadManager.startDownload(for: app)
                                           }
@@ -4394,7 +3431,7 @@ jobs:
                                       XcodeButton(
                                           title: "تحميل IPA",
                                           icon: "arrow.down.circle.fill",
-                                          color: app.source == .kurd ? .xcodeOrange : .xcodeBlue
+                                          color: app.source == .kurd ? .orange : .blue
                                       ) {
                                           HapticManager.shared.impact(.medium)
                                           downloadManager.startDownload(for: app)
@@ -4407,7 +3444,7 @@ jobs:
                           }
                       }
                   }
-                  .preferredColorScheme(.dark)
+                  .preferredColorScheme(.light)
               }
           }
 
@@ -4419,12 +3456,12 @@ jobs:
                   VStack(spacing: 4) {
                       Image(systemName: icon)
                           .font(.system(size: 13))
-                          .foregroundColor(.xcodeBlue)
+                          .foregroundColor(.blue)
                       Text(value)
                           .font(.system(size: 12, weight: .bold))
                       Text(label)
                           .font(.system(size: 9))
-                          .foregroundColor(.xcodeSecondary)
+                          .foregroundColor(.gray)
                   }
                   .frame(maxWidth: .infinity)
               }
@@ -4437,7 +3474,7 @@ jobs:
                   VStack(spacing: 2) {
                       Text(label)
                           .font(.system(size: 9))
-                          .foregroundColor(.xcodeSecondary)
+                          .foregroundColor(.gray)
                       Text(value)
                           .font(.system(size: 11, weight: .semibold))
                           .lineLimit(2)
@@ -4446,6 +3483,30 @@ jobs:
                   .frame(maxWidth: .infinity)
                   .padding(10)
                   .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.06)))
+              }
+          }
+          VIPEOF
+
+      - name: توليد الكود - SettingsView.swift (بدون أنمي)
+        run: |
+          cat > SettingsView.swift << 'VIPEOF'
+          import SwiftUI
+
+          struct SettingsView: View {
+              @Environment(\.dismiss) var dismiss
+              var body: some View {
+                  NavigationView {
+                      List {
+                          Section(header: Text("ℹ️ حول")) {
+                              HStack { Text("الإصدار"); Spacer(); Text("9.0").foregroundColor(.secondary) }
+                              HStack { Text("المطور"); Spacer(); Text("VIP21 Store Team").foregroundColor(.secondary) }
+                              HStack { Text("المصادر"); Spacer(); Text("21s + KurdStore").foregroundColor(.secondary) }
+                          }
+                      }
+                      .navigationTitle("الإعدادات")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("تم") { dismiss() } } }
+                  }
               }
           }
           VIPEOF
@@ -4499,482 +3560,6 @@ jobs:
           }
           VIPEOF
 
-      - name: توليد الكود - AnimeTheme.swift
-        run: |
-          cat > AnimeTheme.swift << 'VIPEOF'
-          import SwiftUI
-          import Foundation
-
-          enum AnimeTheme: String, CaseIterable, Identifiable {
-              case cyberpunk = "cyberpunk"
-              case naruto = "naruto"
-              case demonSlayer = "demon_slayer"
-              case onePiece = "one_piece"
-              case attackOnTitan = "attack_on_titan"
-              var id: String { rawValue }
-              var displayName: String {
-                  switch self {
-                  case .cyberpunk: return "سايبربانك ⚡"
-                  case .naruto: return "ناروتو 🍥"
-                  case .demonSlayer: return "قاتل الشياطين ⚔️"
-                  case .onePiece: return "ون بيس ☠️"
-                  case .attackOnTitan: return "هجوم العمالقة 🏰"
-                  }
-              }
-              var colors: ThemeColors {
-                  switch self {
-                  case .cyberpunk:
-                      return ThemeColors(primary: Color(hex: "00f0ff"), secondary: Color(hex: "ff00aa"), accent: Color(hex: "ffe600"), background: Color(hex: "0a0a1a"), surface: Color(hex: "12122a"), text: Color(hex: "ffffff"), textSecondary: Color(hex: "8899aa"))
-                  case .naruto:
-                      return ThemeColors(primary: Color(hex: "ff6b00"), secondary: Color(hex: "ffd700"), accent: Color(hex: "ff4500"), background: Color(hex: "1a0f00"), surface: Color(hex: "2a1a00"), text: Color(hex: "ffffff"), textSecondary: Color(hex: "ccaa88"))
-                  case .demonSlayer:
-                      return ThemeColors(primary: Color(hex: "00d4ff"), secondary: Color(hex: "ff0066"), accent: Color(hex: "7b2cbf"), background: Color(hex: "0a001a"), surface: Color(hex: "1a0a2a"), text: Color(hex: "ffffff"), textSecondary: Color(hex: "aa88cc"))
-                  case .onePiece:
-                      return ThemeColors(primary: Color(hex: "ff3333"), secondary: Color(hex: "ffd700"), accent: Color(hex: "0066cc"), background: Color(hex: "001a33"), surface: Color(hex: "0a2a4a"), text: Color(hex: "ffffff"), textSecondary: Color(hex: "88aacc"))
-                  case .attackOnTitan:
-                      return ThemeColors(primary: Color(hex: "8b0000"), secondary: Color(hex: "daa520"), accent: Color(hex: "2f4f4f"), background: Color(hex: "1a1a1a"), surface: Color(hex: "2a2a2a"), text: Color(hex: "ffffff"), textSecondary: Color(hex: "aaaaaa"))
-                  }
-              }
-          }
-
-          struct ThemeColors {
-              let primary: Color
-              let secondary: Color
-              let accent: Color
-              let background: Color
-              let surface: Color
-              let text: Color
-              let textSecondary: Color
-          }
-
-          extension Color {
-              init(hex: String) {
-                  let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-                  var int: UInt64 = 0
-                  Scanner(string: hex).scanHexInt64(&int)
-                  let a, r, g, b: UInt64
-                  switch hex.count {
-                  case 3: (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-                  case 6: (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
-                  case 8: (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
-                  default: (a, r, g, b) = (1, 1, 1, 0)
-                  }
-                  self.init(.sRGB, red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255, opacity: Double(a) / 255)
-              }
-          }
-
-          @MainActor
-          class ThemeManager: ObservableObject {
-              @Published var currentTheme: AnimeTheme = .cyberpunk
-              @Published var is3DEnabled: Bool = true
-              @Published var particleIntensity: Double = 1.0
-              func setTheme(_ theme: AnimeTheme) {
-                  withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) { currentTheme = theme }
-                  HapticManager.shared.success()
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - AnimeParticles.swift
-        run: |
-          cat > AnimeParticles.swift << 'VIPEOF'
-          import SwiftUI
-
-          struct AnimeParticleOverlay: View {
-              @EnvironmentObject var themeManager: ThemeManager
-              let particleCount = 30
-              var body: some View {
-                  TimelineView(.animation(minimumInterval: 0.016, paused: false)) { timeline in
-                      Canvas { context, size in
-                          let t = timeline.date.timeIntervalSinceReferenceDate
-                          let colors = themeManager.currentTheme.colors.primary
-                          for i in 0..<particleCount {
-                              let progress = Double(i) / Double(particleCount)
-                              let x = size.width * CGFloat(sin(t * 0.5 + progress * 6.28) * 0.4 + 0.5)
-                              let y = size.height * CGFloat(cos(t * 0.3 + progress * 4.71) * 0.4 + 0.5)
-                              let radius = CGFloat(2 + sin(t * 2 + progress * 10) * 1.5)
-                              let alpha = 0.3 + 0.2 * sin(t * 3 + progress * 10)
-                              var path = Path()
-                              path.addEllipse(in: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2))
-                              context.fill(path, with: .color(colors.opacity(alpha)))
-                          }
-                      }
-                  }
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - QRScanner.swift
-        run: |
-          cat > QRScanner.swift << 'VIPEOF'
-          import SwiftUI
-          import AVFoundation
-          import AudioToolbox
-
-          struct QRScannerView: UIViewControllerRepresentable {
-              var onScan: (String) -> Void
-              @Environment(\.dismiss) var dismiss
-              func makeUIViewController(context: Context) -> QRScannerVC {
-                  let vc = QRScannerVC()
-                  vc.onScan = { code in onScan(code); dismiss() }
-                  return vc
-              }
-              func updateUIViewController(_ uiViewController: QRScannerVC, context: Context) {}
-          }
-
-          class QRScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-              var onScan: ((String) -> Void)?
-              var captureSession: AVCaptureSession!
-              var previewLayer: AVCaptureVideoPreviewLayer!
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  view.backgroundColor = .black
-                  captureSession = AVCaptureSession()
-                  guard let videoCaptureDevice = AVCaptureDevice.default(for: .video) else { return }
-                  let videoInput: AVCaptureDeviceInput
-                  do { videoInput = try AVCaptureDeviceInput(device: videoCaptureDevice) }
-                  catch { return }
-                  if captureSession.canAddInput(videoInput) { captureSession.addInput(videoInput) }
-                  else { return }
-                  let metadataOutput = AVCaptureMetadataOutput()
-                  if captureSession.canAddOutput(metadataOutput) {
-                      captureSession.addOutput(metadataOutput)
-                      metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-                      metadataOutput.metadataObjectTypes = [.qr]
-                  }
-                  previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-                  previewLayer.frame = view.layer.bounds
-                  previewLayer.videoGravity = .resizeAspectFill
-                  view.layer.addSublayer(previewLayer)
-                  let overlay = createAnimeOverlay(frame: view.bounds)
-                  view.addSubview(overlay)
-                  captureSession.startRunning()
-              }
-              func createAnimeOverlay(frame: CGRect) -> UIView {
-                  let v = UIView(frame: frame)
-                  v.backgroundColor = .clear
-                  let scanArea = CGRect(x: frame.midX - 125, y: frame.midY - 125, width: 250, height: 250)
-                  let bracketColor = UIColor(Color(hex: "00f0ff")).cgColor
-                  let bracketLayer = CAShapeLayer()
-                  let path = UIBezierPath()
-                  let cornerLength: CGFloat = 30
-                  let corners = [(scanArea.minX, scanArea.minY, 1, 1), (scanArea.maxX, scanArea.minY, -1, 1), (scanArea.minX, scanArea.maxY, 1, -1), (scanArea.maxX, scanArea.maxY, -1, -1)]
-                  for (cx, cy, dx, dy) in corners {
-                      path.move(to: CGPoint(x: cx + CGFloat(dx) * cornerLength, y: cy))
-                      path.addLine(to: CGPoint(x: cx, y: cy))
-                      path.addLine(to: CGPoint(x: cx, y: cy + CGFloat(dy) * cornerLength))
-                  }
-                  bracketLayer.path = path.cgPath
-                  bracketLayer.strokeColor = bracketColor
-                  bracketLayer.lineWidth = 4
-                  bracketLayer.fillColor = UIColor.clear.cgColor
-                  v.layer.addSublayer(bracketLayer)
-                  let scanLine = CALayer()
-                  scanLine.frame = CGRect(x: scanArea.minX, y: scanArea.minY, width: scanArea.width, height: 2)
-                  scanLine.backgroundColor = UIColor(Color(hex: "ff00aa")).cgColor
-                  scanLine.shadowColor = UIColor(Color(hex: "ff00aa")).cgColor
-                  scanLine.shadowRadius = 10
-                  scanLine.shadowOpacity = 1
-                  v.layer.addSublayer(scanLine)
-                  let anim = CABasicAnimation(keyPath: "position.y")
-                  anim.fromValue = scanArea.minY
-                  anim.toValue = scanArea.maxY
-                  anim.duration = 2
-                  anim.repeatCount = .infinity
-                  anim.autoreverses = true
-                  scanLine.add(anim, forKey: "scan")
-                  return v
-              }
-              func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
-                  if let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject, let stringValue = object.stringValue {
-                      captureSession.stopRunning()
-                      AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-                      onScan?(stringValue)
-                  }
-              }
-              override func viewWillDisappear(_ animated: Bool) {
-                  super.viewWillDisappear(animated)
-                  if captureSession?.isRunning == true { captureSession.stopRunning() }
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - SocialShare.swift
-        run: |
-          cat > SocialShare.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-
-          struct SocialShareSheet: View {
-              let app: AppItem
-              @Environment(\.dismiss) var dismiss
-              var body: some View {
-                  NavigationView {
-                      List {
-                          Section(header: Text("مشاركة التطبيق").font(.headline)) {
-                              ShareButton(title: "Telegram", icon: "paperplane.fill", color: .blue) {
-                                  let text = "🎌 تطبيق رائع من 21s Pro Anime: \(app.name)\n\(app.downloadURL)"
-                                  let url = "tg://msg?text=\(text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-                                  openURL(url)
-                              }
-                              ShareButton(title: "Twitter / X", icon: "xmark.circle.fill", color: .black) {
-                                  let text = "جرب هذا التطبيق الرائع من 21s Pro Anime 🎌 \(app.name)"
-                                  let url = "twitter://post?message=\(text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-                                  openURL(url)
-                              }
-                              ShareButton(title: "WhatsApp", icon: "message.fill", color: .green) {
-                                  let url = "whatsapp://send?text=\(app.downloadURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-                                  openURL(url)
-                              }
-                              ShareButton(title: "نسخ الرابط", icon: "link", color: .gray) {
-                                  UIPasteboard.general.string = app.downloadURL
-                                  dismiss()
-                              }
-                              ShareButton(title: "مشاركة عامة", icon: "square.and.arrow.up", color: .orange) {
-                                  let activityVC = UIActivityViewController(activityItems: [app.downloadURL], applicationActivities: nil)
-                                  if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene, let rootVC = windowScene.keyWindow?.rootViewController {
-                                      rootVC.present(activityVC, animated: true)
-                                  }
-                                  dismiss()
-                              }
-                          }
-                          Section(header: Text("معلومات التطبيق")) {
-                              HStack { Text("الاسم"); Spacer(); Text(app.name).foregroundColor(.secondary) }
-                              HStack { Text("الإصدار"); Spacer(); Text(app.version).foregroundColor(.secondary) }
-                              HStack { Text("الحجم"); Spacer(); Text(app.formattedSize).foregroundColor(.secondary) }
-                          }
-                      }
-                      .navigationTitle("مشاركة")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("إغلاق") { dismiss() } } }
-                  }
-              }
-              func openURL(_ urlString: String) {
-                  if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) { UIApplication.shared.open(url) }
-                  dismiss()
-              }
-          }
-
-          struct ShareButton: View {
-              let title: String
-              let icon: String
-              let color: Color
-              let action: () -> Void
-              var body: some View {
-                  Button(action: action) {
-                      HStack {
-                          Image(systemName: icon).foregroundColor(color).frame(width: 30)
-                          Text(title)
-                          Spacer()
-                          Image(systemName: "chevron.left").font(.caption).foregroundColor(.gray)
-                      }
-                  }
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - Gamification.swift
-        run: |
-          cat > Gamification.swift << 'VIPEOF'
-          import SwiftUI
-          import Foundation
-
-          struct UserAchievement: Identifiable, Codable {
-              let id: String
-              let title: String
-              let description: String
-              let icon: String
-              let colorHex: String
-              var isUnlocked: Bool
-              var unlockDate: Date?
-              var progress: Double
-              let target: Double
-              var color: Color { Color(hex: colorHex) }
-          }
-
-          @MainActor
-          class GamificationManager: ObservableObject {
-              @Published var achievements: [UserAchievement] = []
-              @Published var totalPoints: Int = 0
-              @Published var level: Int = 1
-              init() { loadAchievements() }
-              func loadAchievements() {
-                  achievements = [
-                      UserAchievement(id: "first_download", title: "أول تحميل", description: "حمّل أول تطبيق", icon: "arrow.down.circle.fill", colorHex: "00f0ff", isUnlocked: false, progress: 0, target: 1),
-                      UserAchievement(id: "ten_downloads", title: "محترف التحميل", description: "حمّل 10 تطبيقات", icon: "10.circle.fill", colorHex: "ff00aa", isUnlocked: false, progress: 0, target: 10),
-                      UserAchievement(id: "first_sign", title: "موقّع مبتدئ", description: "وقّع أول تطبيق", icon: "signature", colorHex: "ffe600", isUnlocked: false, progress: 0, target: 1),
-                      UserAchievement(id: "week_streak", title: "متواصل", description: "استخدم التطبيق 7 أيام متتالية", icon: "flame.fill", colorHex: "ff6b00", isUnlocked: false, progress: 0, target: 7),
-                      UserAchievement(id: "explorer", title: "مستكشف", description: "تصفح 50 تطبيق", icon: "binoculars.fill", colorHex: "00ff88", isUnlocked: false, progress: 0, target: 50),
-                      UserAchievement(id: "collector", title: "جامع الشهادات", description: "استورد 5 شهادات", icon: "lock.shield.fill", colorHex: "7b2cbf", isUnlocked: false, progress: 0, target: 5),
-                  ]
-                  totalPoints = UserDefaults.standard.integer(forKey: "user_points")
-                  level = UserDefaults.standard.integer(forKey: "user_level")
-                  if level == 0 { level = 1 }
-              }
-              func incrementProgress(id: String, amount: Double = 1) {
-                  guard let idx = achievements.firstIndex(where: { $0.id == id }) else { return }
-                  if achievements[idx].isUnlocked { return }
-                  achievements[idx].progress += amount
-                  if achievements[idx].progress >= achievements[idx].target {
-                      achievements[idx].isUnlocked = true
-                      achievements[idx].unlockDate = Date()
-                      totalPoints += 100
-                      checkLevelUp()
-                      save()
-                      HapticManager.shared.success()
-                  }
-              }
-              func checkLevelUp() {
-                  let newLevel = (totalPoints / 500) + 1
-                  if newLevel > level { level = newLevel }
-              }
-              func save() {
-                  UserDefaults.standard.set(totalPoints, forKey: "user_points")
-                  UserDefaults.standard.set(level, forKey: "user_level")
-              }
-          }
-
-          struct AchievementsView: View {
-              @EnvironmentObject var manager: GamificationManager
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 20) {
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 20).fill(Color.xcodeEditor)
-                                  .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.xcodeBlue.opacity(0.3), lineWidth: 1))
-                              VStack(spacing: 12) {
-                                  Text("المستوى \(manager.level)").font(.system(size: 28, weight: .black)).foregroundColor(.xcodeBlue)
-                                  Text("\(manager.totalPoints) نقطة").font(.title3).foregroundColor(.xcodeSecondary)
-                                  ProgressView(value: Double(manager.totalPoints % 500), total: 500).tint(.xcodePurple).scaleEffect(x: 1, y: 2, anchor: .center)
-                              }.padding(20)
-                          }.padding(.horizontal)
-                          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                              ForEach(manager.achievements) { ach in
-                                  AchievementCard(achievement: ach)
-                              }
-                          }.padding(.horizontal)
-                      }.padding(.vertical)
-                  }.background(Color.xcodeBackground.edgesIgnoringSafeArea(.all))
-              }
-          }
-
-          struct AchievementCard: View {
-              let achievement: UserAchievement
-              var body: some View {
-                  VStack(spacing: 10) {
-                      ZStack {
-                          Circle().fill(achievement.isUnlocked ? achievement.color.opacity(0.2) : Color.gray.opacity(0.1)).frame(width: 60, height: 60)
-                          Image(systemName: achievement.icon).font(.system(size: 28)).foregroundColor(achievement.isUnlocked ? achievement.color : .gray)
-                      }
-                      Text(achievement.title).font(.system(size: 14, weight: .bold)).foregroundColor(achievement.isUnlocked ? .xcodeText : .gray)
-                      Text(achievement.description).font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
-                      if !achievement.isUnlocked {
-                          ProgressView(value: achievement.progress, total: achievement.target).tint(achievement.color).scaleEffect(x: 1, y: 1.5)
-                      } else {
-                          Text("✅ مكتمل").font(.caption2).foregroundColor(.green)
-                      }
-                  }
-                  .padding(12)
-                  .frame(height: 160)
-                  .background(
-                      RoundedRectangle(cornerRadius: 16).fill(Color.xcodeEditor)
-                          .overlay(RoundedRectangle(cornerRadius: 16).stroke(achievement.isUnlocked ? achievement.color.opacity(0.4) : Color.clear, lineWidth: 2))
-                  )
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - SettingsView.swift
-        run: |
-          cat > SettingsView.swift << 'VIPEOF'
-          import SwiftUI
-
-          struct SettingsView: View {
-              @StateObject private var themeManager = ThemeManager()
-              @Environment(\.dismiss) var dismiss
-              var body: some View {
-                  NavigationView {
-                      List {
-                          Section(header: Text("🎨 الثيمات الأنمي")) {
-                              ForEach(AnimeTheme.allCases) { theme in
-                                  Button(action: { themeManager.setTheme(theme) }) {
-                                      HStack {
-                                          RoundedRectangle(cornerRadius: 8).fill(theme.colors.primary).frame(width: 30, height: 30)
-                                          Text(theme.displayName)
-                                          Spacer()
-                                          if themeManager.currentTheme == theme { Image(systemName: "checkmark.circle.fill").foregroundColor(theme.colors.primary) }
-                                      }
-                                  }.foregroundColor(.primary)
-                              }
-                          }
-                          Section(header: Text("⚙️ الإعدادات")) {
-                              Toggle("تفعيل التأثيرات 3D", isOn: $themeManager.is3DEnabled)
-                              VStack(alignment: .leading) {
-                                  Text("شدة الجزيئات")
-                                  Slider(value: $themeManager.particleIntensity, in: 0...2)
-                              }
-                          }
-                          Section(header: Text("ℹ️ حول")) {
-                              HStack { Text("الإصدار"); Spacer(); Text("9.0 Anime Edition").foregroundColor(.secondary) }
-                              HStack { Text("المطور"); Spacer(); Text("VIP21 Store Team").foregroundColor(.secondary) }
-                          }
-                      }
-                      .navigationTitle("الإعدادات")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("تم") { dismiss() } } }
-                  }
-              }
-          }
-          VIPEOF
-
-      - name: توليد الكود - AnimeWebView.swift
-        run: |
-          cat > AnimeWebView.swift << 'VIPEOF'
-          import SwiftUI
-          import WebKit
-
-          struct AnimeWebView: UIViewRepresentable {
-              let htmlName: String
-              var onMessage: ((String, String) -> Void)?
-              func makeUIView(context: Context) -> WKWebView {
-                  let config = WKWebViewConfiguration()
-                  config.allowsInlineMediaPlayback = true
-                  config.mediaTypesRequiringUserActionForPlayback = []
-                  let userContent = WKUserContentController()
-                  userContent.add(context.coordinator, name: "appTap")
-                  userContent.add(context.coordinator, name: "download")
-                  userContent.add(context.coordinator, name: "share")
-                  config.userContentController = userContent
-                  let webView = WKWebView(frame: .zero, configuration: config)
-                  webView.navigationDelegate = context.coordinator
-                  webView.isOpaque = false
-                  webView.backgroundColor = .clear
-                  webView.scrollView.backgroundColor = .clear
-                  webView.scrollView.showsVerticalScrollIndicator = false
-                  webView.configuration.preferences.javaScriptEnabled = true
-                  return webView
-              }
-              func updateUIView(_ webView: WKWebView, context: Context) {
-                  if let url = Bundle.main.url(forResource: htmlName, withExtension: "html", subdirectory: "WebEngine") {
-                      webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-                  }
-              }
-              func makeCoordinator() -> Coordinator { Coordinator(self) }
-              class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-                  var parent: AnimeWebView
-                  init(_ parent: AnimeWebView) { self.parent = parent }
-                  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-                      if let body = message.body as? String { parent.onMessage?(message.name, body) }
-                  }
-                  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                      let js = "if (typeof updateTheme === 'function') { updateTheme('cyberpunk'); }"
-                      webView.evaluateJavaScript(js, completionHandler: nil)
-                  }
-              }
-          }
-          VIPEOF
-
-
       # =========================================================
       # BUILD
       # =========================================================
@@ -4982,10 +3567,10 @@ jobs:
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
-          xcrun swiftc             Constants.swift             HapticManager.swift             Models.swift             CertificateManager.swift             Signer.swift             DownloadManager.swift             AppsManager.swift             SharedComponents.swift             ContentView.swift             HomeTabView.swift             AppsTabView.swift             DownloadsTabView.swift             AppDetailView.swift             AnimeTheme.swift             AnimeParticles.swift             QRScanner.swift             SocialShare.swift             Gamification.swift             SettingsView.swift             AnimeWebView.swift             VIP21StoreApp.swift             -sdk "$SDK"             -target arm64-apple-ios16.0             -O             -module-name VIP21Store             -framework SwiftUI             -framework UIKit             -framework Foundation             -framework UserNotifications             -framework UniformTypeIdentifiers             -framework AVFoundation             -framework WebKit             -o VIP21Store
+          xcrun swiftc             Constants.swift             HapticManager.swift             Models.swift             CertificateManager.swift             Signer.swift             DownloadManager.swift             AppsManager.swift             SharedComponents.swift             ContentView.swift             HomeTabView.swift             AppsTabView.swift             SigningTabView.swift             AppDetailView.swift             SettingsView.swift             VIP21StoreApp.swift             -sdk "$SDK"             -target arm64-apple-ios16.0             -O             -module-name VIP21Store             -framework SwiftUI             -framework UIKit             -framework Foundation             -framework UserNotifications             -framework UniformTypeIdentifiers             -framework AVFoundation             -framework WebKit             -o VIP21Store
           file VIP21Store
 
-      - name: إنشاء حزمة IPA Anime Edition
+      - name: إنشاء حزمة IPA (بدون أنمي)
         run: |
           mkdir -p artifacts
           rm -rf build-output
@@ -4998,24 +3583,15 @@ jobs:
           cp Resources/AppIcon83.5x83.5@2x~ipad.png build-output/Payload/VIP21Store.app/
           cp Resources/AppIcon1024x1024.png      build-output/Payload/VIP21Store.app/
           cp Resources/apps_data.json            build-output/Payload/VIP21Store.app/
-          # Anime Assets
-          if [ -d "Resources/AnimeAssets" ]; then
-            cp -R Resources/AnimeAssets/* build-output/Payload/VIP21Store.app/
-          fi
-          # WebEngine (Three.js + HTML)
-          if [ -d "Resources/WebEngine" ]; then
-            cp -R Resources/WebEngine build-output/Payload/VIP21Store.app/
-          fi
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
-          cd build-output && zip -r -q ../artifacts/21s-Pro-Anime-v9.ipa Payload/ && cd ..
-          echo "IPA: $(du -sh artifacts/21s-Pro-Anime-v9.ipa)"
-
+          cd build-output && zip -r -q ../artifacts/21s-Pro-v9.ipa Payload/ && cd ..
+          echo "IPA: $(du -sh artifacts/21s-Pro-v9.ipa)"
 
       - name: التحقق من صحة حزمة IPA
         run: |
           echo "== محتويات ملف IPA =="
-          unzip -l artifacts/21s-Pro-Anime-v9.ipa | head -35
-          if ! unzip -l artifacts/21s-Pro-Anime-v9.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
+          unzip -l artifacts/21s-Pro-v9.ipa | head -35
+          if ! unzip -l artifacts/21s-Pro-v9.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
             echo "❌ خطأ: الحزمة لا تحتوي على App Bundle صحيح"
             exit 1
           fi
@@ -5024,5 +3600,5 @@ jobs:
       - name: رفع الملف الناتج
         uses: actions/upload-artifact@v4
         with:
-          name: 21s-Pro-Anime-v9-Full-Edition
-          path: artifacts/21s-Pro-Anime-v9.ipa
+          name: 21s-Pro-v9-Xcode-Classic
+          path: artifacts/21s-Pro-v9.ipa
