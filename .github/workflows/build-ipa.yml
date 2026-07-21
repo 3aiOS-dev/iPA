@@ -147,7 +147,7 @@ jobs:
           PEOF
 
       # =========================================================
-      # SOURCE CODE — Login + Registration + Onboarding
+      # SOURCE CODE — Login + Registration + Onboarding (Phone only)
       # =========================================================
 
       - name: Generate code - Constants.swift
@@ -231,15 +231,15 @@ jobs:
 
           struct AppUser: Codable {
               let id: UUID
-              let email: String
+              let phoneNumber: String   // Full phone number with country code, e.g., "+971501234567"
               let username: String
               let password: String
               let udid: String
               let createdAt: Date
 
-              init(email: String, username: String, password: String, udid: String) {
+              init(phoneNumber: String, username: String, password: String, udid: String) {
                   self.id = UUID()
-                  self.email = email
+                  self.phoneNumber = phoneNumber
                   self.username = username
                   self.password = password
                   self.udid = udid
@@ -266,16 +266,25 @@ jobs:
 
               init() { loadUser() }
 
-              func signUp(email: String, username: String, password: String, confirmPassword: String, udid: String) -> Bool {
+              func signUp(phoneNumber: String, username: String, password: String, confirmPassword: String, udid: String) -> Bool {
                   isLoading = true
                   errorMessage = nil
 
-                  if email.trimmingCharacters(in: .whitespaces).isEmpty {
-                      errorMessage = "Email is required"; isLoading = false; return false
+                  let trimmedPhone = phoneNumber.trimmingCharacters(in: .whitespaces)
+                  if trimmedPhone.isEmpty {
+                      errorMessage = "Phone number is required"; isLoading = false; return false
                   }
-                  if !email.contains("@") || !email.contains(".") {
-                      errorMessage = "Please enter a valid email address"; isLoading = false; return false
+                  // Basic international phone validation: must start with '+', contain digits
+                  if !trimmedPhone.hasPrefix("+") {
+                      errorMessage = "Phone number must include country code (e.g., +971501234567)"
+                      isLoading = false; return false
                   }
+                  let digitsOnly = trimmedPhone.dropFirst().filter { $0.isNumber }
+                  if digitsOnly.count < 7 {
+                      errorMessage = "Please enter a valid phone number (at least 7 digits after country code)"
+                      isLoading = false; return false
+                  }
+
                   if username.trimmingCharacters(in: .whitespaces).isEmpty {
                       errorMessage = "Username is required"; isLoading = false; return false
                   }
@@ -296,8 +305,8 @@ jobs:
                   }
 
                   let existingUsers = loadAllUsers()
-                  if existingUsers.contains(where: { $0.email.lowercased() == email.lowercased() }) {
-                      errorMessage = "An account with this email already exists"; isLoading = false; return false
+                  if existingUsers.contains(where: { $0.phoneNumber == trimmedPhone }) {
+                      errorMessage = "This phone number is already registered"; isLoading = false; return false
                   }
                   if existingUsers.contains(where: { $0.username.lowercased() == username.lowercased() }) {
                       errorMessage = "This username is already taken"; isLoading = false; return false
@@ -306,7 +315,7 @@ jobs:
                       errorMessage = "This UDID is already registered to another account"; isLoading = false; return false
                   }
 
-                  let newUser = AppUser(email: email, username: username, password: password, udid: udid)
+                  let newUser = AppUser(phoneNumber: trimmedPhone, username: username, password: password, udid: udid)
                   var users = loadAllUsers()
                   users.append(newUser)
                   saveAllUsers(users)
@@ -319,20 +328,21 @@ jobs:
                   return true
               }
 
-              func login(email: String, password: String) -> Bool {
+              func login(phoneNumber: String, password: String) -> Bool {
                   isLoading = true
                   errorMessage = nil
 
-                  if email.trimmingCharacters(in: .whitespaces).isEmpty {
-                      errorMessage = "Email is required"; isLoading = false; return false
+                  let trimmedPhone = phoneNumber.trimmingCharacters(in: .whitespaces)
+                  if trimmedPhone.isEmpty {
+                      errorMessage = "Phone number is required"; isLoading = false; return false
                   }
                   if password.trimmingCharacters(in: .whitespaces).isEmpty {
                       errorMessage = "Password is required"; isLoading = false; return false
                   }
 
                   let users = loadAllUsers()
-                  guard let user = users.first(where: { $0.email.lowercased() == email.lowercased() && $0.password == password }) else {
-                      errorMessage = "Invalid email or password"; isLoading = false; return false
+                  guard let user = users.first(where: { $0.phoneNumber == trimmedPhone && $0.password == password }) else {
+                      errorMessage = "Invalid phone number or password"; isLoading = false; return false
                   }
 
                   currentUser = user
@@ -391,6 +401,191 @@ jobs:
                   """
               }
           }
+          VIPEOF
+
+      - name: Generate code - Countries.swift
+        run: |
+          cat > Countries.swift << 'VIPEOF'
+          import Foundation
+
+          struct Country: Identifiable, Hashable {
+              let id = UUID()
+              let name: String
+              let dialCode: String
+              let flag: String
+          }
+
+          let countries: [Country] = [
+              // All Arab countries + major international
+              Country(name: "Afghanistan", dialCode: "+93", flag: "🇦🇫"),
+              Country(name: "Albania", dialCode: "+355", flag: "🇦🇱"),
+              Country(name: "Algeria", dialCode: "+213", flag: "🇩🇿"),
+              Country(name: "Andorra", dialCode: "+376", flag: "🇦🇩"),
+              Country(name: "Angola", dialCode: "+244", flag: "🇦🇴"),
+              Country(name: "Argentina", dialCode: "+54", flag: "🇦🇷"),
+              Country(name: "Armenia", dialCode: "+374", flag: "🇦🇲"),
+              Country(name: "Australia", dialCode: "+61", flag: "🇦🇺"),
+              Country(name: "Austria", dialCode: "+43", flag: "🇦🇹"),
+              Country(name: "Azerbaijan", dialCode: "+994", flag: "🇦🇿"),
+              Country(name: "Bahrain", dialCode: "+973", flag: "🇧🇭"),
+              Country(name: "Bangladesh", dialCode: "+880", flag: "🇧🇩"),
+              Country(name: "Belarus", dialCode: "+375", flag: "🇧🇾"),
+              Country(name: "Belgium", dialCode: "+32", flag: "🇧🇪"),
+              Country(name: "Benin", dialCode: "+229", flag: "🇧🇯"),
+              Country(name: "Bhutan", dialCode: "+975", flag: "🇧🇹"),
+              Country(name: "Bolivia", dialCode: "+591", flag: "🇧🇴"),
+              Country(name: "Bosnia", dialCode: "+387", flag: "🇧🇦"),
+              Country(name: "Botswana", dialCode: "+267", flag: "🇧🇼"),
+              Country(name: "Brazil", dialCode: "+55", flag: "🇧🇷"),
+              Country(name: "Brunei", dialCode: "+673", flag: "🇧🇳"),
+              Country(name: "Bulgaria", dialCode: "+359", flag: "🇧🇬"),
+              Country(name: "Burkina Faso", dialCode: "+226", flag: "🇧🇫"),
+              Country(name: "Burundi", dialCode: "+257", flag: "🇧🇮"),
+              Country(name: "Cambodia", dialCode: "+855", flag: "🇰🇭"),
+              Country(name: "Cameroon", dialCode: "+237", flag: "🇨🇲"),
+              Country(name: "Canada", dialCode: "+1", flag: "🇨🇦"),
+              Country(name: "Cape Verde", dialCode: "+238", flag: "🇨🇻"),
+              Country(name: "Central African Republic", dialCode: "+236", flag: "🇨🇫"),
+              Country(name: "Chad", dialCode: "+235", flag: "🇹🇩"),
+              Country(name: "Chile", dialCode: "+56", flag: "🇨🇱"),
+              Country(name: "China", dialCode: "+86", flag: "🇨🇳"),
+              Country(name: "Colombia", dialCode: "+57", flag: "🇨🇴"),
+              Country(name: "Comoros", dialCode: "+269", flag: "🇰🇲"),
+              Country(name: "Congo", dialCode: "+242", flag: "🇨🇬"),
+              Country(name: "Costa Rica", dialCode: "+506", flag: "🇨🇷"),
+              Country(name: "Croatia", dialCode: "+385", flag: "🇭🇷"),
+              Country(name: "Cuba", dialCode: "+53", flag: "🇨🇺"),
+              Country(name: "Cyprus", dialCode: "+357", flag: "🇨🇾"),
+              Country(name: "Czech Republic", dialCode: "+420", flag: "🇨🇿"),
+              Country(name: "Denmark", dialCode: "+45", flag: "🇩🇰"),
+              Country(name: "Djibouti", dialCode: "+253", flag: "🇩🇯"),
+              Country(name: "Dominican Republic", dialCode: "+1", flag: "🇩🇴"),
+              Country(name: "Ecuador", dialCode: "+593", flag: "🇪🇨"),
+              Country(name: "Egypt", dialCode: "+20", flag: "🇪🇬"),
+              Country(name: "El Salvador", dialCode: "+503", flag: "🇸🇻"),
+              Country(name: "Equatorial Guinea", dialCode: "+240", flag: "🇬🇶"),
+              Country(name: "Eritrea", dialCode: "+291", flag: "🇪🇷"),
+              Country(name: "Estonia", dialCode: "+372", flag: "🇪🇪"),
+              Country(name: "Ethiopia", dialCode: "+251", flag: "🇪🇹"),
+              Country(name: "Fiji", dialCode: "+679", flag: "🇫🇯"),
+              Country(name: "Finland", dialCode: "+358", flag: "🇫🇮"),
+              Country(name: "France", dialCode: "+33", flag: "🇫🇷"),
+              Country(name: "Gabon", dialCode: "+241", flag: "🇬🇦"),
+              Country(name: "Gambia", dialCode: "+220", flag: "🇬🇲"),
+              Country(name: "Georgia", dialCode: "+995", flag: "🇬🇪"),
+              Country(name: "Germany", dialCode: "+49", flag: "🇩🇪"),
+              Country(name: "Ghana", dialCode: "+233", flag: "🇬🇭"),
+              Country(name: "Greece", dialCode: "+30", flag: "🇬🇷"),
+              Country(name: "Guatemala", dialCode: "+502", flag: "🇬🇹"),
+              Country(name: "Guinea", dialCode: "+224", flag: "🇬🇳"),
+              Country(name: "Guyana", dialCode: "+592", flag: "🇬🇾"),
+              Country(name: "Haiti", dialCode: "+509", flag: "🇭🇹"),
+              Country(name: "Honduras", dialCode: "+504", flag: "🇭🇳"),
+              Country(name: "Hungary", dialCode: "+36", flag: "🇭🇺"),
+              Country(name: "Iceland", dialCode: "+354", flag: "🇮🇸"),
+              Country(name: "India", dialCode: "+91", flag: "🇮🇳"),
+              Country(name: "Indonesia", dialCode: "+62", flag: "🇮🇩"),
+              Country(name: "Iran", dialCode: "+98", flag: "🇮🇷"),
+              Country(name: "Iraq", dialCode: "+964", flag: "🇮🇶"),
+              Country(name: "Ireland", dialCode: "+353", flag: "🇮🇪"),
+              Country(name: "Israel", dialCode: "+972", flag: "🇮🇱"),
+              Country(name: "Italy", dialCode: "+39", flag: "🇮🇹"),
+              Country(name: "Ivory Coast", dialCode: "+225", flag: "🇨🇮"),
+              Country(name: "Jamaica", dialCode: "+1", flag: "🇯🇲"),
+              Country(name: "Japan", dialCode: "+81", flag: "🇯🇵"),
+              Country(name: "Jordan", dialCode: "+962", flag: "🇯🇴"),
+              Country(name: "Kazakhstan", dialCode: "+7", flag: "🇰🇿"),
+              Country(name: "Kenya", dialCode: "+254", flag: "🇰🇪"),
+              Country(name: "Kuwait", dialCode: "+965", flag: "🇰🇼"),
+              Country(name: "Kyrgyzstan", dialCode: "+996", flag: "🇰🇬"),
+              Country(name: "Laos", dialCode: "+856", flag: "🇱🇦"),
+              Country(name: "Latvia", dialCode: "+371", flag: "🇱🇻"),
+              Country(name: "Lebanon", dialCode: "+961", flag: "🇱🇧"),
+              Country(name: "Lesotho", dialCode: "+266", flag: "🇱🇸"),
+              Country(name: "Liberia", dialCode: "+231", flag: "🇱🇷"),
+              Country(name: "Libya", dialCode: "+218", flag: "🇱🇾"),
+              Country(name: "Liechtenstein", dialCode: "+423", flag: "🇱🇮"),
+              Country(name: "Lithuania", dialCode: "+370", flag: "🇱🇹"),
+              Country(name: "Luxembourg", dialCode: "+352", flag: "🇱🇺"),
+              Country(name: "Madagascar", dialCode: "+261", flag: "🇲🇬"),
+              Country(name: "Malawi", dialCode: "+265", flag: "🇲🇼"),
+              Country(name: "Malaysia", dialCode: "+60", flag: "🇲🇾"),
+              Country(name: "Maldives", dialCode: "+960", flag: "🇲🇻"),
+              Country(name: "Mali", dialCode: "+223", flag: "🇲🇱"),
+              Country(name: "Malta", dialCode: "+356", flag: "🇲🇹"),
+              Country(name: "Mauritania", dialCode: "+222", flag: "🇲🇷"),
+              Country(name: "Mauritius", dialCode: "+230", flag: "🇲🇺"),
+              Country(name: "Mexico", dialCode: "+52", flag: "🇲🇽"),
+              Country(name: "Moldova", dialCode: "+373", flag: "🇲🇩"),
+              Country(name: "Monaco", dialCode: "+377", flag: "🇲🇨"),
+              Country(name: "Mongolia", dialCode: "+976", flag: "🇲🇳"),
+              Country(name: "Montenegro", dialCode: "+382", flag: "🇲🇪"),
+              Country(name: "Morocco", dialCode: "+212", flag: "🇲🇦"),
+              Country(name: "Mozambique", dialCode: "+258", flag: "🇲🇿"),
+              Country(name: "Myanmar", dialCode: "+95", flag: "🇲🇲"),
+              Country(name: "Namibia", dialCode: "+264", flag: "🇳🇦"),
+              Country(name: "Nepal", dialCode: "+977", flag: "🇳🇵"),
+              Country(name: "Netherlands", dialCode: "+31", flag: "🇳🇱"),
+              Country(name: "New Zealand", dialCode: "+64", flag: "🇳🇿"),
+              Country(name: "Nicaragua", dialCode: "+505", flag: "🇳🇮"),
+              Country(name: "Niger", dialCode: "+227", flag: "🇳🇪"),
+              Country(name: "Nigeria", dialCode: "+234", flag: "🇳🇬"),
+              Country(name: "North Korea", dialCode: "+850", flag: "🇰🇵"),
+              Country(name: "Norway", dialCode: "+47", flag: "🇳🇴"),
+              Country(name: "Oman", dialCode: "+968", flag: "🇴🇲"),
+              Country(name: "Pakistan", dialCode: "+92", flag: "🇵🇰"),
+              Country(name: "Palestine", dialCode: "+970", flag: "🇵🇸"),
+              Country(name: "Panama", dialCode: "+507", flag: "🇵🇦"),
+              Country(name: "Papua New Guinea", dialCode: "+675", flag: "🇵🇬"),
+              Country(name: "Paraguay", dialCode: "+595", flag: "🇵🇾"),
+              Country(name: "Peru", dialCode: "+51", flag: "🇵🇪"),
+              Country(name: "Philippines", dialCode: "+63", flag: "🇵🇭"),
+              Country(name: "Poland", dialCode: "+48", flag: "🇵🇱"),
+              Country(name: "Portugal", dialCode: "+351", flag: "🇵🇹"),
+              Country(name: "Qatar", dialCode: "+974", flag: "🇶🇦"),
+              Country(name: "Romania", dialCode: "+40", flag: "🇷🇴"),
+              Country(name: "Russia", dialCode: "+7", flag: "🇷🇺"),
+              Country(name: "Rwanda", dialCode: "+250", flag: "🇷🇼"),
+              Country(name: "Saudi Arabia", dialCode: "+966", flag: "🇸🇦"),
+              Country(name: "Senegal", dialCode: "+221", flag: "🇸🇳"),
+              Country(name: "Serbia", dialCode: "+381", flag: "🇷🇸"),
+              Country(name: "Sierra Leone", dialCode: "+232", flag: "🇸🇱"),
+              Country(name: "Singapore", dialCode: "+65", flag: "🇸🇬"),
+              Country(name: "Slovakia", dialCode: "+421", flag: "🇸🇰"),
+              Country(name: "Slovenia", dialCode: "+386", flag: "🇸🇮"),
+              Country(name: "Somalia", dialCode: "+252", flag: "🇸🇴"),
+              Country(name: "South Africa", dialCode: "+27", flag: "🇿🇦"),
+              Country(name: "South Korea", dialCode: "+82", flag: "🇰🇷"),
+              Country(name: "Spain", dialCode: "+34", flag: "🇪🇸"),
+              Country(name: "Sri Lanka", dialCode: "+94", flag: "🇱🇰"),
+              Country(name: "Sudan", dialCode: "+249", flag: "🇸🇩"),
+              Country(name: "Suriname", dialCode: "+597", flag: "🇸🇷"),
+              Country(name: "Sweden", dialCode: "+46", flag: "🇸🇪"),
+              Country(name: "Switzerland", dialCode: "+41", flag: "🇨🇭"),
+              Country(name: "Syria", dialCode: "+963", flag: "🇸🇾"),
+              Country(name: "Taiwan", dialCode: "+886", flag: "🇹🇼"),
+              Country(name: "Tajikistan", dialCode: "+992", flag: "🇹🇯"),
+              Country(name: "Tanzania", dialCode: "+255", flag: "🇹🇿"),
+              Country(name: "Thailand", dialCode: "+66", flag: "🇹🇭"),
+              Country(name: "Togo", dialCode: "+228", flag: "🇹🇬"),
+              Country(name: "Trinidad and Tobago", dialCode: "+1", flag: "🇹🇹"),
+              Country(name: "Tunisia", dialCode: "+216", flag: "🇹🇳"),
+              Country(name: "Turkey", dialCode: "+90", flag: "🇹🇷"),
+              Country(name: "Turkmenistan", dialCode: "+993", flag: "🇹🇲"),
+              Country(name: "Uganda", dialCode: "+256", flag: "🇺🇬"),
+              Country(name: "Ukraine", dialCode: "+380", flag: "🇺🇦"),
+              Country(name: "United Arab Emirates", dialCode: "+971", flag: "🇦🇪"),
+              Country(name: "United Kingdom", dialCode: "+44", flag: "🇬🇧"),
+              Country(name: "United States", dialCode: "+1", flag: "🇺🇸"),
+              Country(name: "Uruguay", dialCode: "+598", flag: "🇺🇾"),
+              Country(name: "Uzbekistan", dialCode: "+998", flag: "🇺🇿"),
+              Country(name: "Vatican City", dialCode: "+379", flag: "🇻🇦"),
+              Country(name: "Venezuela", dialCode: "+58", flag: "🇻🇪"),
+              Country(name: "Vietnam", dialCode: "+84", flag: "🇻🇳"),
+              Country(name: "Yemen", dialCode: "+967", flag: "🇾🇪"),
+              Country(name: "Zambia", dialCode: "+260", flag: "🇿🇲"),
+              Country(name: "Zimbabwe", dialCode: "+263", flag: "🇿🇼")
+          ]
           VIPEOF
 
       - name: Generate code - OnboardingView.swift
@@ -534,7 +729,7 @@ jobs:
           struct AuthView: View {
               @StateObject private var authManager = AuthManager()
               @State private var isLoginMode = true
-              @State private var email = ""
+              @State private var phoneNumber = ""
               @State private var username = ""
               @State private var password = ""
               @State private var confirmPassword = ""
@@ -543,6 +738,14 @@ jobs:
               @State private var isPasswordVisible = false
               @State private var isConfirmPasswordVisible = false
               @State private var showOnboarding = false
+
+              // Country picker
+              @State private var selectedCountry = countries.first(where: { $0.dialCode == "+966" }) ?? countries.first! // default Saudi Arabia
+              @State private var phoneNumberWithoutCode = ""
+
+              var fullPhoneNumber: String {
+                  selectedCountry.dialCode + phoneNumberWithoutCode
+              }
 
               var body: some View {
                   Group {
@@ -598,11 +801,44 @@ jobs:
                                   }
 
                                   VStack(spacing: 14) {
-                                      MockupField(icon: "person.fill", placeholder: "Username", text: $username)
+                                      // Phone number field with country picker
+                                      HStack(spacing: 0) {
+                                          // Country picker
+                                          Menu {
+                                              ForEach(countries) { country in
+                                                  Button {
+                                                      selectedCountry = country
+                                                  } label: {
+                                                      HStack {
+                                                          Text(country.flag)
+                                                          Text(country.dialCode)
+                                                          Text(country.name)
+                                                      }
+                                                  }
+                                              }
+                                          } label: {
+                                              HStack(spacing: 4) {
+                                                  Text(selectedCountry.flag)
+                                                  Text(selectedCountry.dialCode)
+                                                  Image(systemName: "chevron.down")
+                                                      .font(.system(size: 10))
+                                                      .foregroundColor(.xcodeSecondary)
+                                              }
+                                              .padding(.horizontal, 10)
+                                              .frame(height: 48)
+                                              .background(RoundedRectangle(cornerRadius: 10).fill(Color.xcodeEditor))
+                                          }
+                                          .padding(.trailing, 6)
 
-                                      if !isLoginMode {
-                                          MockupField(icon: "phone.fill", placeholder: "Mobile Number", text: $email, keyboard: .phonePad)
+                                          TextField("Phone number", text: $phoneNumberWithoutCode)
+                                              .font(.system(size: 14))
+                                              .keyboardType(.phonePad)
+                                              .padding(.horizontal, 14)
+                                              .frame(height: 48)
+                                              .background(RoundedRectangle(cornerRadius: 10).fill(Color.xcodeEditor))
                                       }
+
+                                      MockupField(icon: "person.fill", placeholder: "Username", text: $username)
 
                                       MockupSecureField(
                                           icon: "lock.fill",
@@ -661,11 +897,13 @@ jobs:
                                   Button {
                                       HapticManager.shared.impact(.medium)
                                       if isLoginMode {
-                                          _ = authManager.login(email: email, password: password)
+                                          _ = authManager.login(phoneNumber: fullPhoneNumber, password: password)
                                       } else {
                                           _ = authManager.signUp(
-                                              email: email, username: username,
-                                              password: password, confirmPassword: confirmPassword,
+                                              phoneNumber: fullPhoneNumber,
+                                              username: username,
+                                              password: password,
+                                              confirmPassword: confirmPassword,
                                               udid: udid
                                           )
                                       }
@@ -689,8 +927,11 @@ jobs:
                                       HapticManager.shared.selection()
                                       withAnimation(.spring()) {
                                           isLoginMode.toggle()
-                                          email = ""; username = ""; password = ""
-                                          confirmPassword = ""; udid = ""
+                                          phoneNumberWithoutCode = ""
+                                          username = ""
+                                          password = ""
+                                          confirmPassword = ""
+                                          udid = ""
                                           authManager.errorMessage = nil
                                       }
                                   } label: {
@@ -877,7 +1118,7 @@ jobs:
                               Text(user.username)
                                   .font(.system(size: 15, weight: .semibold))
                                   .foregroundColor(.xcodeSecondary)
-                              Text(user.email)
+                              Text(user.phoneNumber)
                                   .font(.system(size: 13))
                                   .foregroundColor(.xcodeSecondary)
                           }
@@ -914,7 +1155,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # BUILD
+      # BUILD (include new Countries.swift)
       # =========================================================
       - name: Build the app
         run: |
@@ -925,6 +1166,7 @@ jobs:
             HapticManager.swift \
             Models.swift \
             AuthManager.swift \
+            Countries.swift \
             OnboardingView.swift \
             AuthViews.swift \
             ContentView.swift \
