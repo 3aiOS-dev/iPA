@@ -1,4 +1,4 @@
-name: 21s Login Only (SwiftUI)
+name: 21s Login + Wallet (SwiftUI)
 
 on:
   push:
@@ -36,16 +36,19 @@ jobs:
       - name: Download project images
         run: |
           mkdir -p Resources
-          curl -L -o Resources/login_logo.png "https://up6.cc/2026/07/178463790906632.png"
-          curl -L -o Resources/register_logo.png "https://up6.cc/2026/07/178463790901181.png"
-          curl -L -o Resources/onboarding1.png "https://up6.cc/2026/07/178463910434943.png"
-          curl -L -o Resources/onboarding2.png "https://up6.cc/2026/07/178463910431782.png"
-          curl -L -o Resources/onboarding3.png "https://up6.cc/2026/07/178463910425551.png"
-          # new wallet onboarding images
+          # Auth / Onboarding
+          curl -L -o Resources/login_logo.png      "https://up6.cc/2026/07/178463790906632.png"
+          curl -L -o Resources/register_logo.png   "https://up6.cc/2026/07/178463790901181.png"
+          curl -L -o Resources/onboarding1.png    "https://up6.cc/2026/07/178463910434943.png"
+          curl -L -o Resources/onboarding2.png    "https://up6.cc/2026/07/178463910431782.png"
+          curl -L -o Resources/onboarding3.png    "https://up6.cc/2026/07/178463910425551.png"
+          # Wallet Onboarding
           curl -L -o Resources/wallet_onboarding1.png "https://up6.cc/2026/07/178465245780271.png"
           curl -L -o Resources/wallet_onboarding2.png "https://up6.cc/2026/07/178465245783232.png"
           curl -L -o Resources/wallet_onboarding3.png "https://up6.cc/2026/07/178465245783893.png"
-          file Resources/*.png
+          # Current Balance animation (GIF)
+          curl -L -o Resources/balance_animation.gif "https://up6.cc/2026/07/178465646193711.gif"
+          file Resources/*.png Resources/*.gif
           ls -lh Resources
 
       - name: Generate app icons from the logo image
@@ -146,7 +149,7 @@ jobs:
           PEOF
 
       # =========================================================
-      # SOURCE CODE — Login + Registration + Onboarding (Phone only)
+      # SOURCE CODE — Constants.swift
       # =========================================================
 
       - name: Generate code - Constants.swift
@@ -171,6 +174,7 @@ jobs:
               static let xcodeRed        = Color(red: 0.85, green: 0.28, blue: 0.25)
               static let xcodeSecondary  = Color(red: 0.55, green: 0.57, blue: 0.62)
               static let xcodeDivider    = Color(red: 0.90, green: 0.90, blue: 0.93)
+              static let storeAccent     = Color(red: 0.30, green: 0.43, blue: 0.58)
           }
 
           extension UIImage {
@@ -323,8 +327,8 @@ jobs:
                   isLoading = false
                   HapticManager.shared.success()
                   UserDefaults.standard.set(newUser.id.uuidString, forKey: "currentUserID")
-                  // Force onboarding to show after signup
                   UserDefaults.standard.set(false, forKey: AppConstants.hasSeenOnboardingKey)
+                  UserDefaults.standard.set(false, forKey: "hasSeenWalletOnboarding21s")
                   return true
               }
 
@@ -350,8 +354,8 @@ jobs:
                   isLoading = false
                   HapticManager.shared.success()
                   UserDefaults.standard.set(user.id.uuidString, forKey: "currentUserID")
-                  // Force onboarding to show after login
                   UserDefaults.standard.set(false, forKey: AppConstants.hasSeenOnboardingKey)
+                  UserDefaults.standard.set(false, forKey: "hasSeenWalletOnboarding21s")
                   return true
               }
 
@@ -749,9 +753,6 @@ jobs:
                                   .fullScreenCover(isPresented: $showOnboarding) {
                                       OnboardingView(isPresented: $showOnboarding)
                                   }
-                                  .onAppear {
-                                      // showOnboarding is already true, so cover will appear
-                                  }
                           } else {
                               ContentView(authManager: authManager)
                                   .transition(.opacity)
@@ -762,7 +763,6 @@ jobs:
                   }
                   .onChange(of: authManager.isAuthenticated) { newValue in
                       if newValue {
-                          // After authentication, always show onboarding first
                           let hasSeen = UserDefaults.standard.bool(forKey: AppConstants.hasSeenOnboardingKey)
                           if !hasSeen {
                               showOnboarding = true
@@ -1101,973 +1101,1478 @@ jobs:
       - name: Generate code - StoreView.swift
         run: |
           cat > StoreView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-
-          // ================= Store Design Tokens =================
-          extension Color {
-              static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
-              static let storeCard      = Color.white
-              static let storePrimary   = Color(red: 0.24, green: 0.36, blue: 0.98) // vivid blue
-              static let storePrimaryDk = Color(red: 0.18, green: 0.27, blue: 0.82)
-              static let storePink      = Color(red: 0.96, green: 0.35, blue: 0.55)
-              static let storeYellow    = Color(red: 1.00, green: 0.78, blue: 0.20)
-              static let storeCyan      = Color(red: 0.30, green: 0.80, blue: 0.90)
-              static let storeText      = Color(red: 0.08, green: 0.10, blue: 0.20)
-              static let storeSub       = Color(red: 0.55, green: 0.58, blue: 0.66)
-              static let storeDivider   = Color(red: 0.92, green: 0.93, blue: 0.97)
-              static let storeBeta      = Color.orange
-          }
-
-          // ================= Models =================
-          struct StoreApp: Identifiable, Hashable {
-              let id = UUID()
-              let name: String
-              let category: String
-              let size: String
-              let rating: Double
-              let downloads: String
-              let color: Color
-              let icon: String
-              let price: String
-              let featured: Bool
-          }
-
-          final class StoreCatalog {
-              static let popular: [StoreApp] = [
-                  .init(name: "SnapChat Pro", category: "Social - Camera", size: "180 MB", rating: 4.7, downloads: "5M+", color: .storeYellow, icon: "camera.fill", price: "Free", featured: true),
-                  .init(name: "WhatsApp++", category: "Messaging - Tools", size: "220 MB", rating: 4.8, downloads: "10M+", color: .green, icon: "message.fill", price: "Free", featured: true),
-                  .init(name: "Instagram+", category: "Social - Photo", size: "160 MB", rating: 4.6, downloads: "8M+", color: .storePink, icon: "photo.on.rectangle.angled", price: "Free", featured: true),
-                  .init(name: "TikTok 21", category: "Video - Social", size: "260 MB", rating: 4.5, downloads: "6M+", color: .storeText, icon: "play.rectangle.fill", price: "Free", featured: true)
-              ]
-              static let flash: [StoreApp] = [
-                  .init(name: "Spotify++", category: "Music", size: "140 MB", rating: 4.9, downloads: "3M+", color: Color(red: 0.11, green: 0.72, blue: 0.36), icon: "music.note", price: "Free", featured: false),
-                  .init(name: "YouTube Vanced", category: "Video", size: "180 MB", rating: 4.8, downloads: "9M+", color: .storePink, icon: "play.circle.fill", price: "Free", featured: false),
-                  .init(name: "Netflix Pro", category: "Streaming", size: "200 MB", rating: 4.7, downloads: "4M+", color: Color(red: 0.85, green: 0.10, blue: 0.15), icon: "film.fill", price: "Free", featured: false),
-                  .init(name: "Telegram X", category: "Messaging", size: "90 MB", rating: 4.6, downloads: "7M+", color: .storeCyan, icon: "paperplane.fill", price: "Free", featured: false)
-              ]
-              static let wishlist: [StoreApp] = popular + flash
-          }
-
-          // ================= Root Shell =================
-          struct StoreRootView: View {
-              @ObservedObject var authManager: AuthManager
-              @State private var tab: Int = 0
-              @State private var showSearch = false
-
-              var body: some View {
-                  ZStack(alignment: .bottom) {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
-
-                      Group {
-                          switch tab {
-                          case 0: StoreHomeView()
-                          case 1: WalletView(authManager: authManager) // modified
-                          case 2: AlertsView()
-                          case 3: SocialView(authManager: authManager)
-                          default: StoreHomeView()
-                          }
-                      }
-                      .padding(.bottom, 90)
-
-                      StoreTabBar(tab: $tab, onSearch: { showSearch = true })
-                  }
-                  .sheet(isPresented: $showSearch) { SearchView() }
-                  .preferredColorScheme(.light)
-              }
-          }
-
-          // ================= Tab Bar =================
-          struct StoreTabBar: View {
-              @Binding var tab: Int
-              var onSearch: () -> Void
-
-              var body: some View {
-                  ZStack {
-                      HStack {
-                          tabItem(icon: "house.fill", label: "Home", index: 0)
-                          tabItem(icon: "creditcard.fill", label: "Wallet", index: 1)
-                          Spacer().frame(width: 70)
-                          tabItem(icon: "bell.fill", label: "Alerts", index: 2)
-                          tabItem(icon: "person.2.fill", label: "Social", index: 3)
-                      }
-                      .padding(.horizontal, 24)
-                      .padding(.vertical, 14)
-                      .background(
-                          RoundedRectangle(cornerRadius: 28)
-                              .fill(Color.storeCard)
-                              .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: -2)
-                      )
-                      .padding(.horizontal, 12)
-
-                      Button(action: { HapticManager.shared.impact(.light); onSearch() }) {
-                          Image(systemName: "magnifyingglass")
-                              .font(.system(size: 20, weight: .bold))
-                              .foregroundColor(.white)
-                              .frame(width: 58, height: 58)
-                              .background(Circle().fill(Color.storePrimary))
-                              .shadow(color: Color.storePrimary.opacity(0.35), radius: 10, y: 6)
-                      }
-                      .offset(y: -18)
-                  }
-                  .padding(.bottom, 16)
-              }
-
-              @ViewBuilder
-              private func tabItem(icon: String, label: String, index: Int) -> some View {
-                  Button {
-                      HapticManager.shared.selection()
-                      tab = index
-                  } label: {
-                      VStack(spacing: 4) {
-                          Image(systemName: icon)
-                              .font(.system(size: 18, weight: .semibold))
-                          Text(label).font(.system(size: 11, weight: .medium))
-                      }
-                      .foregroundColor(tab == index ? .storePrimary : .storeSub)
-                      .frame(maxWidth: .infinity)
-                  }
-              }
-          }
-
-          // ================= Home Tab =================
-          struct StoreHomeView: View {
-              var body: some View {
-                  ScrollView(showsIndicators: false) {
-                      VStack(spacing: 22) {
-                          StoreHeader(title: "Store")
-                          DiscountBanner()
-                          SectionHeader(title: "Popular Apps")
-                          LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
-                              ForEach(StoreCatalog.popular) { app in
-                                  NavigationLink(value: app) { AppTile(app: app) }
-                                      .buttonStyle(.plain)
-                              }
-                          }
-                          .padding(.horizontal, 20)
-
-                          SectionHeader(title: "Flash Apps")
-                          ScrollView(.horizontal, showsIndicators: false) {
-                              HStack(spacing: 14) {
-                                  ForEach(StoreCatalog.flash) { app in
-                                      FlashCard(app: app)
-                                  }
-                              }
-                              .padding(.horizontal, 20)
-                          }
-                          Spacer(minLength: 12)
-                      }
-                      .padding(.top, 8)
-                  }
-                  .background(NavigationDestinationHost())
-              }
-          }
-
-          // Wrap navigation for iOS16
-          struct NavigationDestinationHost: View {
-              var body: some View { EmptyView() }
-          }
-
-          // ================= Header =================
-          struct StoreHeader: View {
-              let title: String
-              var body: some View {
-                  HStack {
-                      Button { } label: {
-                          Image(systemName: "line.3.horizontal")
-                              .font(.system(size: 18, weight: .semibold))
-                              .foregroundColor(.storeText)
-                              .frame(width: 42, height: 42)
-                              .background(Circle().fill(Color.storeCard))
-                              .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
-                      }
-                      Spacer()
-                      Text(title)
-                          .font(.system(size: 18, weight: .bold))
-                          .foregroundColor(.storeText)
-                      Spacer()
-                      HStack(spacing: 10) {
-                          IconChip(icon: "bell.fill", badge: true)
-                          IconChip(icon: "magnifyingglass", badge: false)
-                      }
-                  }
-                  .padding(.horizontal, 20)
-                  .padding(.top, 8)
-              }
-          }
-
-          struct IconChip: View {
-              let icon: String
-              let badge: Bool
-              var body: some View {
-                  ZStack(alignment: .topTrailing) {
-                      Image(systemName: icon)
-                          .font(.system(size: 15, weight: .semibold))
-                          .foregroundColor(.storeText)
-                          .frame(width: 40, height: 40)
-                          .background(Circle().fill(Color.storeCard))
-                          .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
-                      if badge {
-                          Circle().fill(Color.storePink).frame(width: 8, height: 8).offset(x: -8, y: 8)
-                      }
-                  }
-              }
-          }
-
-          // ================= Discount Banner =================
-          struct DiscountBanner: View {
-              var body: some View {
-                  ZStack(alignment: .leading) {
-                      RoundedRectangle(cornerRadius: 22)
-                          .fill(LinearGradient(colors: [.storePrimary, .storePrimaryDk], startPoint: .leading, endPoint: .trailing))
-                          .frame(height: 150)
-                          .shadow(color: Color.storePrimary.opacity(0.3), radius: 16, y: 8)
-
-                      // bubbles
-                      Circle().fill(Color.white.opacity(0.1)).frame(width: 120, height: 120).offset(x: 220, y: -20)
-                      Circle().fill(Color.white.opacity(0.08)).frame(width: 60, height: 60).offset(x: 180, y: 40)
-
-                      HStack {
-                          VStack(alignment: .leading, spacing: 8) {
-                              Text("Weekly Offer")
-                                  .font(.system(size: 12, weight: .semibold))
-                                  .foregroundColor(.white.opacity(0.85))
-                              Text("DISCOUNT")
-                                  .font(.system(size: 26, weight: .heavy))
-                                  .foregroundColor(.white)
-                              Text("50% OFF")
-                                  .font(.system(size: 22, weight: .black))
-                                  .foregroundColor(.storeYellow)
-                          }
-                          Spacer()
-                          Image(systemName: "sparkles")
-                              .font(.system(size: 46))
-                              .foregroundColor(.white.opacity(0.9))
-                              .padding(.trailing, 24)
-                      }
-                      .padding(.horizontal, 24)
-                  }
-                  .padding(.horizontal, 20)
-              }
-          }
-
-          // ================= Section Header =================
-          struct SectionHeader: View {
-              let title: String
-              var body: some View {
-                  HStack {
-                      Text(title)
-                          .font(.system(size: 16, weight: .bold))
-                          .foregroundColor(.storeText)
-                      Spacer()
-                      Text("All")
-                          .font(.system(size: 13, weight: .semibold))
-                          .foregroundColor(.storePrimary)
-                  }
-                  .padding(.horizontal, 20)
-              }
-          }
-
-          // ================= App Tile (grid) =================
-          struct AppTile: View {
-              let app: StoreApp
-              @State private var pushed = false
-              var body: some View {
-                  VStack(spacing: 8) {
-                      ZStack {
-                          RoundedRectangle(cornerRadius: 16)
-                              .fill(app.color.opacity(0.15))
-                              .frame(height: 72)
-                          Image(systemName: app.icon)
-                              .font(.system(size: 26, weight: .bold))
-                              .foregroundColor(app.color)
-                      }
-                      Text(app.name)
-                          .font(.system(size: 11, weight: .semibold))
-                          .foregroundColor(.storeText)
-                          .lineLimit(1)
-                  }
-                  .onTapGesture {
-                      HapticManager.shared.selection()
-                      pushed = true
-                  }
-                  .background(
-                      NavigationLink(destination: AppDetailView(app: app), isActive: $pushed) { EmptyView() }.hidden()
-                  )
-              }
-          }
-
-          // ================= Flash Card =================
-          struct FlashCard: View {
-              let app: StoreApp
-              @State private var pushed = false
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 8) {
-                      ZStack(alignment: .topTrailing) {
-                          RoundedRectangle(cornerRadius: 18)
-                              .fill(LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.6)],
-                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
-                              .frame(width: 150, height: 110)
-                          Image(systemName: app.icon)
-                              .font(.system(size: 44))
-                              .foregroundColor(.white.opacity(0.95))
-                              .padding(14)
-                      }
-                      Text(app.name)
-                          .font(.system(size: 13, weight: .semibold))
-                          .foregroundColor(.storeText)
-                      Text(app.category)
-                          .font(.system(size: 11))
-                          .foregroundColor(.storeSub)
-                  }
-                  .frame(width: 150)
-                  .onTapGesture {
-                      HapticManager.shared.selection()
-                      pushed = true
-                  }
-                  .background(
-                      NavigationLink(destination: AppDetailView(app: app), isActive: $pushed) { EmptyView() }.hidden()
-                  )
-              }
-          }
-
-          // ================= App Detail =================
-          struct AppDetailView: View {
-              let app: StoreApp
-              @Environment(\.dismiss) private var dismiss
-
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 0) {
-                          // Hero
-                          ZStack(alignment: .topLeading) {
-                              LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.5)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing)
-                                  .frame(height: 260)
-                                  .clipShape(RoundedCorner(radius: 30, corners: [.bottomLeft, .bottomRight]))
-                              HStack {
-                                  Button { dismiss() } label: {
-                                      Image(systemName: "arrow.left")
-                                          .font(.system(size: 16, weight: .bold))
-                                          .foregroundColor(.storeText)
-                                          .frame(width: 40, height: 40)
-                                          .background(Circle().fill(Color.white))
-                                  }
-                                  Spacer()
-                                  IconChip(icon: "bell.fill", badge: true)
-                                  IconChip(icon: "magnifyingglass", badge: false)
-                              }
-                              .padding(.horizontal, 20)
-                              .padding(.top, 8)
-
-                              Image(systemName: app.icon)
-                                  .font(.system(size: 100))
-                                  .foregroundColor(.white.opacity(0.9))
-                                  .frame(maxWidth: .infinity, alignment: .center)
-                                  .padding(.top, 70)
-                          }
-
-                          // Info card
-                          HStack(spacing: 14) {
-                              ZStack {
-                                  RoundedRectangle(cornerRadius: 16).fill(app.color.opacity(0.2)).frame(width: 70, height: 70)
-                                  Image(systemName: app.icon).font(.system(size: 30)).foregroundColor(app.color)
-                              }
-                              VStack(alignment: .leading, spacing: 4) {
-                                  Text(app.name).font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
-                                  Text(app.category).font(.system(size: 12, weight: .semibold)).foregroundColor(.storePink)
-                                  Text("In-app purchases").font(.system(size: 11)).foregroundColor(.storeSub)
-                              }
-                              Spacer()
-                              Button { HapticManager.shared.success() } label: {
-                                  Text("Install")
-                                      .font(.system(size: 13, weight: .bold))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 20).padding(.vertical, 10)
-                                      .background(Capsule().fill(Color.storePrimary))
-                              }
-                          }
-                          .padding(16)
-                          .background(RoundedRectangle(cornerRadius: 20).fill(Color.storeCard).shadow(color: .black.opacity(0.06), radius: 12, y: 4))
-                          .padding(.horizontal, 20)
-                          .offset(y: -40)
-
-                          // Stats
-                          HStack {
-                              StatCell(top: "\(String(format: "%.1f", app.rating))★", bottom: "\(app.downloads) review")
-                              Divider().frame(height: 40)
-                              StatCell(top: "\(app.size)", bottom: "Size")
-                              Divider().frame(height: 40)
-                              StatCell(top: app.downloads, bottom: "Downloads")
-                          }
-                          .padding(.horizontal, 30)
-                          .offset(y: -20)
-
-                          // Description
-                          VStack(alignment: .leading, spacing: 10) {
-                              HStack {
-                                  Text("About").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText)
-                                  Spacer()
-                              }
-                              Text("Enjoy the premium unlocked version of \(app.name) with all features enabled. Exclusive on 21s Store — the private apps marketplace tailored for you.")
-                                  .font(.system(size: 13))
-                                  .foregroundColor(.storeSub)
-                                  .lineSpacing(4)
-
-                              HStack { Text("Features").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText); Spacer() }
-                                  .padding(.top, 6)
-
-                              ForEach(featureLines.indices, id: \.self) { i in
-                                  FeatureRow(index: i + 1, text: featureLines[i], color: featureColors[i % featureColors.count])
-                              }
-                          }
-                          .padding(.horizontal, 20)
-                          .padding(.top, 4)
-                          .padding(.bottom, 40)
-                      }
-                  }
-                  .background(Color.storeBg.ignoresSafeArea())
-                  .navigationBarHidden(true)
-              }
-
-              private var featureLines: [String] {
-                  ["Ad-free premium experience", "Extra unlocked themes", "Priority customer support"]
-              }
-              private var featureColors: [Color] { [.storePrimary, .storePink, .storeCyan] }
-          }
-
-          struct StatCell: View {
-              let top: String
-              let bottom: String
-              var body: some View {
-                  VStack(spacing: 4) {
-                      Text(top).font(.system(size: 15, weight: .bold)).foregroundColor(.storeText)
-                      Text(bottom).font(.system(size: 11)).foregroundColor(.storeSub)
-                  }
-                  .frame(maxWidth: .infinity)
-              }
-          }
-
-          struct FeatureRow: View {
-              let index: Int
-              let text: String
-              let color: Color
-              var body: some View {
-                  HStack(spacing: 12) {
-                      ZStack {
-                          Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40)
-                          Image(systemName: "crown.fill").foregroundColor(color)
-                      }
-                      Text(text).font(.system(size: 13, weight: .medium)).foregroundColor(.storeText)
-                      Spacer()
-                      Text("Ready")
-                          .font(.system(size: 11, weight: .bold))
-                          .foregroundColor(color)
-                          .padding(.horizontal, 10).padding(.vertical, 6)
-                          .background(Capsule().fill(color.opacity(0.15)))
-                  }
-                  .padding(12)
-                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-              }
-          }
-
-          // rounded specific corners
-          struct RoundedCorner: Shape {
-              var radius: CGFloat
-              var corners: UIRectCorner
-              func path(in rect: CGRect) -> Path {
-                  let p = UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
-                                       cornerRadii: CGSize(width: radius, height: radius))
-                  return Path(p.cgPath)
-              }
-          }
-
-          // ===================== WALLET ONBOARDING =====================
-          struct WalletOnboardingView: View {
-              @Binding var hasSeen: Bool
-              @State private var currentPage = 0
-
-              private let pages: [WalletOnboardingPage] = [
-                  .init(imageName: "wallet_onboarding1.png",
-                        title: "Secure Wallet",
-                        description: "Your funds are protected with advanced security measures."),
-                  .init(imageName: "wallet_onboarding2.png",
-                        title: "Instant Payments",
-                        description: "Send and receive money in seconds with zero fees."),
-                  .init(imageName: "wallet_onboarding3.png",
-                        title: "Beta Version",
-                        description: "You are using the BETA version of 21s Wallet. Enjoy exclusive features!")
-              ]
-
-              var body: some View {
-                  ZStack {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
-
-                      VStack(spacing: 0) {
-                          TabView(selection: $currentPage) {
-                              ForEach(pages.indices, id: \.self) { idx in
-                                  WalletOnboardingPageView(page: pages[idx])
-                                      .tag(idx)
-                              }
-                          }
-                          .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-                          .animation(.easeInOut, value: currentPage)
-
-                          HStack(spacing: 8) {
-                              ForEach(pages.indices, id: \.self) { idx in
-                                  Circle()
-                                      .fill(currentPage == idx ? Color.storePrimary : Color.storeDivider)
-                                      .frame(width: 8, height: 8)
-                                      .onTapGesture { withAnimation { currentPage = idx } }
-                              }
-                          }
-                          .padding(.top, 20)
-
-                          Button {
-                              if currentPage < pages.count - 1 {
-                                  withAnimation { currentPage += 1 }
-                              } else {
-                                  hasSeen = true
-                                  UserDefaults.standard.set(true, forKey: "hasSeenWalletOnboarding")
-                              }
-                          } label: {
-                              HStack {
-                                  Text(currentPage == pages.count - 1 ? "Open Wallet" : "Next")
-                                      .font(.system(size: 16, weight: .semibold))
-                                  if currentPage < pages.count - 1 {
-                                      Image(systemName: "chevron.right")
-                                          .font(.system(size: 14, weight: .medium))
-                                  }
-                              }
-                              .foregroundColor(.white)
-                              .frame(maxWidth: .infinity)
-                              .frame(height: 54)
-                              .background(Capsule().fill(Color.storePrimary))
-                          }
-                          .padding(.horizontal, 28)
-                          .padding(.top, 20)
-                          .padding(.bottom, 40)
-                      }
-                  }
-                  .preferredColorScheme(.light)
-              }
-          }
-
-          struct WalletOnboardingPage: Identifiable {
-              let id = UUID()
-              let imageName: String
-              let title: String
-              let description: String
-          }
-
-          struct WalletOnboardingPageView: View {
-              let page: WalletOnboardingPage
-
-              var body: some View {
-                  VStack(spacing: 20) {
-                      if let img = UIImage.bundled(page.imageName) {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(contentMode: .fit)
-                              .frame(width: 280, height: 280)
-                              .padding(.top, 40)
-                      } else {
-                          Image(systemName: "photo")
-                              .font(.system(size: 80))
-                              .foregroundColor(.storePrimary)
-                              .padding(.top, 40)
-                      }
-
-                      Text(page.title)
-                          .font(.system(size: 28, weight: .bold))
-                          .foregroundColor(.storeText)
-                          .multilineTextAlignment(.center)
-
-                      Text(page.description)
-                          .font(.system(size: 16))
-                          .foregroundColor(.storeSub)
-                          .multilineTextAlignment(.center)
-                          .padding(.horizontal, 32)
-
-                      Spacer()
-                  }
-                  .padding(.horizontal, 16)
-              }
-          }
-
-          // ===================== WALLET CONTENT =====================
-          struct WalletContentView: View {
-              @ObservedObject var authManager: AuthManager
-              @State private var copied = false
-
-              // Generate a fake card number (16 digits) and store it in UserDefaults.
-              private var cardNumber: String {
-                  get {
-                      if let stored = UserDefaults.standard.string(forKey: "walletCardNumber") {
-                          return stored
-                      }
-                      let new = generateCardNumber()
-                      UserDefaults.standard.set(new, forKey: "walletCardNumber")
-                      return new
-                  }
-              }
-
-              private func generateCardNumber() -> String {
-                  var digits = ""
-                  for _ in 0..<16 {
-                      digits += "\(Int.random(in: 0...9))"
-                  }
-                  // format as 4 groups of 4 using String.Index (fixed)
-                  var groups: [String] = []
-                  var index = digits.startIndex
-                  while index < digits.endIndex {
-                      let end = digits.index(index, offsetBy: 4, limitedBy: digits.endIndex) ?? digits.endIndex
-                      groups.append(String(digits[index..<end]))
-                      index = end
-                  }
-                  return groups.joined(separator: " ")
-              }
-
-              private var expiryDate: String {
-                  let month = Int.random(in: 1...12)
-                  let year = Int.random(in: 25...28)
-                  return String(format: "%02d/%d", month, year)
-              }
-
-              private var cvv: String {
-                  String(format: "%03d", Int.random(in: 0...999))
-              }
-
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 22) {
-                          // Header with BETA badge
-                          HStack {
-                              Text("Wallet")
-                                  .font(.system(size: 18, weight: .bold))
-                                  .foregroundColor(.storeText)
-                              Spacer()
-                              HStack(spacing: 6) {
-                                  Text("BETA")
-                                      .font(.system(size: 11, weight: .heavy))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 10)
-                                      .padding(.vertical, 4)
-                                      .background(Capsule().fill(Color.storeBeta))
-                                  IconChip(icon: "bell.fill", badge: true)
-                                  IconChip(icon: "magnifyingglass", badge: false)
-                              }
-                          }
-                          .padding(.horizontal, 20)
-                          .padding(.top, 8)
-
-                          // Credit Card UI
-                          VStack(alignment: .leading, spacing: 10) {
-                              HStack {
-                                  Text("💳")
-                                      .font(.largeTitle)
-                                  Spacer()
-                                  Text("21s")
-                                      .font(.headline)
-                                      .foregroundColor(.white.opacity(0.8))
-                              }
-                              .padding(.horizontal, 4)
-
-                              Text(authManager.currentUser?.username ?? "User")
-                                  .font(.headline)
-                                  .foregroundColor(.white)
-
-                              Text(cardNumber)
-                                  .font(.system(.title3, design: .monospaced))
-                                  .foregroundColor(.white)
-                                  .padding(.vertical, 4)
-
-                              HStack {
-                                  VStack(alignment: .leading) {
-                                      Text("EXPIRY")
-                                          .font(.caption2)
-                                          .foregroundColor(.white.opacity(0.7))
-                                      Text(expiryDate)
-                                          .font(.subheadline)
-                                          .foregroundColor(.white)
-                                  }
-                                  Spacer()
-                                  VStack(alignment: .trailing) {
-                                      Text("CVV")
-                                          .font(.caption2)
-                                          .foregroundColor(.white.opacity(0.7))
-                                      Text(cvv)
-                                          .font(.subheadline)
-                                          .foregroundColor(.white)
-                                  }
-                              }
-                          }
-                          .padding(20)
-                          .background(
-                              LinearGradient(colors: [Color.storePrimary, Color.storePrimaryDk],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing)
-                          )
-                          .cornerRadius(20)
-                          .shadow(color: Color.storePrimary.opacity(0.4), radius: 12, y: 6)
-                          .padding(.horizontal, 20)
-
-                          // User ID section
-                          VStack(alignment: .leading, spacing: 8) {
-                              HStack {
-                                  Text("User ID")
-                                      .font(.headline)
-                                      .foregroundColor(.storeText)
-                                  Spacer()
-                                  Text("🔒 Private")
-                                      .font(.caption)
-                                      .foregroundColor(.storeSub)
-                              }
-
-                              HStack {
-                                  Text(authManager.currentUser?.id.uuidString ?? "N/A")
-                                      .font(.system(.body, design: .monospaced))
-                                      .foregroundColor(.storeSub)
-                                      .lineLimit(1)
-                                      .truncationMode(.middle)
-                                  Spacer()
-                                  Button {
-                                      UIPasteboard.general.string = authManager.currentUser?.id.uuidString
-                                      HapticManager.shared.success()
-                                      copied = true
-                                      DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
-                                  } label: {
-                                      HStack(spacing: 4) {
-                                          Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc.fill")
-                                          Text(copied ? "Copied" : "Copy")
-                                      }
-                                      .font(.system(size: 12, weight: .medium))
-                                      .foregroundColor(.storePrimary)
-                                      .padding(.horizontal, 12)
-                                      .padding(.vertical, 6)
-                                      .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
-                                  }
-                              }
-                              .padding(12)
-                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-
-                              // Warning about sharing
-                              HStack(spacing: 6) {
-                                  Image(systemName: "exclamationmark.triangle.fill")
-                                      .foregroundColor(.storeBeta)
-                                  Text("Do not share this ID with anyone. It uniquely identifies your account.")
-                                      .font(.system(size: 12))
-                                      .foregroundColor(.storeSub)
-                              }
-                              .padding(.horizontal, 4)
-                          }
-                          .padding(.horizontal, 20)
-
-                          // Balance (existing)
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 24)
-                                  .fill(LinearGradient(colors: [.storePrimary, .storePrimaryDk], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  .frame(height: 160)
-                                  .shadow(color: Color.storePrimary.opacity(0.3), radius: 16, y: 8)
-                              VStack(alignment: .leading, spacing: 10) {
-                                  HStack {
-                                      Text("Current Balance").font(.system(size: 13)).foregroundColor(.white.opacity(0.8))
-                                      Spacer()
-                                      Image(systemName: "creditcard.fill").foregroundColor(.white)
-                                  }
-                                  Text("$248.00").font(.system(size: 34, weight: .heavy)).foregroundColor(.white)
-                                  Spacer()
-                                  HStack {
-                                      Text("21s • VIP").font(.system(size: 12, weight: .bold)).foregroundColor(.storeYellow)
-                                      Spacer()
-                                      Text("**** 2145").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                                  }
-                              }
-                              .padding(22)
-                          }
-                          .padding(.horizontal, 20)
-
-                          // Recent activity (placeholder)
-                          SectionHeader(title: "Recent Activity")
-                          VStack(spacing: 10) {
-                              ForEach(0..<3) { i in
-                                  HStack {
-                                      ZStack {
-                                          Circle().fill(Color.storePrimary.opacity(0.15)).frame(width: 44, height: 44)
-                                          Image(systemName: "app.badge").foregroundColor(.storePrimary)
-                                      }
-                                      VStack(alignment: .leading) {
-                                          Text("App Purchase #\(1000 + i)").font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
-                                          Text("Today").font(.system(size: 11)).foregroundColor(.storeSub)
-                                      }
-                                      Spacer()
-                                      Text("-$\(9 + i).99").font(.system(size: 13, weight: .bold)).foregroundColor(.storePink)
-                                  }
-                                  .padding(12)
-                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                              }
-                          }
-                          .padding(.horizontal, 20)
-
-                          Spacer(minLength: 30)
-                      }
-                      .padding(.bottom, 90)
-                  }
-                  .background(Color.storeBg.ignoresSafeArea())
-              }
-          }
-
-          // ================= WALLET WRAPPER =================
-          struct WalletView: View {
-              @ObservedObject var authManager: AuthManager
-              @AppStorage("hasSeenWalletOnboarding") private var hasSeenWalletOnboarding = false
-
-              var body: some View {
-                  if hasSeenWalletOnboarding {
-                      WalletContentView(authManager: authManager)
-                  } else {
-                      WalletOnboardingView(hasSeen: $hasSeenWalletOnboarding)
-                  }
-              }
-          }
-
-          // ================= OTHER TABS =================
-          // (AlertsView, SocialView, SearchView remain mostly unchanged, but SocialView uses authManager)
-
-          // ================= Alerts Tab =================
-          struct AlertsView: View {
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 14) {
-                          StoreHeader(title: "Alerts")
-                          ForEach(0..<6) { i in
-                              HStack(spacing: 12) {
-                                  ZStack {
-                                      Circle().fill(Color.storePink.opacity(0.15)).frame(width: 44, height: 44)
-                                      Image(systemName: "bell.badge.fill").foregroundColor(.storePink)
-                                  }
-                                  VStack(alignment: .leading, spacing: 3) {
-                                      Text("New app available").font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
-                                      Text("Update #\(i + 1) is ready to install now.").font(.system(size: 11)).foregroundColor(.storeSub)
-                                  }
-                                  Spacer()
-                              }
-                              .padding(12)
-                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                              .padding(.horizontal, 20)
-                          }
-                      }
-                      .padding(.top, 8)
-                  }
-              }
-          }
-
-          // ================= Social / Profile Tab =================
-          struct SocialView: View {
-              @ObservedObject var authManager: AuthManager
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 20) {
-                          StoreHeader(title: "Profile")
-                          VStack(spacing: 12) {
-                              ZStack {
-                                  Circle().fill(Color.storePrimary.opacity(0.15)).frame(width: 90, height: 90)
-                                  Image(systemName: "person.fill").font(.system(size: 40)).foregroundColor(.storePrimary)
-                              }
-                              Text(authManager.currentUser?.username ?? "User")
-                                  .font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
-                              Text(authManager.currentUser?.phoneNumber ?? "")
-                                  .font(.system(size: 12)).foregroundColor(.storeSub)
-                          }
-
-                          VStack(spacing: 10) {
-                              ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
-                              ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
-                              ProfileRow(icon: "gearshape.fill", label: "Settings", color: .storeCyan)
-                              Button {
-                                  HapticManager.shared.impact(.light)
-                                  authManager.logout()
-                              } label: {
-                                  HStack {
-                                      Image(systemName: "arrow.right.square.fill").foregroundColor(.white)
-                                      Text("Log out").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
-                                  }
-                                  .frame(maxWidth: .infinity).frame(height: 48)
-                                  .background(Capsule().fill(Color.storePink))
-                              }
-                              .padding(.top, 6)
-                          }
-                          .padding(.horizontal, 20)
-                      }
-                      .padding(.top, 8)
-                  }
-              }
-          }
-
-          struct ProfileRow: View {
-              let icon: String
-              let label: String
-              let color: Color
-              var body: some View {
-                  HStack {
-                      ZStack { Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40); Image(systemName: icon).foregroundColor(color) }
-                      Text(label).font(.system(size: 14, weight: .semibold)).foregroundColor(.storeText)
-                      Spacer()
-                      Image(systemName: "chevron.right").foregroundColor(.storeSub)
-                  }
-                  .padding(12)
-                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-              }
-          }
-
-          // ================= Search =================
-          struct SearchView: View {
-              @Environment(\.dismiss) private var dismiss
-              @State private var query = ""
-              var results: [StoreApp] {
-                  if query.isEmpty { return StoreCatalog.wishlist }
-                  return StoreCatalog.wishlist.filter { $0.name.lowercased().contains(query.lowercased()) }
-              }
-              var body: some View {
-                  NavigationView {
-                      VStack {
-                          HStack {
-                              Image(systemName: "magnifyingglass").foregroundColor(.storeSub)
-                              TextField("Search apps...", text: $query)
-                          }
-                          .padding(14)
-                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeBg))
-                          .padding(.horizontal, 16).padding(.top, 8)
-
-                          ScrollView {
-                              LazyVStack(spacing: 10) {
-                                  ForEach(results) { app in
-                                      HStack {
-                                          ZStack { RoundedRectangle(cornerRadius: 12).fill(app.color.opacity(0.15)).frame(width: 50, height: 50); Image(systemName: app.icon).foregroundColor(app.color) }
-                                          VStack(alignment: .leading) {
-                                              Text(app.name).font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
-                                              Text("\(app.category) · \(app.size)").font(.system(size: 11)).foregroundColor(.storeSub)
-                                          }
-                                          Spacer()
-                                          Text("\(String(format: "%.1f", app.rating))★").font(.system(size: 12, weight: .bold)).foregroundColor(.storeYellow)
-                                      }
-                                      .padding(10)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                                  }
-                              }
-                              .padding(.horizontal, 16)
-                          }
-                      }
-                      .background(Color.storeBg.ignoresSafeArea())
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .principal) { Text("Search").font(.system(size: 15, weight: .bold)) }
-                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
-                      }
-                  }
-                  .preferredColorScheme(.light)
-              }
-          }
+                    import SwiftUI
+                    
+                    // ================= Store Design Tokens =================
+                    extension Color {
+                        static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
+                        static let storeCard      = Color.white
+                        static let storePrimary   = Color(red: 0.24, green: 0.36, blue: 0.98) // vivid blue
+                        static let storePrimaryDk = Color(red: 0.18, green: 0.27, blue: 0.82)
+                        static let storePink      = Color(red: 0.96, green: 0.35, blue: 0.55)
+                        static let storeYellow    = Color(red: 1.00, green: 0.78, blue: 0.20)
+                        static let storeCyan      = Color(red: 0.30, green: 0.80, blue: 0.90)
+                        static let storeText      = Color(red: 0.08, green: 0.10, blue: 0.20)
+                        static let storeSub       = Color(red: 0.55, green: 0.58, blue: 0.66)
+                        static let storeDivider   = Color(red: 0.92, green: 0.93, blue: 0.97)
+                        static let betaOrange     = Color(red: 1.00, green: 0.55, blue: 0.10)
+                        static let walletGreen    = Color(red: 0.20, green: 0.65, blue: 0.40)
+                        static let walletDark     = Color(red: 0.10, green: 0.18, blue: 0.12)
+                        static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
+                    }
+                    
+                    // ================= Models =================
+                    struct StoreApp: Identifiable, Hashable {
+                        let id = UUID()
+                        let name: String
+                        let category: String
+                        let size: String
+                        let rating: Double
+                        let downloads: String
+                        let color: Color
+                        let icon: String
+                        let price: String
+                        let featured: Bool
+                    }
+                    
+                    final class StoreCatalog {
+                        static let popular: [StoreApp] = [
+                            .init(name: "SnapChat Pro", category: "Social - Camera", size: "180 MB", rating: 4.7, downloads: "5M+", color: .storeYellow, icon: "camera.fill", price: "Free", featured: true),
+                            .init(name: "WhatsApp++", category: "Messaging - Tools", size: "220 MB", rating: 4.8, downloads: "10M+", color: .green, icon: "message.fill", price: "Free", featured: true),
+                            .init(name: "Instagram+", category: "Social - Photo", size: "160 MB", rating: 4.6, downloads: "8M+", color: .storePink, icon: "photo.on.rectangle.angled", price: "Free", featured: true),
+                            .init(name: "TikTok 21", category: "Video - Social", size: "260 MB", rating: 4.5, downloads: "6M+", color: .storeText, icon: "play.rectangle.fill", price: "Free", featured: true)
+                        ]
+                        static let flash: [StoreApp] = [
+                            .init(name: "Spotify++", category: "Music", size: "140 MB", rating: 4.9, downloads: "3M+", color: Color(red: 0.11, green: 0.72, blue: 0.36), icon: "music.note", price: "Free", featured: false),
+                            .init(name: "YouTube Vanced", category: "Video", size: "180 MB", rating: 4.8, downloads: "9M+", color: .storePink, icon: "play.circle.fill", price: "Free", featured: false),
+                            .init(name: "Netflix Pro", category: "Streaming", size: "200 MB", rating: 4.7, downloads: "4M+", color: Color(red: 0.85, green: 0.10, blue: 0.15), icon: "film.fill", price: "Free", featured: false),
+                            .init(name: "Telegram X", category: "Messaging", size: "90 MB", rating: 4.6, downloads: "7M+", color: .storeCyan, icon: "paperplane.fill", price: "Free", featured: false)
+                        ]
+                        static let wishlist: [StoreApp] = popular + flash
+                    }
+                    
+                    // ================= Root Shell =================
+                    struct StoreRootView: View {
+                        @ObservedObject var authManager: AuthManager
+                        @State private var tab: Int = 0
+                        @State private var showSearch = false
+                        @State private var showWalletOnboarding = false
+                        @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
+                    
+                        var body: some View {
+                            ZStack(alignment: .bottom) {
+                                Color.storeBg.edgesIgnoringSafeArea(.all)
+                    
+                                Group {
+                                    switch tab {
+                                    case 0: StoreHomeView()
+                                    case 1:
+                                        Color.clear
+                                            .fullScreenCover(isPresented: $showWalletOnboarding) {
+                                                WalletOnboardingView(isPresented: $showWalletOnboarding)
+                                            }
+                                            .onAppear {
+                                                if !hasSeenWalletOnboarding {
+                                                    showWalletOnboarding = true
+                                                }
+                                            }
+                                            .onChange(of: tab) { newValue in
+                                                if newValue == 1 && !hasSeenWalletOnboarding {
+                                                    showWalletOnboarding = true
+                                                }
+                                            }
+                                            .background(
+                                                WalletView()
+                                                    .opacity(hasSeenWalletOnboarding ? 1 : 0)
+                                            )
+                                    case 2: AlertsView()
+                                    case 3: SocialView(authManager: authManager)
+                                    default: StoreHomeView()
+                                    }
+                                }
+                                .padding(.bottom, 90)
+                    
+                                StoreTabBar(tab: $tab, onSearch: { showSearch = true })
+                            }
+                            .sheet(isPresented: $showSearch) { SearchView() }
+                            .preferredColorScheme(.light)
+                        }
+                    }
+                    
+                    // ================= Tab Bar =================
+                    struct StoreTabBar: View {
+                        @Binding var tab: Int
+                        var onSearch: () -> Void
+                    
+                        var body: some View {
+                            ZStack {
+                                HStack {
+                                    tabItem(icon: "house.fill", label: "Home", index: 0)
+                                    tabItem(icon: "creditcard.fill", label: "Wallet", index: 1)
+                                    Spacer().frame(width: 70)
+                                    tabItem(icon: "bell.fill", label: "Alerts", index: 2)
+                                    tabItem(icon: "person.2.fill", label: "Social", index: 3)
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 28)
+                                        .fill(Color.storeCard)
+                                        .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: -2)
+                                )
+                                .padding(.horizontal, 12)
+                    
+                                Button(action: { HapticManager.shared.impact(.light); onSearch() }) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .frame(width: 58, height: 58)
+                                        .background(Circle().fill(Color.storePrimary))
+                                        .shadow(color: Color.storePrimary.opacity(0.35), radius: 10, y: 6)
+                                }
+                                .offset(y: -18)
+                            }
+                            .padding(.bottom, 16)
+                        }
+                    
+                        @ViewBuilder
+                        private func tabItem(icon: String, label: String, index: Int) -> some View {
+                            Button {
+                                HapticManager.shared.selection()
+                                tab = index
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: icon)
+                                        .font(.system(size: 18, weight: .semibold))
+                                    Text(label).font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundColor(tab == index ? .storePrimary : .storeSub)
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+                    
+                    // ================= Home Tab =================
+                    struct StoreHomeView: View {
+                        var body: some View {
+                            ScrollView(showsIndicators: false) {
+                                VStack(spacing: 22) {
+                                    StoreHeader(title: "Store")
+                                    DiscountBanner()
+                                    SectionHeader(title: "Popular Apps")
+                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
+                                        ForEach(StoreCatalog.popular) { app in
+                                            NavigationLink(value: app) { AppTile(app: app) }
+                                                .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.horizontal, 20)
+                    
+                                    SectionHeader(title: "Flash Apps")
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 14) {
+                                            ForEach(StoreCatalog.flash) { app in
+                                                FlashCard(app: app)
+                                            }
+                                        }
+                                        .padding(.horizontal, 20)
+                                    }
+                                    Spacer(minLength: 12)
+                                }
+                                .padding(.top, 8)
+                            }
+                            .background(NavigationDestinationHost())
+                        }
+                    }
+                    
+                    struct NavigationDestinationHost: View {
+                        var body: some View { EmptyView() }
+                    }
+                    
+                    // ================= Header =================
+                    struct StoreHeader: View {
+                        let title: String
+                        var body: some View {
+                            HStack {
+                                Button { } label: {
+                                    Image(systemName: "line.3.horizontal")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(.storeText)
+                                        .frame(width: 42, height: 42)
+                                        .background(Circle().fill(Color.storeCard))
+                                        .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+                                }
+                                Spacer()
+                                Text(title)
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundColor(.storeText)
+                                Spacer()
+                                HStack(spacing: 10) {
+                                    IconChip(icon: "bell.fill", badge: true)
+                                    IconChip(icon: "magnifyingglass", badge: false)
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.top, 8)
+                        }
+                    }
+                    
+                    struct IconChip: View {
+                        let icon: String
+                        let badge: Bool
+                        var body: some View {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: icon)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.storeText)
+                                    .frame(width: 40, height: 40)
+                                    .background(Circle().fill(Color.storeCard))
+                                    .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
+                                if badge {
+                                    Circle().fill(Color.storePink).frame(width: 8, height: 8).offset(x: -8, y: 8)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ================= Discount Banner =================
+                    struct DiscountBanner: View {
+                        var body: some View {
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 22)
+                                    .fill(LinearGradient(colors: [.storePrimary, .storePrimaryDk], startPoint: .leading, endPoint: .trailing))
+                                    .frame(height: 150)
+                                    .shadow(color: Color.storePrimary.opacity(0.3), radius: 16, y: 8)
+                    
+                                Circle().fill(Color.white.opacity(0.1)).frame(width: 120, height: 120).offset(x: 220, y: -20)
+                                Circle().fill(Color.white.opacity(0.08)).frame(width: 60, height: 60).offset(x: 180, y: 40)
+                    
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Weekly Offer")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.85))
+                                        Text("DISCOUNT")
+                                            .font(.system(size: 26, weight: .heavy))
+                                            .foregroundColor(.white)
+                                        Text("50% OFF")
+                                            .font(.system(size: 22, weight: .black))
+                                            .foregroundColor(.storeYellow)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 46))
+                                        .foregroundColor(.white.opacity(0.9))
+                                        .padding(.trailing, 24)
+                                }
+                                .padding(.horizontal, 24)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                    
+                    // ================= Section Header =================
+                    struct SectionHeader: View {
+                        let title: String
+                        var body: some View {
+                            HStack {
+                                Text(title)
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.storeText)
+                                Spacer()
+                                Text("All")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.storePrimary)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                    
+                    // ================= App Tile (grid) =================
+                    struct AppTile: View {
+                        let app: StoreApp
+                        @State private var pushed = false
+                        var body: some View {
+                            VStack(spacing: 8) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .fill(app.color.opacity(0.15))
+                                        .frame(height: 72)
+                                    Image(systemName: app.icon)
+                                        .font(.system(size: 26, weight: .bold))
+                                        .foregroundColor(app.color)
+                                }
+                                Text(app.name)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.storeText)
+                                    .lineLimit(1)
+                            }
+                            .onTapGesture {
+                                HapticManager.shared.selection()
+                                pushed = true
+                            }
+                            .background(
+                                NavigationLink(destination: AppDetailView(app: app), isActive: $pushed) { EmptyView() }.hidden()
+                            )
+                        }
+                    }
+                    
+                    // ================= Flash Card =================
+                    struct FlashCard: View {
+                        let app: StoreApp
+                        @State private var pushed = false
+                        var body: some View {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ZStack(alignment: .topTrailing) {
+                                    RoundedRectangle(cornerRadius: 18)
+                                        .fill(LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.6)],
+                                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                                        .frame(width: 150, height: 110)
+                                    Image(systemName: app.icon)
+                                        .font(.system(size: 44))
+                                        .foregroundColor(.white.opacity(0.95))
+                                        .padding(14)
+                                }
+                                Text(app.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.storeText)
+                                Text(app.category)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.storeSub)
+                            }
+                            .frame(width: 150)
+                            .onTapGesture {
+                                HapticManager.shared.selection()
+                                pushed = true
+                            }
+                            .background(
+                                NavigationLink(destination: AppDetailView(app: app), isActive: $pushed) { EmptyView() }.hidden()
+                            )
+                        }
+                    }
+                    
+                    // ================= App Detail =================
+                    struct AppDetailView: View {
+                        let app: StoreApp
+                        @Environment(\.dismiss) private var dismiss
+                    
+                        var body: some View {
+                            ScrollView {
+                                VStack(spacing: 0) {
+                                    ZStack(alignment: .topLeading) {
+                                        LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.5)],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                                            .frame(height: 260)
+                                            .clipShape(RoundedCorner(radius: 30, corners: [.bottomLeft, .bottomRight]))
+                                        HStack {
+                                            Button { dismiss() } label: {
+                                                Image(systemName: "arrow.left")
+                                                    .font(.system(size: 16, weight: .bold))
+                                                    .foregroundColor(.storeText)
+                                                    .frame(width: 40, height: 40)
+                                                    .background(Circle().fill(Color.white))
+                                            }
+                                            Spacer()
+                                            IconChip(icon: "bell.fill", badge: true)
+                                            IconChip(icon: "magnifyingglass", badge: false)
+                                        }
+                                        .padding(.horizontal, 20)
+                                        .padding(.top, 8)
+                    
+                                        Image(systemName: app.icon)
+                                            .font(.system(size: 100))
+                                            .foregroundColor(.white.opacity(0.9))
+                                            .frame(maxWidth: .infinity, alignment: .center)
+                                            .padding(.top, 70)
+                                    }
+                    
+                                    HStack(spacing: 14) {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 16).fill(app.color.opacity(0.2)).frame(width: 70, height: 70)
+                                            Image(systemName: app.icon).font(.system(size: 30)).foregroundColor(app.color)
+                                        }
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(app.name).font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                                            Text(app.category).font(.system(size: 12, weight: .semibold)).foregroundColor(.storePink)
+                                            Text("In-app purchases").font(.system(size: 11)).foregroundColor(.storeSub)
+                                        }
+                                        Spacer()
+                                        Button { HapticManager.shared.success() } label: {
+                                            Text("Install")
+                                                .font(.system(size: 13, weight: .bold))
+                                                .foregroundColor(.white)
+                                                .padding(.horizontal, 20).padding(.vertical, 10)
+                                                .background(Capsule().fill(Color.storePrimary))
+                                        }
+                                    }
+                                    .padding(16)
+                                    .background(RoundedRectangle(cornerRadius: 20).fill(Color.storeCard).shadow(color: .black.opacity(0.06), radius: 12, y: 4))
+                                    .padding(.horizontal, 20)
+                                    .offset(y: -40)
+                    
+                                    HStack {
+                                        StatCell(top: "\(String(format: "%.1f", app.rating))★", bottom: "\(app.downloads) review")
+                                        Divider().frame(height: 40)
+                                        StatCell(top: "\(app.size)", bottom: "Size")
+                                        Divider().frame(height: 40)
+                                        StatCell(top: app.downloads, bottom: "Downloads")
+                                    }
+                                    .padding(.horizontal, 30)
+                                    .offset(y: -20)
+                    
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        HStack {
+                                            Text("About").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText)
+                                            Spacer()
+                                        }
+                                        Text("Enjoy the premium unlocked version of \(app.name) with all features enabled. Exclusive on 21s Store — the private apps marketplace tailored for you.")
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.storeSub)
+                                            .lineSpacing(4)
+                    
+                                        HStack { Text("Features").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText); Spacer() }
+                                            .padding(.top, 6)
+                    
+                                        ForEach(featureLines.indices, id: \.self) { i in
+                                            FeatureRow(index: i + 1, text: featureLines[i], color: featureColors[i % featureColors.count])
+                                        }
+                                    }
+                                    .padding(.horizontal, 20)
+                                    .padding(.top, 4)
+                                    .padding(.bottom, 40)
+                                }
+                            }
+                            .background(Color.storeBg.ignoresSafeArea())
+                            .navigationBarHidden(true)
+                        }
+                    
+                        private var featureLines: [String] {
+                            ["Ad-free premium experience", "Extra unlocked themes", "Priority customer support"]
+                        }
+                        private var featureColors: [Color] { [.storePrimary, .storePink, .storeCyan] }
+                    }
+                    
+                    struct StatCell: View {
+                        let top: String
+                        let bottom: String
+                        var body: some View {
+                            VStack(spacing: 4) {
+                                Text(top).font(.system(size: 15, weight: .bold)).foregroundColor(.storeText)
+                                Text(bottom).font(.system(size: 11)).foregroundColor(.storeSub)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                    
+                    struct FeatureRow: View {
+                        let index: Int
+                        let text: String
+                        let color: Color
+                        var body: some View {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40)
+                                    Image(systemName: "crown.fill").foregroundColor(color)
+                                }
+                                Text(text).font(.system(size: 13, weight: .medium)).foregroundColor(.storeText)
+                                Spacer()
+                                Text("Ready")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(color)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Capsule().fill(color.opacity(0.15)))
+                            }
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                        }
+                    }
+                    
+                    struct RoundedCorner: Shape {
+                        var radius: CGFloat
+                        var corners: UIRectCorner
+                        func path(in rect: CGRect) -> Path {
+                            let p = UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
+                                                 cornerRadii: CGSize(width: radius, height: radius))
+                            return Path(p.cgPath)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // WALLET ONBOARDING (3 screens) — shown on first Wallet tap
+                    // ============================================================
+                    struct WalletOnboardingPage: Identifiable {
+                        let id = UUID()
+                        let imageName: String
+                        let title: String
+                        let description: String
+                    }
+                    
+                    struct WalletOnboardingView: View {
+                        @Binding var isPresented: Bool
+                        @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
+                        @State private var currentPage = 0
+                    
+                        private let pages: [WalletOnboardingPage] = [
+                            WalletOnboardingPage(
+                                imageName: "wallet_onboarding1.png",
+                                title: "Link Your Card",
+                                description: "Add your preferred card to start paying securely inside 21s with one tap."
+                            ),
+                            WalletOnboardingPage(
+                                imageName: "wallet_onboarding2.png",
+                                title: "Tap To Pay Anywhere",
+                                description: "Hold your iPhone near any terminal to complete the payment instantly with NFC."
+                            ),
+                            WalletOnboardingPage(
+                                imageName: "wallet_onboarding3.png",
+                                title: "Track Every Payment",
+                                description: "Get instant receipts and full history of every transaction made through your wallet."
+                            )
+                        ]
+                    
+                        var body: some View {
+                            ZStack {
+                                Color.storeBg.edgesIgnoringSafeArea(.all)
+                    
+                                VStack(spacing: 0) {
+                                    HStack {
+                                        Spacer()
+                                        Button {
+                                            HapticManager.shared.selection()
+                                            hasSeenWalletOnboarding = true
+                                            isPresented = false
+                                        } label: {
+                                            Text("Skip")
+                                                .font(.system(size: 14, weight: .semibold))
+                                                .foregroundColor(.storeSub)
+                                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 8)
+                    
+                                    TabView(selection: $currentPage) {
+                                        ForEach(pages.indices, id: \.self) { index in
+                                            WalletOnboardingPageView(page: pages[index])
+                                                .tag(index)
+                                        }
+                                    }
+                                    .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+                                    .animation(.easeInOut, value: currentPage)
+                    
+                                    HStack(spacing: 8) {
+                                        ForEach(pages.indices, id: \.self) { index in
+                                            Circle()
+                                                .fill(currentPage == index ? Color.storePrimary : Color.storeDivider)
+                                                .frame(width: 8, height: 8)
+                                                .onTapGesture {
+                                                    withAnimation { currentPage = index }
+                                                }
+                                        }
+                                    }
+                                    .padding(.top, 20)
+                    
+                                    Button {
+                                        HapticManager.shared.impact(.medium)
+                                        if currentPage < pages.count - 1 {
+                                            withAnimation { currentPage += 1 }
+                                        } else {
+                                            hasSeenWalletOnboarding = true
+                                            isPresented = false
+                                        }
+                                    } label: {
+                                        HStack {
+                                            Text(currentPage == pages.count - 1 ? "Get Started" : "Next")
+                                                .font(.system(size: 16, weight: .semibold))
+                                            if currentPage < pages.count - 1 {
+                                                Image(systemName: "chevron.right")
+                                                    .font(.system(size: 14, weight: .medium))
+                                            }
+                                        }
+                                        .foregroundColor(.white)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 54)
+                                        .background(Capsule().fill(Color.storePrimary))
+                                    }
+                                    .padding(.horizontal, 28)
+                                    .padding(.top, 20)
+                                    .padding(.bottom, 40)
+                                }
+                            }
+                            .preferredColorScheme(.light)
+                        }
+                    }
+                    
+                    struct WalletOnboardingPageView: View {
+                        let page: WalletOnboardingPage
+                    
+                        var body: some View {
+                            VStack(spacing: 20) {
+                                if let img = UIImage.bundled(page.imageName) {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(width: 280, height: 280)
+                                        .padding(.top, 40)
+                                } else {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 80))
+                                        .foregroundColor(.storeAccent)
+                                        .padding(.top, 40)
+                                }
+                    
+                                Text(page.title)
+                                    .font(.system(size: 26, weight: .bold))
+                                    .foregroundColor(.storeText)
+                                    .multilineTextAlignment(.center)
+                    
+                                Text(page.description)
+                                    .font(.system(size: 15))
+                                    .foregroundColor(.storeSub)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                    
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // WALLET TAB
+                    // ============================================================
+                    struct WalletView: View {
+                        @ObservedObject var authManager: AuthManager? = nil
+                        @AppStorage("walletUserID_21s") private var storedWalletUserID: String = ""
+                        @AppStorage("walletCardNumber_21s") private var storedCardNumber: String = ""
+                        @State private var showIDSheet = false
+                        @State private var showCardSheet = false
+                        @State private var showCopiedToast = false
+                        @State private var copiedText: String = ""
+                        @State private var tempUserID: String = ""
+                        @State private var tempCardNumber: String = ""
+                    
+                        private var displayUserID: String {
+                            if !storedWalletUserID.isEmpty { return storedWalletUserID }
+                            return generateUserID()
+                        }
+                    
+                        private var displayCardNumber: String {
+                            if !storedCardNumber.isEmpty { return storedCardNumber }
+                            return generateCardNumber()
+                        }
+                    
+                        var body: some View {
+                            ScrollView {
+                                VStack(spacing: 20) {
+                                    StoreHeader(title: "Wallet")
+                    
+                                    // ---------- BETA Header ----------
+                                    HStack {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "exclamationmark.shield.fill")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundColor(.white)
+                                            Text("BETA")
+                                                .font(.system(size: 13, weight: .black))
+                                                .foregroundColor(.white)
+                                                .tracking(1.5)
+                                        }
+                                        .padding(.horizontal, 12).padding(.vertical, 6)
+                                        .background(Capsule().fill(Color.betaOrange))
+                                        .shadow(color: Color.betaOrange.opacity(0.3), radius: 6, y: 3)
+                    
+                                        Spacer()
+                    
+                                        Text("Wallet v1.0")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.storeSub)
+                                    }
+                                    .padding(.horizontal, 20)
+                                    .padding(.top, 4)
+                    
+                                    // ---------- Card ----------
+                                    CreditCardView(
+                                        userID: displayUserID,
+                                        cardNumber: displayCardNumber,
+                                        isCardSet: !storedCardNumber.isEmpty,
+                                        isIDSet: !storedWalletUserID.isEmpty
+                                    )
+                                    .padding(.horizontal, 20)
+                    
+                                    // ---------- Real User ID ----------
+                                    UserIDSection(
+                                        userID: displayUserID,
+                                        isSet: !storedWalletUserID.isEmpty,
+                                        onEdit: { showIDSheet = true },
+                                        onCopy: {
+                                            UIPasteboard.general.string = displayUserID
+                                            copiedText = "User ID"
+                                            showCopiedToast = true
+                                        }
+                                    )
+                                    .padding(.horizontal, 20)
+                    
+                                    // ---------- Card Number ----------
+                                    CardNumberSection(
+                                        cardNumber: displayCardNumber,
+                                        isSet: !storedCardNumber.isEmpty,
+                                        onEdit: { showCardSheet = true },
+                                        onCopy: {
+                                            UIPasteboard.general.string = displayCardNumber
+                                            copiedText = "Card Number"
+                                            showCopiedToast = true
+                                        }
+                                    )
+                                    .padding(.horizontal, 20)
+                    
+                                    // ---------- Current Balance (GIF instead of blue design) ----------
+                                    CurrentBalanceView()
+                                        .padding(.horizontal, 20)
+                    
+                                    Spacer(minLength: 40)
+                                }
+                                .padding(.top, 8)
+                            }
+                            .sheet(isPresented: $showIDSheet) {
+                                EditIDSheet(userID: $tempUserID) { newID in
+                                    storedWalletUserID = newID
+                                    HapticManager.shared.success()
+                                }
+                                .onAppear {
+                                    tempUserID = storedWalletUserID.isEmpty ? generateUserID() : storedWalletUserID
+                                }
+                            }
+                            .sheet(isPresented: $showCardSheet) {
+                                EditCardSheet(cardNumber: $tempCardNumber) { newCard in
+                                    storedCardNumber = newCard
+                                    HapticManager.shared.success()
+                                }
+                                .onAppear {
+                                    tempCardNumber = storedCardNumber.isEmpty ? generateCardNumber() : storedCardNumber
+                                }
+                            }
+                            .overlay(
+                                Group {
+                                    if showCopiedToast {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.white)
+                                            Text("\(copiedText) copied")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundColor(.white)
+                                        }
+                                        .padding(.horizontal, 18).padding(.vertical, 12)
+                                        .background(Capsule().fill(Color.walletGreen))
+                                        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                                        .transition(.move(edge: .top).combined(with: .opacity))
+                                        .padding(.top, 60)
+                                    }
+                                }
+                                .animation(.spring(), value: showCopiedToast),
+                                alignment: .top
+                            )
+                        }
+                    
+                        // Generate a 12-character hex user ID like 4F8B-92A1-7D3E
+                        private func generateUserID() -> String {
+                            let chars = "ABCDEF0123456789"
+                            var s = ""
+                            for i in 0..<12 {
+                                if i > 0 && i % 4 == 0 { s += "-" }
+                                s += String(chars.randomElement()!)
+                            }
+                            return s
+                        }
+                    
+                        // Generate a 16-digit card number formatted as groups of 4
+                        private func generateCardNumber() -> String {
+                            var s = ""
+                            for i in 0..<16 {
+                                s += String(Int.random(in: 0...9))
+                                if (i + 1) % 4 == 0 && i != 15 { s += " " }
+                            }
+                            return s
+                        }
+                    }
+                    
+                    // ============================================================
+                    // CREDIT CARD VIEW
+                    // ============================================================
+                    struct CreditCardView: View {
+                        let userID: String
+                        let cardNumber: String
+                        let isCardSet: Bool
+                        let isIDSet: Bool
+                    
+                        var body: some View {
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Top row
+                                HStack {
+                                    HStack(spacing: 6) {
+                                        Circle().fill(Color.white.opacity(0.3)).frame(width: 26, height: 26)
+                                        Circle().fill(Color.white.opacity(0.18)).frame(width: 26, height: 26)
+                                        Text("21s")
+                                            .font(.system(size: 16, weight: .black))
+                                            .foregroundColor(.white)
+                                    }
+                                    Spacer()
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "exclamationmark.shield.fill")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Text("BETA")
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(.white)
+                                            .tracking(1.2)
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 5)
+                                    .background(Capsule().fill(Color.betaOrange))
+                                }
+                    
+                                Spacer().frame(height: 28)
+                    
+                                // Chip
+                                HStack {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(LinearGradient(colors: [Color(red: 0.95, green: 0.83, blue: 0.45), Color(red: 0.78, green: 0.62, blue: 0.22)], startPoint: .top, endPoint: .bottom))
+                                        .frame(width: 46, height: 34)
+                                        .overlay(
+                                            HStack(spacing: 3) {
+                                                Rectangle().fill(Color.black.opacity(0.25)).frame(width: 1)
+                                                Rectangle().fill(Color.black.opacity(0.25)).frame(width: 1)
+                                                Rectangle().fill(Color.black.opacity(0.25)).frame(width: 1)
+                                            }
+                                        )
+                                    Spacer()
+                                    Image(systemName: "wave.3.right")
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.85))
+                                }
+                    
+                                Spacer().frame(height: 18)
+                    
+                                // Card number
+                                Text(isCardSet ? cardNumber : "•••• •••• •••• ••••")
+                                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.white)
+                                    .tracking(2)
+                    
+                                Spacer().frame(height: 18)
+                    
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("USER ID")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.white.opacity(0.7))
+                                            .tracking(1.2)
+                                        Text(isIDSet ? userID : "••••-••••-••••")
+                                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                            .foregroundColor(.white)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("VALID")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.white.opacity(0.7))
+                                            .tracking(1.2)
+                                        Text("12/29")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                            }
+                            .padding(22)
+                            .frame(height: 220)
+                            .background(
+                                ZStack {
+                                    LinearGradient(
+                                        colors: [Color.walletDark, Color(red: 0.05, green: 0.12, blue: 0.08), Color.walletDark],
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    )
+                                    Circle().fill(Color.white.opacity(0.05)).frame(width: 200, height: 200).offset(x: 120, y: -60)
+                                    Circle().fill(Color.white.opacity(0.04)).frame(width: 140, height: 140).offset(x: -100, y: 80)
+                                }
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 22))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22)
+                                    .stroke(LinearGradient(colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
+                            )
+                            .shadow(color: Color.walletDark.opacity(0.3), radius: 18, y: 8)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // USER ID SECTION
+                    // ============================================================
+                    struct UserIDSection: View {
+                        let userID: String
+                        let isSet: Bool
+                        let onEdit: () -> Void
+                        let onCopy: () -> Void
+                    
+                        var body: some View {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "person.crop.square.filled.at.rectangle")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.storePrimary)
+                                    Text("Real User ID")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundColor(.storeText)
+                                    Spacer()
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 9, weight: .bold))
+                                        Text("Private")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .tracking(0.5)
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .background(Capsule().fill(Color.storePink))
+                                }
+                    
+                                HStack(spacing: 10) {
+                                    Text(userID)
+                                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.storeText)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 46)
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(Color.storeDivider, lineWidth: 0.5)
+                                        )
+                    
+                                    Button(action: onCopy) {
+                                        Image(systemName: "doc.on.doc.fill")
+                                            .font(.system(size: 15, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: 46, height: 46)
+                                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
+                                    }
+                                }
+                    
+                                HStack(spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.storePink)
+                                    Text("Do not share this ID with anyone. It is unique to your account.")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.storeSub)
+                                }
+                            }
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard).shadow(color: .black.opacity(0.04), radius: 8, y: 2))
+                        }
+                    }
+                    
+                    // ============================================================
+                    // CARD NUMBER SECTION
+                    // ============================================================
+                    struct CardNumberSection: View {
+                        let cardNumber: String
+                        let isSet: Bool
+                        let onEdit: () -> Void
+                        let onCopy: () -> Void
+                    
+                        var body: some View {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "creditcard.fill")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.storePrimary)
+                                    Text("Card Number")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundColor(.storeText)
+                                    Spacer()
+                                    Text(isSet ? "Verified" : "Not set")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(Capsule().fill(isSet ? Color.walletGreen : Color.storeSub))
+                                }
+                    
+                                HStack(spacing: 10) {
+                                    Text(cardNumber)
+                                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.storeText)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 46)
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(Color.storeDivider, lineWidth: 0.5)
+                                        )
+                    
+                                    Button(action: onCopy) {
+                                        Image(systemName: "doc.on.doc.fill")
+                                            .font(.system(size: 15, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: 46, height: 46)
+                                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
+                                    }
+                    
+                                    Button(action: onEdit) {
+                                        Image(systemName: "pencil")
+                                            .font(.system(size: 14, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: 46, height: 46)
+                                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.betaOrange))
+                                    }
+                                }
+                            }
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard).shadow(color: .black.opacity(0.04), radius: 8, y: 2))
+                        }
+                    }
+                    
+                    // ============================================================
+                    // CURRENT BALANCE — uses GIF / Video instead of blue design
+                    // ============================================================
+                    struct CurrentBalanceView: View {
+                        var body: some View {
+                            ZStack {
+                                // Background (cream tone to match the GIF)
+                                RoundedRectangle(cornerRadius: 22)
+                                    .fill(Color.creamBg)
+                                    .frame(height: 220)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 22)
+                                            .stroke(Color.storeDivider, lineWidth: 0.5)
+                                    )
+                                    .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
+                    
+                                HStack(spacing: 0) {
+                                    // Left side: balance info
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Current Balance")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.storeSub)
+                                            .tracking(1.2)
+                    
+                                        Text("$248.00")
+                                            .font(.system(size: 30, weight: .heavy))
+                                            .foregroundColor(Color(red: 0.45, green: 0.30, blue: 0.65))
+                    
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "arrow.up.right.circle.fill")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(.walletGreen)
+                                            Text("+12.4% this month")
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .foregroundColor(.walletGreen)
+                                        }
+                    
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "exclamationmark.shield.fill")
+                                                .font(.system(size: 10, weight: .bold))
+                                            Text("BETA")
+                                                .font(.system(size: 10, weight: .black))
+                                                .tracking(1.0)
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(Capsule().fill(Color.betaOrange))
+                                    }
+                                    .padding(.leading, 22)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                                    // Right side: animated GIF/Video
+                                    LoopingGifPlayer(resourceName: "balance_animation", ext: "gif")
+                                        .frame(width: 170, height: 200)
+                                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ============================================================
+                    // LOOPING GIF PLAYER (replaces blue Current Balance design)
+                    // ============================================================
+                    struct LoopingGifPlayer: UIViewRepresentable {
+                        let resourceName: String
+                        let ext: String
+                    
+                        func makeUIView(context: Context) -> UIView {
+                            let container = UIView()
+                            container.backgroundColor = .clear
+                    
+                            let imageView = UIImageView()
+                            imageView.contentMode = .scaleAspectFit
+                            imageView.translatesAutoresizingMaskIntoConstraints = false
+                            imageView.clipsToBounds = true
+                            container.addSubview(imageView)
+                    
+                            NSLayoutConstraint.activate([
+                                imageView.topAnchor.constraint(equalTo: container.topAnchor),
+                                imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                                imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                                imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                            ])
+                    
+                            if let gif = UIImage.gif(name: resourceName) {
+                                imageView.image = gif
+                            } else {
+                                // Fallback: try direct path
+                                if let path = Bundle.main.path(forResource: resourceName, ofType: ext),
+                                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                                   let gif = UIImage.gif(data: data) {
+                                    imageView.image = gif
+                                } else {
+                                    // Final fallback: single image
+                                    imageView.image = UIImage.bundled("\(resourceName).png")
+                                }
+                            }
+                    
+                            return container
+                        }
+                    
+                        func updateUIView(_ uiView: UIView, context: Context) {}
+                    }
+                    
+                    extension UIImage {
+                        static func gif(name: String) -> UIImage? {
+                            guard let path = Bundle.main.path(forResource: name, ofType: "gif") else { return nil }
+                            let url = URL(fileURLWithPath: path)
+                            guard let data = try? Data(contentsOf: url) else { return nil }
+                            return gif(data: data)
+                        }
+                    
+                        static func gif(data: Data) -> UIImage? {
+                            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+                            let count = CGImageSourceGetCount(source)
+                            var images: [UIImage] = []
+                            var duration: TimeInterval = 0
+                            for i in 0..<count {
+                                guard let cg = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
+                                images.append(UIImage(cgImage: cg))
+                                let props = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any]
+                                if let gifProps = props?[kCGImagePropertyGIFDictionary] as? [CFString: Any] {
+                                    if let delay = gifProps[kCGImagePropertyGIFDelayTime] as? Double {
+                                        duration += delay
+                                    }
+                                }
+                            }
+                            if images.isEmpty { return nil }
+                            if duration <= 0 { duration = Double(count) * 0.1 }
+                            return UIImage.animatedImage(with: images, duration: duration)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // EDIT ID SHEET
+                    // ============================================================
+                    struct EditIDSheet: View {
+                        @Environment(\.dismiss) var dismiss
+                        @Binding var userID: String
+                        var onSave: (String) -> Void
+                        @State private var draft: String = ""
+                    
+                        var body: some View {
+                            NavigationView {
+                                VStack(spacing: 18) {
+                                    Image(systemName: "person.crop.square.filled.at.rectangle")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.storePrimary)
+                                        .padding(.top, 20)
+                    
+                                    Text("Set Your Real User ID")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(.storeText)
+                    
+                                    Text("This ID will be linked to your account and used in your wallet card.")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.storeSub)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 24)
+                    
+                                    TextField("Enter User ID", text: $draft)
+                                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 50)
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg))
+                                        .padding(.horizontal, 20)
+                                        .autocapitalization(.allCharacters)
+                                        .disableAutocorrection(true)
+                    
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.storePink)
+                                        Text("This is permanent and cannot be changed later.")
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(.storeSub)
+                                    }
+                                    .padding(.horizontal, 24)
+                    
+                                    Spacer()
+                    
+                                    Button {
+                                        let cleaned = draft.uppercased().trimmingCharacters(in: .whitespaces)
+                                        if cleaned.count >= 4 {
+                                            onSave(cleaned)
+                                            dismiss()
+                                        }
+                                    } label: {
+                                        Text("Save User ID")
+                                            .font(.system(size: 15, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 50)
+                                            .background(Capsule().fill(Color.storePrimary))
+                                    }
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 30)
+                                }
+                                .background(Color.storeBg.ignoresSafeArea())
+                                .navigationBarTitleDisplayMode(.inline)
+                                .toolbar {
+                                    ToolbarItem(placement: .navigationBarTrailing) {
+                                        Button("Cancel") { dismiss() }.foregroundColor(.storePrimary)
+                                    }
+                                }
+                            }
+                            .onAppear { draft = userID }
+                            .preferredColorScheme(.light)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // EDIT CARD SHEET
+                    // ============================================================
+                    struct EditCardSheet: View {
+                        @Environment(\.dismiss) var dismiss
+                        @Binding var cardNumber: String
+                        var onSave: (String) -> Void
+                        @State private var draft: String = ""
+                    
+                        var body: some View {
+                            NavigationView {
+                                VStack(spacing: 18) {
+                                    Image(systemName: "creditcard.fill")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.storePrimary)
+                                        .padding(.top, 20)
+                    
+                                    Text("Set Your Card Number")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(.storeText)
+                    
+                                    Text("Enter the 16-digit number printed on the front of your card.")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.storeSub)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 24)
+                    
+                                    TextField("0000 0000 0000 0000", text: $draft)
+                                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 50)
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg))
+                                        .padding(.horizontal, 20)
+                                        .keyboardType(.numberPad)
+                                        .onChange(of: draft) { newValue in
+                                            let digits = newValue.filter { $0.isNumber }
+                                            var formatted = ""
+                                            for (i, c) in digits.prefix(16).enumerated() {
+                                                if i > 0 && i % 4 == 0 { formatted += " " }
+                                                formatted.append(c)
+                                            }
+                                            if formatted != newValue { draft = formatted }
+                                        }
+                    
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.walletGreen)
+                                        Text("Stored only on this device. Never shared.")
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(.storeSub)
+                                    }
+                                    .padding(.horizontal, 24)
+                    
+                                    Spacer()
+                    
+                                    Button {
+                                        let cleaned = draft.filter { $0.isNumber }
+                                        if cleaned.count == 16 {
+                                            onSave(draft)
+                                            dismiss()
+                                        }
+                                    } label: {
+                                        Text("Save Card")
+                                            .font(.system(size: 15, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 50)
+                                            .background(Capsule().fill(Color.storePrimary))
+                                    }
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 30)
+                                }
+                                .background(Color.storeBg.ignoresSafeArea())
+                                .navigationBarTitleDisplayMode(.inline)
+                                .toolbar {
+                                    ToolbarItem(placement: .navigationBarTrailing) {
+                                        Button("Cancel") { dismiss() }.foregroundColor(.storePrimary)
+                                    }
+                                }
+                            }
+                            .onAppear { draft = cardNumber }
+                            .preferredColorScheme(.light)
+                        }
+                    }
+                    
+                    // ============================================================
+                    // ALERTS TAB
+                    // ============================================================
+                    struct AlertsView: View {
+                        var body: some View {
+                            ScrollView {
+                                VStack(spacing: 14) {
+                                    StoreHeader(title: "Alerts")
+                                    ForEach(0..<6) { i in
+                                        HStack(spacing: 12) {
+                                            ZStack {
+                                                Circle().fill(Color.storePink.opacity(0.15)).frame(width: 44, height: 44)
+                                                Image(systemName: "bell.badge.fill").foregroundColor(.storePink)
+                                            }
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text("New app available").font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
+                                                Text("Update #\(i + 1) is ready to install now.").font(.system(size: 11)).foregroundColor(.storeSub)
+                                            }
+                                            Spacer()
+                                        }
+                                        .padding(12)
+                                        .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                                        .padding(.horizontal, 20)
+                                    }
+                                }
+                                .padding(.top, 8)
+                            }
+                        }
+                    }
+                    
+                    // ============================================================
+                    // SOCIAL / PROFILE TAB
+                    // ============================================================
+                    struct SocialView: View {
+                        @ObservedObject var authManager: AuthManager
+                        var body: some View {
+                            ScrollView {
+                                VStack(spacing: 20) {
+                                    StoreHeader(title: "Profile")
+                                    VStack(spacing: 12) {
+                                        ZStack {
+                                            Circle().fill(Color.storePrimary.opacity(0.15)).frame(width: 90, height: 90)
+                                            Image(systemName: "person.fill").font(.system(size: 40)).foregroundColor(.storePrimary)
+                                        }
+                                        Text(authManager.currentUser?.username ?? "User")
+                                            .font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                                        Text(authManager.currentUser?.phoneNumber ?? "")
+                                            .font(.system(size: 12)).foregroundColor(.storeSub)
+                                    }
+                    
+                                    VStack(spacing: 10) {
+                                        ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
+                                        ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
+                                        ProfileRow(icon: "gearshape.fill", label: "Settings", color: .storeCyan)
+                                        Button {
+                                            HapticManager.shared.impact(.light)
+                                            authManager.logout()
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "arrow.right.square.fill").foregroundColor(.white)
+                                                Text("Log out").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                                            }
+                                            .frame(maxWidth: .infinity).frame(height: 48)
+                                            .background(Capsule().fill(Color.storePink))
+                                        }
+                                        .padding(.top, 6)
+                                    }
+                                    .padding(.horizontal, 20)
+                                }
+                                .padding(.top, 8)
+                            }
+                        }
+                    }
+                    
+                    struct ProfileRow: View {
+                        let icon: String
+                        let label: String
+                        let color: Color
+                        var body: some View {
+                            HStack {
+                                ZStack { Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40); Image(systemName: icon).foregroundColor(color) }
+                                Text(label).font(.system(size: 14, weight: .semibold)).foregroundColor(.storeText)
+                                Spacer()
+                                Image(systemName: "chevron.right").foregroundColor(.storeSub)
+                            }
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                        }
+                    }
+                    
+                    // ============================================================
+                    // SEARCH
+                    // ============================================================
+                    struct SearchView: View {
+                        @Environment(\.dismiss) private var dismiss
+                        @State private var query = ""
+                        var results: [StoreApp] {
+                            if query.isEmpty { return StoreCatalog.wishlist }
+                            return StoreCatalog.wishlist.filter { $0.name.lowercased().contains(query.lowercased()) }
+                        }
+                        var body: some View {
+                            NavigationView {
+                                VStack {
+                                    HStack {
+                                        Image(systemName: "magnifyingglass").foregroundColor(.storeSub)
+                                        TextField("Search apps...", text: $query)
+                                    }
+                                    .padding(14)
+                                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeBg))
+                                    .padding(.horizontal, 16).padding(.top, 8)
+                    
+                                    ScrollView {
+                                        LazyVStack(spacing: 10) {
+                                            ForEach(results) { app in
+                                                HStack {
+                                                    ZStack { RoundedRectangle(cornerRadius: 12).fill(app.color.opacity(0.15)).frame(width: 50, height: 50); Image(systemName: app.icon).foregroundColor(app.color) }
+                                                    VStack(alignment: .leading) {
+                                                        Text(app.name).font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
+                                                        Text("\(app.category) · \(app.size)").font(.system(size: 11)).foregroundColor(.storeSub)
+                                                    }
+                                                    Spacer()
+                                                    Text("\(String(format: "%.1f", app.rating))★").font(.system(size: 12, weight: .bold)).foregroundColor(.storeYellow)
+                                                }
+                                                .padding(10)
+                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
+                                            }
+                                        }
+                                        .padding(.horizontal, 16)
+                                    }
+                                }
+                                .background(Color.storeBg.ignoresSafeArea())
+                                .navigationBarTitleDisplayMode(.inline)
+                                .toolbar {
+                                    ToolbarItem(placement: .principal) { Text("Search").font(.system(size: 15, weight: .bold)) }
+                                    ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                                }
+                            }
+                            .preferredColorScheme(.light)
+                        }
+                    }
+                    
           VIPEOF
+
 
       - name: Generate code - VIP21StoreApp.swift
         run: |
@@ -2110,6 +2615,8 @@ jobs:
             -framework SwiftUI \
             -framework UIKit \
             -framework Foundation \
+            -framework ImageIO \
+            -framework MobileCoreServices \
             -o VIP21Store
           file VIP21Store
 
@@ -2131,10 +2638,10 @@ jobs:
           cp Resources/onboarding1.png               build-output/Payload/VIP21Store.app/
           cp Resources/onboarding2.png               build-output/Payload/VIP21Store.app/
           cp Resources/onboarding3.png               build-output/Payload/VIP21Store.app/
-          # copy wallet onboarding images
           cp Resources/wallet_onboarding1.png        build-output/Payload/VIP21Store.app/
           cp Resources/wallet_onboarding2.png        build-output/Payload/VIP21Store.app/
           cp Resources/wallet_onboarding3.png        build-output/Payload/VIP21Store.app/
+          cp Resources/balance_animation.gif         build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
           find build-output -name ".DS_Store" -delete
@@ -2165,5 +2672,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 21s-Login-Only-IPA
+          name: 21s-Login-Wallet-IPA
           path: artifacts/21s.ipa
