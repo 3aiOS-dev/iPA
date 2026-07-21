@@ -249,6 +249,63 @@ jobs:
                   self.createdAt = Date()
               }
           }
+
+          // ==================== Remote Store API models ====================
+          // Mirrors https://kurdstore.info/store-data.json
+
+          struct StoreAPIResponse: Codable {
+              let lastUpdated: String?
+              let apps: StoreAPIAppsEnvelope
+
+              enum CodingKeys: String, CodingKey {
+                  case lastUpdated = "last_updated"
+                  case apps
+              }
+          }
+
+          struct StoreAPIAppsEnvelope: Codable {
+              let success: Bool?
+              let count: Int?
+              let apps: [StoreAPIApp]
+          }
+
+          struct StoreAPIApp: Codable, Identifiable, Hashable {
+              let id: Int
+              let name: String
+              let bundleId: String?
+              let bundleVersion: String?
+              let ipaSize: String?
+              let githubUrl: String?
+              let archiveUrl: String?
+              let ipaUrl: String?
+              let host: String?
+              let icon: String?
+              let description: String?
+              let screenshots: [String]?
+              let category: String?
+              let createdAt: String?
+              let updatedAt: String?
+
+              enum CodingKeys: String, CodingKey {
+                  case id, name
+                  case bundleId = "bundle_id"
+                  case bundleVersion = "bundle_version"
+                  case ipaSize = "ipa_size"
+                  case githubUrl = "github_url"
+                  case archiveUrl = "archive_url"
+                  case ipaUrl = "ipa_url"
+                  case host, icon, description, screenshots, category
+                  case createdAt = "created_at"
+                  case updatedAt = "updated_at"
+              }
+
+              var cleanDescription: String {
+                  guard let d = description else { return "Exclusive app on 21s Store — download the premium version with all features enabled." }
+                  // Remove CR/LF noise and extra whitespace
+                  let lines = d.split(whereSeparator: { $0.isNewline || $0 == "\r" })
+                  return lines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+              }
+          }
           VIPEOF
 
       - name: Generate code - AuthManager.swift
@@ -1102,7 +1159,7 @@ jobs:
         run: |
           cat > StoreView.swift << 'VIPEOF'
           import SwiftUI
-
+          
           // ================= Store Design Tokens =================
           extension Color {
               static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
@@ -1121,52 +1178,185 @@ jobs:
               static let walletDeep     = Color(red: 0.05, green: 0.12, blue: 0.08)
               static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
           }
+          
+          // ================= Remote Icon Cache =================
+          // Loads app icons (PNG) from remote URLs with in-memory cache,
+          // disk cache (Caches dir), and graceful placeholder fallback.
+          @MainActor
+          final class RemoteIconCache: ObservableObject {
+              static let shared = RemoteIconCache()
+              @Published private(set) var cache: [String: UIImage] = [:]
+              private let session: URLSession
+              private let diskDir: URL
 
-          // ================= Models =================
-          struct StoreApp: Identifiable, Hashable {
-              let id = UUID()
-              let name: String
-              let category: String
-              let size: String
-              let rating: Double
-              let downloads: String
-              let color: Color
-              let icon: String
-              let price: String
-              let featured: Bool
+              init() {
+                  let cfg = URLSessionConfiguration.default
+                  cfg.requestCachePolicy = .returnCacheDataElseLoad
+                  cfg.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024,
+                                           diskCapacity: 128 * 1024 * 1024,
+                                           diskPath: "icons")
+                  cfg.timeoutIntervalForRequest = 12
+                  self.session = URLSession(configuration: cfg)
+
+                  let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+                  let dir = caches.appendingPathComponent("kurdstore-icons", isDirectory: true)
+                  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                  self.diskDir = dir
+              }
+
+              private func diskPath(for url: String) -> URL {
+                  let name = url
+                      .replacingOccurrences(of: "https://", with: "")
+                      .replacingOccurrences(of: "http://", with: "")
+                      .replacingOccurrences(of: "/", with: "_")
+                      .replacingOccurrences(of: ":", with: "_")
+                  return diskDir.appendingPathComponent(name)
+              }
+
+              func image(for urlString: String?) -> UIImage? {
+                  guard let s = urlString, let url = URL(string: s) else { return nil }
+                  if let cached = cache[s] { return cached }
+                  let path = diskPath(for: s)
+                  if let data = try? Data(contentsOf: path), let img = UIImage(data: data) {
+                      cache[s] = img
+                      return img
+                  }
+                  // Kick off background fetch; we return nil for now and the view
+                  // will refresh once the image is available in the cache.
+                  Task.detached { [weak self] in
+                      guard let self else { return }
+                      do {
+                          let (data, _) = try await self.session.data(from: url)
+                          guard let img = UIImage(data: data) else { return }
+                          try? data.write(to: self.diskPath(for: s))
+                          await MainActor.run { self.cache[s] = img }
+                      } catch { /* network failure, keep placeholder */ }
+                  }
+                  return nil
+              }
           }
 
-          final class StoreCatalog {
-              static let popular: [StoreApp] = [
-                  .init(name: "SnapChat Pro", category: "Social - Camera", size: "180 MB", rating: 4.7, downloads: "5M+", color: .storeYellow, icon: "camera.fill", price: "Free", featured: true),
-                  .init(name: "WhatsApp++", category: "Messaging - Tools", size: "220 MB", rating: 4.8, downloads: "10M+", color: .green, icon: "message.fill", price: "Free", featured: true),
-                  .init(name: "Instagram+", category: "Social - Photo", size: "160 MB", rating: 4.6, downloads: "8M+", color: .storePink, icon: "photo.on.rectangle.angled", price: "Free", featured: true),
-                  .init(name: "TikTok 21", category: "Video - Social", size: "260 MB", rating: 4.5, downloads: "6M+", color: .storeText, icon: "play.rectangle.fill", price: "Free", featured: true)
-              ]
-              static let flash: [StoreApp] = [
-                  .init(name: "Spotify++", category: "Music", size: "140 MB", rating: 4.9, downloads: "3M+", color: Color(red: 0.11, green: 0.72, blue: 0.36), icon: "music.note", price: "Free", featured: false),
-                  .init(name: "YouTube Vanced", category: "Video", size: "180 MB", rating: 4.8, downloads: "9M+", color: .storePink, icon: "play.circle.fill", price: "Free", featured: false),
-                  .init(name: "Netflix Pro", category: "Streaming", size: "200 MB", rating: 4.7, downloads: "4M+", color: Color(red: 0.85, green: 0.10, blue: 0.15), icon: "film.fill", price: "Free", featured: false),
-                  .init(name: "Telegram X", category: "Messaging", size: "90 MB", rating: 4.6, downloads: "7M+", color: .storeCyan, icon: "paperplane.fill", price: "Free", featured: false)
-              ]
-              static let wishlist: [StoreApp] = popular + flash
+          // ================= Image helpers =================
+          struct RemoteIcon: View {
+              let url: String?
+              var size: CGFloat = 56
+              var cornerRadius: CGFloat = 14
+              @StateObject private var cache = RemoteIconCache.shared
+
+              var body: some View {
+                  Group {
+                      if let img = cache.image(for: url) {
+                          Image(uiImage: img)
+                              .resizable()
+                              .aspectRatio(contentMode: .fill)
+                      } else {
+                          RoundedRectangle(cornerRadius: cornerRadius)
+                              .fill(Color.storeDivider)
+                              .overlay(
+                                  Image(systemName: "app.fill")
+                                      .font(.system(size: size * 0.45, weight: .bold))
+                                      .foregroundColor(.storeSub)
+                              )
+                      }
+                  }
+                  .frame(width: size, height: size)
+                  .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+              }
+          }
+
+          // SF Symbol hint derived from a category string (used as a soft accent color only)
+          func colorForCategory(_ category: String?) -> Color {
+              guard let c = category?.lowercased() else { return .storePrimary }
+              if c.contains("photo") || c.contains("camera") { return .storePink }
+              if c.contains("music") { return Color(red: 0.11, green: 0.72, blue: 0.36) }
+              if c.contains("video") || c.contains("stream") { return .storePink }
+              if c.contains("social") || c.contains("messag") { return .storeCyan }
+              if c.contains("tool") || c.contains("util") { return .storeYellow }
+              if c.contains("game") { return .storePrimary }
+              if c.contains("book") || c.contains("edu") { return .betaOrange }
+              if c.contains("shop") { return .storePink }
+              return .storePrimary
+          }
+
+          // ================= View Model: loads & caches the store feed =================
+          @MainActor
+          final class StoreFeed: ObservableObject {
+              @Published var apps: [StoreAPIApp] = []
+              @Published var isLoading: Bool = false
+              @Published var lastError: String?
+              @Published var lastUpdated: String?
+
+              private let url = URL(string: "https://kurdstore.info/store-data.json")!
+              private let cacheURL: URL = {
+                  let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+                  return caches.appendingPathComponent("kurdstore-feed.json")
+              }()
+
+              init() { loadCachedThenRefresh() }
+
+              func loadCachedThenRefresh() {
+                  if let data = try? Data(contentsOf: cacheURL),
+                     let parsed = try? JSONDecoder().decode(StoreAPIResponse.self, from: data) {
+                      self.apps = parsed.apps.apps
+                      self.lastUpdated = parsed.lastUpdated
+                  }
+                  Task { await refresh() }
+              }
+
+              func refresh() async {
+                  isLoading = true
+                  lastError = nil
+                  do {
+                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+                      req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                      let (data, response) = try await URLSession.shared.data(for: req)
+                      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                          throw NSError(domain: "StoreFeed", code: http.statusCode,
+                                        userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+                      }
+                      let parsed = try JSONDecoder().decode(StoreAPIResponse.self, from: data)
+                      self.apps = parsed.apps.apps
+                      self.lastUpdated = parsed.lastUpdated
+                      try? data.write(to: cacheURL)
+                  } catch {
+                      self.lastError = error.localizedDescription
+                  }
+                  isLoading = false
+              }
+
+              // Sections derived from the feed
+              var featured: [StoreAPIApp] {
+                  Array(apps.prefix(8))
+              }
+              var allSorted: [StoreAPIApp] { apps }
+
+              func search(_ query: String) -> [StoreAPIApp] {
+                  let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                  if q.isEmpty { return apps }
+                  return apps.filter {
+                      $0.name.lowercased().contains(q)
+                      || ($0.category?.lowercased().contains(q) ?? false)
+                      || ($0.bundleId?.lowercased().contains(q) ?? false)
+                  }
+              }
           }
 
           // ================= Root Shell =================
           struct StoreRootView: View {
               @ObservedObject var authManager: AuthManager
+              @StateObject private var feed = StoreFeed()
               @State private var tab: Int = 0
               @State private var showSearch = false
               @State private var showWalletOnboarding = false
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
-
+          
               var body: some View {
                   ZStack(alignment: .bottom) {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
-
+          
                       Group {
                           switch tab {
-                          case 0: StoreHomeView()
+                          case 0: StoreHomeView(feed: feed)
                           case 1:
                               Color.clear
                                   .fullScreenCover(isPresented: $showWalletOnboarding) {
@@ -1188,23 +1378,23 @@ jobs:
                                   )
                           case 2: AlertsView()
                           case 3: SocialView(authManager: authManager)
-                          default: StoreHomeView()
+                          default: StoreHomeView(feed: feed)
                           }
                       }
                       .padding(.bottom, 90)
-
+          
                       StoreTabBar(tab: $tab, onSearch: { showSearch = true })
                   }
-                  .sheet(isPresented: $showSearch) { SearchView() }
+                  .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
                   .preferredColorScheme(.light)
               }
           }
-
+          
           // ================= Tab Bar =================
           struct StoreTabBar: View {
               @Binding var tab: Int
               var onSearch: () -> Void
-
+          
               var body: some View {
                   ZStack {
                       HStack {
@@ -1222,7 +1412,7 @@ jobs:
                               .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: -2)
                       )
                       .padding(.horizontal, 12)
-
+          
                       Button(action: { HapticManager.shared.impact(.light); onSearch() }) {
                           Image(systemName: "magnifyingglass")
                               .font(.system(size: 20, weight: .bold))
@@ -1235,7 +1425,7 @@ jobs:
                   }
                   .padding(.bottom, 16)
               }
-
+          
               @ViewBuilder
               private func tabItem(icon: String, label: String, index: Int) -> some View {
                   Button {
@@ -1252,49 +1442,154 @@ jobs:
                   }
               }
           }
-
+          
           // ================= Home Tab =================
           struct StoreHomeView: View {
+              @ObservedObject var feed: StoreFeed
+
               var body: some View {
                   NavigationStack {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 22) {
-                              StoreHeader(title: "Store")
-                              DiscountBanner()
-                              SectionHeader(title: "Popular Apps")
-                              LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
-                                  ForEach(StoreCatalog.popular) { app in
-                                      NavigationLink(value: app) { AppTile(app: app) }
-                                          .buttonStyle(.plain)
-                                  }
-                              }
-                              .padding(.horizontal, 20)
+                              StoreHeader(title: "Store", onRefresh: {
+                                  HapticManager.shared.impact(.light)
+                                  Task { await feed.refresh() }
+                              })
 
-                              SectionHeader(title: "Flash Apps")
-                              ScrollView(.horizontal, showsIndicators: false) {
-                                  HStack(spacing: 14) {
-                                      ForEach(StoreCatalog.flash) { app in
-                                          NavigationLink(value: app) { FlashCard(app: app) }
+                              DiscountBanner()
+                              StoreStatusBar(feed: feed)
+
+                              if feed.apps.isEmpty && feed.isLoading {
+                                  LoadingGrid()
+                              } else if feed.apps.isEmpty {
+                                  EmptyState(message: feed.lastError ?? "No apps available.")
+                              } else {
+                                  SectionHeader(title: "Popular Apps", count: feed.featured.count)
+                                  LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
+                                      ForEach(feed.featured) { app in
+                                          NavigationLink(value: app) { AppTile(app: app) }
                                               .buttonStyle(.plain)
                                       }
                                   }
                                   .padding(.horizontal, 20)
+
+                                  SectionHeader(title: "All Apps", count: feed.allSorted.count)
+                                  ScrollView(.horizontal, showsIndicators: false) {
+                                      HStack(spacing: 14) {
+                                          ForEach(feed.allSorted) { app in
+                                              NavigationLink(value: app) { FlashCard(app: app) }
+                                                  .buttonStyle(.plain)
+                                          }
+                                      }
+                                      .padding(.horizontal, 20)
+                                  }
                               }
                               Spacer(minLength: 12)
                           }
                           .padding(.top, 8)
                       }
+                      .refreshable { await feed.refresh() }
                       .navigationBarHidden(true)
-                      .navigationDestination(for: StoreApp.self) { app in
+                      .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
                       }
                   }
               }
           }
 
+          // ================= Status bar (loading / error / updated time) =================
+          struct StoreStatusBar: View {
+              @ObservedObject var feed: StoreFeed
+
+              var body: some View {
+                  HStack(spacing: 8) {
+                      if feed.isLoading {
+                          ProgressView().scaleEffect(0.7)
+                      } else {
+                          Image(systemName: "checkmark.seal.fill")
+                              .foregroundColor(.walletGreen)
+                      }
+                      if let updated = feed.lastUpdated {
+                          Text("Updated: \(formatDate(updated))")
+                              .font(.system(size: 11, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      } else if let err = feed.lastError {
+                          Text(err)
+                              .font(.system(size: 11, weight: .semibold))
+                              .foregroundColor(.storePink)
+                              .lineLimit(1)
+                      } else {
+                          Text("Source: kurdstore.info")
+                              .font(.system(size: 11, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      }
+                      Spacer()
+                      Text("\(feed.apps.count) apps")
+                          .font(.system(size: 11, weight: .bold))
+                          .foregroundColor(.storePrimary)
+                          .padding(.horizontal, 8).padding(.vertical, 3)
+                          .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                  }
+                  .padding(.horizontal, 20)
+              }
+
+              private func formatDate(_ iso: String) -> String {
+                  let f = ISO8601DateFormatter()
+                  f.formatOptions = [.withInternetDateTime]
+                  if let d = f.date(from: iso) {
+                      let df = DateFormatter()
+                      df.dateFormat = "yyyy-MM-dd HH:mm"
+                      return df.string(from: d)
+                  }
+                  return String(iso.prefix(16))
+              }
+          }
+
+          // ================= Loading / Empty states =================
+          struct LoadingGrid: View {
+              var body: some View {
+                  VStack(spacing: 14) {
+                      ForEach(0..<3, id: \.self) { _ in
+                          HStack(spacing: 14) {
+                              ForEach(0..<4, id: \.self) { _ in
+                                  VStack(spacing: 8) {
+                                      RoundedRectangle(cornerRadius: 16)
+                                          .fill(Color.storeDivider)
+                                          .frame(height: 72)
+                                          .redacted(reason: .placeholder)
+                                      RoundedRectangle(cornerRadius: 4)
+                                          .fill(Color.storeDivider)
+                                          .frame(width: 50, height: 8)
+                                  }
+                              }
+                          }
+                          .padding(.horizontal, 20)
+                      }
+                  }
+              }
+          }
+
+          struct EmptyState: View {
+              let message: String
+              var body: some View {
+                  VStack(spacing: 10) {
+                      Image(systemName: "tray.fill")
+                          .font(.system(size: 36))
+                          .foregroundColor(.storeSub)
+                      Text(message)
+                          .font(.system(size: 13, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                          .multilineTextAlignment(.center)
+                          .padding(.horizontal, 40)
+                  }
+                  .padding(.vertical, 60)
+              }
+          }
+          
           // ================= Header =================
           struct StoreHeader: View {
               let title: String
+              var onRefresh: (() -> Void)? = nil
               var body: some View {
                   HStack {
                       Button { } label: {
@@ -1311,15 +1606,24 @@ jobs:
                           .foregroundColor(.storeText)
                       Spacer()
                       HStack(spacing: 10) {
+                          if let onRefresh {
+                              Button(action: onRefresh) {
+                                  Image(systemName: "arrow.clockwise")
+                                      .font(.system(size: 15, weight: .semibold))
+                                      .foregroundColor(.storeText)
+                                      .frame(width: 40, height: 40)
+                                      .background(Circle().fill(Color.storeCard))
+                                      .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
+                              }
+                          }
                           IconChip(icon: "bell.fill", badge: true)
-                          IconChip(icon: "magnifyingglass", badge: false)
                       }
                   }
                   .padding(.horizontal, 20)
                   .padding(.top, 8)
               }
           }
-
+          
           struct IconChip: View {
               let icon: String
               let badge: Bool
@@ -1337,7 +1641,7 @@ jobs:
                   }
               }
           }
-
+          
           // ================= Discount Banner =================
           struct DiscountBanner: View {
               var body: some View {
@@ -1346,10 +1650,10 @@ jobs:
                           .fill(LinearGradient(colors: [.storePrimary, .storePrimaryDk], startPoint: .leading, endPoint: .trailing))
                           .frame(height: 150)
                           .shadow(color: Color.storePrimary.opacity(0.3), radius: 16, y: 8)
-
+          
                       Circle().fill(Color.white.opacity(0.1)).frame(width: 120, height: 120).offset(x: 220, y: -20)
                       Circle().fill(Color.white.opacity(0.08)).frame(width: 60, height: 60).offset(x: 180, y: 40)
-
+          
                       HStack {
                           VStack(alignment: .leading, spacing: 8) {
                               Text("Weekly Offer")
@@ -1373,89 +1677,110 @@ jobs:
                   .padding(.horizontal, 20)
               }
           }
-
+          
           // ================= Section Header =================
           struct SectionHeader: View {
               let title: String
+              var count: Int? = nil
               var body: some View {
                   HStack {
                       Text(title)
                           .font(.system(size: 16, weight: .bold))
                           .foregroundColor(.storeText)
+                      if let c = count {
+                          Text("(\(c))")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.storeSub)
+                      }
                       Spacer()
-                      Text("All")
+                      Text("See all")
                           .font(.system(size: 13, weight: .semibold))
                           .foregroundColor(.storePrimary)
                   }
                   .padding(.horizontal, 20)
               }
           }
-
+          
           // ================= App Tile (grid) =================
           struct AppTile: View {
-              let app: StoreApp
+              let app: StoreAPIApp
               var body: some View {
                   VStack(spacing: 8) {
-                      ZStack {
+                      ZStack(alignment: .topTrailing) {
                           RoundedRectangle(cornerRadius: 16)
-                              .fill(app.color.opacity(0.15))
+                              .fill(colorForCategory(app.category).opacity(0.15))
                               .frame(height: 72)
-                          Image(systemName: app.icon)
-                              .font(.system(size: 26, weight: .bold))
-                              .foregroundColor(app.color)
+                          RemoteIcon(url: app.icon, size: 64, cornerRadius: 14)
+                              .padding(4)
                       }
+                      .frame(height: 72)
+
                       Text(app.name)
                           .font(.system(size: 11, weight: .semibold))
                           .foregroundColor(.storeText)
                           .lineLimit(1)
+                          .truncationMode(.tail)
                   }
                   .onTapGesture {
                       HapticManager.shared.selection()
                   }
               }
           }
-
+          
           // ================= Flash Card =================
           struct FlashCard: View {
-              let app: StoreApp
+              let app: StoreAPIApp
               var body: some View {
                   VStack(alignment: .leading, spacing: 8) {
-                      ZStack(alignment: .topTrailing) {
+                      ZStack(alignment: .bottomLeading) {
                           RoundedRectangle(cornerRadius: 18)
-                              .fill(LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.6)],
+                              .fill(LinearGradient(colors: [colorForCategory(app.category).opacity(0.9),
+                                                          colorForCategory(app.category).opacity(0.6)],
                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
-                              .frame(width: 150, height: 110)
-                          Image(systemName: app.icon)
-                              .font(.system(size: 44))
-                              .foregroundColor(.white.opacity(0.95))
-                              .padding(14)
+                              .frame(width: 160, height: 110)
+                          RemoteIcon(url: app.icon, size: 86, cornerRadius: 18)
+                              .frame(width: 86, height: 86, alignment: .center)
+                              .position(x: 80, y: 55)
                       }
                       Text(app.name)
                           .font(.system(size: 13, weight: .semibold))
                           .foregroundColor(.storeText)
-                      Text(app.category)
-                          .font(.system(size: 11))
-                          .foregroundColor(.storeSub)
+                          .lineLimit(1)
+                      HStack(spacing: 4) {
+                          Text(app.category ?? "App")
+                              .font(.system(size: 11))
+                              .foregroundColor(.storeSub)
+                              .lineLimit(1)
+                          Spacer(minLength: 4)
+                          if let s = app.ipaSize {
+                              Text(s)
+                                  .font(.system(size: 10, weight: .semibold))
+                                  .foregroundColor(.storeSub)
+                          }
+                      }
                   }
-                  .frame(width: 150)
+                  .frame(width: 160)
                   .onTapGesture {
                       HapticManager.shared.selection()
                   }
               }
           }
-
+          
           // ================= App Detail =================
           struct AppDetailView: View {
-              let app: StoreApp
+              let app: StoreAPIApp
               @Environment(\.dismiss) private var dismiss
+              @State private var showScreenshots = false
+              @State private var screenshotStartIndex = 0
 
               var body: some View {
                   ScrollView {
                       VStack(spacing: 0) {
                           ZStack(alignment: .topLeading) {
-                              LinearGradient(colors: [app.color.opacity(0.9), app.color.opacity(0.5)],
+                              LinearGradient(colors: [colorForCategory(app.category).opacity(0.9),
+                                                      colorForCategory(app.category).opacity(0.5)],
                                              startPoint: .topLeading, endPoint: .bottomTrailing)
-                                  .frame(height: 260)
+                                  .frame(height: 280)
                                   .clipShape(RoundedCorner(radius: 30, corners: [.bottomLeft, .bottomRight]))
                               HStack {
                                   Button { dismiss() } label: {
@@ -1466,28 +1791,25 @@ jobs:
                                           .background(Circle().fill(Color.white))
                                   }
                                   Spacer()
-                                  IconChip(icon: "bell.fill", badge: true)
-                                  IconChip(icon: "magnifyingglass", badge: false)
+                                  IconChip(icon: "square.and.arrow.up.fill", badge: false)
                               }
                               .padding(.horizontal, 20)
                               .padding(.top, 8)
 
-                              Image(systemName: app.icon)
-                                  .font(.system(size: 100))
-                                  .foregroundColor(.white.opacity(0.9))
+                              RemoteIcon(url: app.icon, size: 130, cornerRadius: 28)
                                   .frame(maxWidth: .infinity, alignment: .center)
-                                  .padding(.top, 70)
+                                  .padding(.top, 80)
+                                  .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
                           }
 
                           HStack(spacing: 14) {
-                              ZStack {
-                                  RoundedRectangle(cornerRadius: 16).fill(app.color.opacity(0.2)).frame(width: 70, height: 70)
-                                  Image(systemName: app.icon).font(.system(size: 30)).foregroundColor(app.color)
-                              }
+                              RemoteIcon(url: app.icon, size: 70, cornerRadius: 16)
                               VStack(alignment: .leading, spacing: 4) {
                                   Text(app.name).font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
-                                  Text(app.category).font(.system(size: 12, weight: .semibold)).foregroundColor(.storePink)
-                                  Text("In-app purchases").font(.system(size: 11)).foregroundColor(.storeSub)
+                                  Text(app.category ?? "App").font(.system(size: 12, weight: .semibold)).foregroundColor(.storePink)
+                                  if let bid = app.bundleId {
+                                      Text(bid).font(.system(size: 10, weight: .medium)).foregroundColor(.storeSub).lineLimit(1)
+                                  }
                               }
                               Spacer()
                               Button { HapticManager.shared.success() } label: {
@@ -1504,30 +1826,79 @@ jobs:
                           .offset(y: -40)
 
                           HStack {
-                              StatCell(top: "\(String(format: "%.1f", app.rating))★", bottom: "\(app.downloads) review")
+                              StatCell(top: "v\(app.bundleVersion ?? "—")", bottom: "Version")
                               Divider().frame(height: 40)
-                              StatCell(top: "\(app.size)", bottom: "Size")
+                              StatCell(top: app.ipaSize ?? "—", bottom: "Size")
                               Divider().frame(height: 40)
-                              StatCell(top: app.downloads, bottom: "Downloads")
+                              StatCell(top: (app.host ?? "—").capitalized, bottom: "Host")
                           }
                           .padding(.horizontal, 30)
                           .offset(y: -20)
+
+                          // Screenshots
+                          if let shots = app.screenshots, !shots.isEmpty {
+                              VStack(alignment: .leading, spacing: 10) {
+                                  HStack {
+                                      Text("Screenshots")
+                                          .font(.system(size: 16, weight: .bold))
+                                          .foregroundColor(.storeText)
+                                      Spacer()
+                                  }
+                                  .padding(.horizontal, 20)
+                                  .padding(.top, 4)
+
+                                  ScrollView(.horizontal, showsIndicators: false) {
+                                      HStack(spacing: 12) {
+                                          ForEach(Array(shots.enumerated()), id: \.offset) { idx, url in
+                                              Button {
+                                                  screenshotStartIndex = idx
+                                                  showScreenshots = true
+                                              } label: {
+                                                  RemoteIcon(url: url, size: 200, cornerRadius: 14)
+                                                      .frame(width: 200, height: 380)
+                                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeDivider))
+                                              }
+                                              .buttonStyle(.plain)
+                                          }
+                                      }
+                                      .padding(.horizontal, 20)
+                                  }
+                              }
+                              .padding(.top, 4)
+                          }
 
                           VStack(alignment: .leading, spacing: 10) {
                               HStack {
                                   Text("About").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText)
                                   Spacer()
                               }
-                              Text("Enjoy the premium unlocked version of \(app.name) with all features enabled. Exclusive on 21s Store - the private apps marketplace tailored for you.")
+                              Text(app.cleanDescription)
                                   .font(.system(size: 13))
                                   .foregroundColor(.storeSub)
                                   .lineSpacing(4)
 
-                              HStack { Text("Features").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText); Spacer() }
+                              if let url = app.ipaUrl, let ipa = URL(string: url) {
+                                  HStack {
+                                      Text("Direct download").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText)
+                                      Spacer()
+                                  }
                                   .padding(.top, 6)
-
-                              ForEach(featureLines.indices, id: \.self) { i in
-                                  FeatureRow(index: i + 1, text: featureLines[i], color: featureColors[i % featureColors.count])
+                                  Button {
+                                      UIPasteboard.general.url = ipa
+                                      HapticManager.shared.success()
+                                  } label: {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "link")
+                                          Text(ipa.lastPathComponent)
+                                              .lineLimit(1)
+                                              .truncationMode(.middle)
+                                      }
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(.storePrimary)
+                                      .padding(.horizontal, 12).padding(.vertical, 10)
+                                      .frame(maxWidth: .infinity, alignment: .leading)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary.opacity(0.10)))
+                                  }
                               }
                           }
                           .padding(.horizontal, 20)
@@ -1537,12 +1908,53 @@ jobs:
                   }
                   .background(Color.storeBg.ignoresSafeArea())
                   .navigationBarHidden(true)
+                  .sheet(isPresented: $showScreenshots) {
+                      ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
+                  }
+              }
+          }
+
+          // ================= Screenshot Gallery =================
+          struct ScreenshotGallery: View {
+              let urls: [String]
+              let startIndex: Int
+              @Environment(\.dismiss) private var dismiss
+              @State private var idx: Int
+
+              init(urls: [String], startIndex: Int) {
+                  self.urls = urls
+                  self.startIndex = startIndex
+                  self._idx = State(initialValue: startIndex)
               }
 
-              private var featureLines: [String] {
-                  ["Ad-free premium experience", "Extra unlocked themes", "Priority customer support"]
+              var body: some View {
+                  ZStack {
+                      Color.black.ignoresSafeArea()
+                      TabView(selection: $idx) {
+                          ForEach(Array(urls.enumerated()), id: \.offset) { i, url in
+                              RemoteIcon(url: url, size: 320, cornerRadius: 0)
+                                  .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                  .padding(.horizontal, 4)
+                                  .tag(i)
+                          }
+                      }
+                      .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
+                      .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .always))
+
+                      VStack {
+                          HStack {
+                              Spacer()
+                              Button { dismiss() } label: {
+                                  Image(systemName: "xmark.circle.fill")
+                                      .font(.system(size: 30))
+                                      .foregroundColor(.white.opacity(0.85))
+                              }
+                              .padding(16)
+                          }
+                          Spacer()
+                      }
+                  }
               }
-              private var featureColors: [Color] { [.storePrimary, .storePink, .storeCyan] }
           }
 
           struct StatCell: View {
@@ -1551,12 +1963,13 @@ jobs:
               var body: some View {
                   VStack(spacing: 4) {
                       Text(top).font(.system(size: 15, weight: .bold)).foregroundColor(.storeText)
+                          .lineLimit(1).minimumScaleFactor(0.7)
                       Text(bottom).font(.system(size: 11)).foregroundColor(.storeSub)
                   }
                   .frame(maxWidth: .infinity)
               }
           }
-
+          
           struct FeatureRow: View {
               let index: Int
               let text: String
@@ -1579,7 +1992,7 @@ jobs:
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
               }
           }
-
+          
           struct RoundedCorner: Shape {
               var radius: CGFloat
               var corners: UIRectCorner
@@ -1589,9 +2002,9 @@ jobs:
                   return Path(p.cgPath)
               }
           }
-
+          
           // ============================================================
-          // WALLET ONBOARDING (3 screens) - shown on first Wallet tap
+          // WALLET ONBOARDING (3 screens) — shown on first Wallet tap
           // ============================================================
           struct WalletOnboardingPage: Identifiable {
               let id = UUID()
@@ -1599,12 +2012,12 @@ jobs:
               let title: String
               let description: String
           }
-
+          
           struct WalletOnboardingView: View {
               @Binding var isPresented: Bool
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
               @State private var currentPage = 0
-
+          
               private let pages: [WalletOnboardingPage] = [
                   WalletOnboardingPage(
                       imageName: "wallet_onboarding1.png",
@@ -1622,11 +2035,11 @@ jobs:
                       description: "Get instant receipts and full history of every transaction made through your wallet."
                   )
               ]
-
+          
               var body: some View {
                   ZStack {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
-
+          
                       VStack(spacing: 0) {
                           HStack {
                               Spacer()
@@ -1643,7 +2056,7 @@ jobs:
                           }
                           .padding(.horizontal, 16)
                           .padding(.top, 8)
-
+          
                           TabView(selection: $currentPage) {
                               ForEach(pages.indices, id: \.self) { index in
                                   WalletOnboardingPageView(page: pages[index])
@@ -1652,7 +2065,7 @@ jobs:
                           }
                           .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
                           .animation(.easeInOut, value: currentPage)
-
+          
                           HStack(spacing: 8) {
                               ForEach(pages.indices, id: \.self) { index in
                                   Circle()
@@ -1664,7 +2077,7 @@ jobs:
                               }
                           }
                           .padding(.top, 20)
-
+          
                           Button {
                               HapticManager.shared.impact(.medium)
                               if currentPage < pages.count - 1 {
@@ -1695,10 +2108,10 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-
+          
           struct WalletOnboardingPageView: View {
               let page: WalletOnboardingPage
-
+          
               var body: some View {
                   VStack(spacing: 20) {
                       if let img = UIImage.bundled(page.imageName) {
@@ -1713,24 +2126,24 @@ jobs:
                               .foregroundColor(.storeAccent)
                               .padding(.top, 40)
                       }
-
+          
                       Text(page.title)
                           .font(.system(size: 26, weight: .bold))
                           .foregroundColor(.storeText)
                           .multilineTextAlignment(.center)
-
+          
                       Text(page.description)
                           .font(.system(size: 15))
                           .foregroundColor(.storeSub)
                           .multilineTextAlignment(.center)
                           .padding(.horizontal, 32)
-
+          
                       Spacer()
                   }
                   .padding(.horizontal, 16)
               }
           }
-
+          
           // ============================================================
           // WALLET TAB
           // ============================================================
@@ -1743,27 +2156,25 @@ jobs:
               @State private var copiedText: String = ""
               @State private var tempUserID: String = ""
               @State private var tempCardNumber: String = ""
-
-              // Reveal toggles for the values shown on the card itself
+          
               @State private var isUserIDRevealed: Bool = false
               @State private var isCardNumberRevealed: Bool = false
-
+          
               private var displayUserID: String {
                   if !storedWalletUserID.isEmpty { return storedWalletUserID }
                   return generateUserID()
               }
-
+          
               private var displayCardNumber: String {
                   if !storedCardNumber.isEmpty { return storedCardNumber }
                   return generateCardNumber()
               }
-
+          
               var body: some View {
                   ScrollView {
                       VStack(spacing: 20) {
                           StoreHeader(title: "Wallet")
-
-                          // ---------- BETA Header ----------
+          
                           HStack {
                               HStack(spacing: 6) {
                                   Image(systemName: "exclamationmark.shield.fill")
@@ -1777,17 +2188,14 @@ jobs:
                               .padding(.horizontal, 12).padding(.vertical, 6)
                               .background(Capsule().fill(Color.betaOrange))
                               .shadow(color: Color.betaOrange.opacity(0.3), radius: 6, y: 3)
-
                               Spacer()
-
                               Text("Wallet v1.0")
                                   .font(.system(size: 11, weight: .semibold))
                                   .foregroundColor(.storeSub)
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
-
-                          // ---------- Card (with hidden values + tap-to-reveal-and-copy) ----------
+          
                           CreditCardView(
                               userID: displayUserID,
                               cardNumber: displayCardNumber,
@@ -1799,11 +2207,7 @@ jobs:
                               onToggleCardNumber: { toggleReveal(forID: false) }
                           )
                           .padding(.horizontal, 20)
-
-                          // (Removed the duplicate UserIDSection and CardNumberSection below the card)
-
-                          // ---------- Current Balance (removed) ----------
-
+          
                           Spacer(minLength: 40)
                       }
                       .padding(.top, 8)
@@ -1847,8 +2251,7 @@ jobs:
                       alignment: .top
                   )
               }
-
-              // Reveal the value (if not already revealed) AND copy it to clipboard
+          
               private func toggleReveal(forID: Bool) {
                   HapticManager.shared.impact(.light)
                   if forID {
@@ -1858,9 +2261,7 @@ jobs:
                           showCopiedToast = true
                           DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { showCopiedToast = false }
                       }
-                      withAnimation(.easeInOut(duration: 0.2)) {
-                          isUserIDRevealed.toggle()
-                      }
+                      withAnimation(.easeInOut(duration: 0.2)) { isUserIDRevealed.toggle() }
                   } else {
                       if !isCardNumberRevealed {
                           UIPasteboard.general.string = displayCardNumber
@@ -1868,13 +2269,10 @@ jobs:
                           showCopiedToast = true
                           DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { showCopiedToast = false }
                       }
-                      withAnimation(.easeInOut(duration: 0.2)) {
-                          isCardNumberRevealed.toggle()
-                      }
+                      withAnimation(.easeInOut(duration: 0.2)) { isCardNumberRevealed.toggle() }
                   }
               }
-
-              // Generate a 12-character hex user ID like 4F8B-92A1-7D3E
+          
               private func generateUserID() -> String {
                   let chars = "ABCDEF0123456789"
                   var s = ""
@@ -1884,8 +2282,7 @@ jobs:
                   }
                   return s
               }
-
-              // Generate a 16-digit card number formatted as groups of 4
+          
               private func generateCardNumber() -> String {
                   var s = ""
                   for i in 0..<16 {
@@ -1895,9 +2292,9 @@ jobs:
                   return s
               }
           }
-
+          
           // ============================================================
-          // CREDIT CARD VIEW - values hidden by default, tap to reveal+copy
+          // CREDIT CARD VIEW — hidden by default, tap to reveal+copy
           // ============================================================
           struct CreditCardView: View {
               let userID: String
@@ -1908,35 +2305,26 @@ jobs:
               let isCardNumberRevealed: Bool
               let onToggleUserID: () -> Void
               let onToggleCardNumber: () -> Void
-
+          
               var body: some View {
                   VStack(alignment: .leading, spacing: 0) {
-                      // Top row
                       HStack {
                           HStack(spacing: 6) {
                               Circle().fill(Color.white.opacity(0.3)).frame(width: 26, height: 26)
                               Circle().fill(Color.white.opacity(0.18)).frame(width: 26, height: 26)
-                              Text("21s")
-                                  .font(.system(size: 16, weight: .black))
-                                  .foregroundColor(.white)
+                              Text("21s").font(.system(size: 16, weight: .black)).foregroundColor(.white)
                           }
                           Spacer()
                           HStack(spacing: 6) {
-                              Image(systemName: "exclamationmark.shield.fill")
-                                  .font(.system(size: 10, weight: .bold))
-                                  .foregroundColor(.white)
-                              Text("BETA")
-                                  .font(.system(size: 11, weight: .black))
-                                  .foregroundColor(.white)
-                                  .tracking(1.2)
+                              Image(systemName: "exclamationmark.shield.fill").font(.system(size: 10, weight: .bold)).foregroundColor(.white)
+                              Text("BETA").font(.system(size: 11, weight: .black)).foregroundColor(.white).tracking(1.2)
                           }
                           .padding(.horizontal, 10).padding(.vertical, 5)
                           .background(Capsule().fill(Color.betaOrange))
                       }
-
+          
                       Spacer().frame(height: 28)
-
-                      // Chip
+          
                       HStack {
                           RoundedRectangle(cornerRadius: 6)
                               .fill(LinearGradient(colors: [Color(red: 0.95, green: 0.83, blue: 0.45), Color(red: 0.78, green: 0.62, blue: 0.22)], startPoint: .top, endPoint: .bottom))
@@ -1949,14 +2337,11 @@ jobs:
                                   }
                               )
                           Spacer()
-                          Image(systemName: "wave.3.right")
-                              .font(.system(size: 20, weight: .bold))
-                              .foregroundColor(.white.opacity(0.85))
+                          Image(systemName: "wave.3.right").font(.system(size: 20, weight: .bold)).foregroundColor(.white.opacity(0.85))
                       }
-
+          
                       Spacer().frame(height: 18)
-
-                      // Card number - tap to reveal & copy
+          
                       Button(action: onToggleCardNumber) {
                           HStack(spacing: 8) {
                               Text(isCardNumberRevealed
@@ -1976,42 +2361,29 @@ jobs:
                           }
                       }
                       .buttonStyle(.plain)
-
+          
                       Spacer().frame(height: 18)
-
+          
                       HStack {
-                          // User ID - tap to reveal & copy
                           Button(action: onToggleUserID) {
                               VStack(alignment: .leading, spacing: 2) {
                                   HStack(spacing: 4) {
-                                      Text("USER ID")
-                                          .font(.system(size: 9, weight: .bold))
-                                          .foregroundColor(.white.opacity(0.7))
-                                          .tracking(1.2)
-                                      Image(systemName: isUserIDRevealed ? "eye.fill" : "eye.slash.fill")
-                                          .font(.system(size: 9, weight: .bold))
-                                          .foregroundColor(.white.opacity(0.85))
+                                      Text("USER ID").font(.system(size: 9, weight: .bold)).foregroundColor(.white.opacity(0.7)).tracking(1.2)
+                                      Image(systemName: isUserIDRevealed ? "eye.fill" : "eye.slash.fill").font(.system(size: 9, weight: .bold)).foregroundColor(.white.opacity(0.85))
                                   }
                                   Text(isUserIDRevealed
                                        ? (isIDSet ? userID : "••••-••••-••••")
                                        : "••••-••••-••••")
                                       .font(.system(size: 13, weight: .bold, design: .monospaced))
                                       .foregroundColor(.white)
-                                      .lineLimit(1)
-                                      .minimumScaleFactor(0.7)
+                                      .lineLimit(1).minimumScaleFactor(0.7)
                               }
                           }
                           .buttonStyle(.plain)
-
                           Spacer()
                           VStack(alignment: .trailing, spacing: 2) {
-                              Text("VALID")
-                                  .font(.system(size: 9, weight: .bold))
-                                  .foregroundColor(.white.opacity(0.7))
-                                  .tracking(1.2)
-                              Text("12/29")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.white)
+                              Text("VALID").font(.system(size: 9, weight: .bold)).foregroundColor(.white.opacity(0.7)).tracking(1.2)
+                              Text("12/29").font(.system(size: 13, weight: .bold)).foregroundColor(.white)
                           }
                       }
                   }
@@ -2035,31 +2407,31 @@ jobs:
                   .shadow(color: Color.walletDark.opacity(0.3), radius: 18, y: 8)
               }
           }
-
+          
           // ============================================================
           // LOOPING GIF PLAYER
           // ============================================================
           struct LoopingGifPlayer: UIViewRepresentable {
               let resourceName: String
               let ext: String
-
+          
               func makeUIView(context: Context) -> UIView {
                   let container = UIView()
                   container.backgroundColor = .clear
-
+          
                   let imageView = UIImageView()
                   imageView.contentMode = .scaleAspectFit
                   imageView.translatesAutoresizingMaskIntoConstraints = false
                   imageView.clipsToBounds = true
                   container.addSubview(imageView)
-
+          
                   NSLayoutConstraint.activate([
                       imageView.topAnchor.constraint(equalTo: container.topAnchor),
                       imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
                       imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
                       imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
                   ])
-
+          
                   if let gif = UIImage.gif(name: resourceName) {
                       imageView.image = gif
                   } else {
@@ -2071,13 +2443,13 @@ jobs:
                           imageView.image = UIImage.bundled("\(resourceName).png")
                       }
                   }
-
+          
                   return container
               }
-
+          
               func updateUIView(_ uiView: UIView, context: Context) {}
           }
-
+          
           extension UIImage {
               static func gif(name: String) -> UIImage? {
                   guard let path = Bundle.main.path(forResource: name, ofType: "gif") else { return nil }
@@ -2085,7 +2457,7 @@ jobs:
                   guard let data = try? Data(contentsOf: url) else { return nil }
                   return gif(data: data)
               }
-
+          
               static func gif(data: Data) -> UIImage? {
                   guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
                   let count = CGImageSourceGetCount(source)
@@ -2106,7 +2478,7 @@ jobs:
                   return UIImage.animatedImage(with: images, duration: duration)
               }
           }
-
+          
           // ============================================================
           // EDIT ID SHEET
           // ============================================================
@@ -2115,76 +2487,39 @@ jobs:
               @Binding var userID: String
               var onSave: (String) -> Void
               @State private var draft: String = ""
-
+          
               var body: some View {
                   NavigationView {
                       VStack(spacing: 18) {
-                          Image(systemName: "person.crop.square.filled.at.rectangle")
-                              .font(.system(size: 50))
-                              .foregroundColor(.storePrimary)
-                              .padding(.top, 20)
-
-                          Text("Set Your Real User ID")
-                              .font(.system(size: 18, weight: .bold))
-                              .foregroundColor(.storeText)
-
-                          Text("This ID will be linked to your account and used in your wallet card.")
-                              .font(.system(size: 12))
-                              .foregroundColor(.storeSub)
-                              .multilineTextAlignment(.center)
-                              .padding(.horizontal, 24)
-
-                          TextField("Enter User ID", text: $draft)
-                              .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                              .padding(.horizontal, 14)
-                              .frame(height: 50)
-                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg))
-                              .padding(.horizontal, 20)
-                              .autocapitalization(.allCharacters)
-                              .disableAutocorrection(true)
-
+                          Image(systemName: "person.crop.square.filled.at.rectangle").font(.system(size: 50)).foregroundColor(.storePrimary).padding(.top, 20)
+                          Text("Set Your Real User ID").font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                          Text("This ID will be linked to your account and used in your wallet card.").font(.system(size: 12)).foregroundColor(.storeSub).multilineTextAlignment(.center).padding(.horizontal, 24)
+                          TextField("Enter User ID", text: $draft).font(.system(size: 15, weight: .semibold, design: .monospaced)).padding(.horizontal, 14).frame(height: 50).background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg)).padding(.horizontal, 20).autocapitalization(.allCharacters).disableAutocorrection(true)
                           HStack(spacing: 6) {
-                              Image(systemName: "exclamationmark.triangle.fill")
-                                  .font(.system(size: 10))
-                                  .foregroundColor(.storePink)
-                              Text("This is permanent and cannot be changed later.")
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.storeSub)
+                              Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundColor(.storePink)
+                              Text("This is permanent and cannot be changed later.").font(.system(size: 10, weight: .medium)).foregroundColor(.storeSub)
                           }
                           .padding(.horizontal, 24)
-
                           Spacer()
-
                           Button {
                               let cleaned = draft.uppercased().trimmingCharacters(in: .whitespaces)
-                              if cleaned.count >= 4 {
-                                  onSave(cleaned)
-                                  dismiss()
-                              }
+                              if cleaned.count >= 4 { onSave(cleaned); dismiss() }
                           } label: {
-                              Text("Save User ID")
-                                  .font(.system(size: 15, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: 50)
-                                  .background(Capsule().fill(Color.storePrimary))
+                              Text("Save User ID").font(.system(size: 15, weight: .bold)).foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 50).background(Capsule().fill(Color.storePrimary))
                           }
-                          .padding(.horizontal, 20)
-                          .padding(.bottom, 30)
+                          .padding(.horizontal, 20).padding(.bottom, 30)
                       }
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button("Cancel") { dismiss() }.foregroundColor(.storePrimary)
-                          }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() }.foregroundColor(.storePrimary) }
                       }
                   }
                   .onAppear { draft = userID }
                   .preferredColorScheme(.light)
               }
           }
-
+          
           // ============================================================
           // EDIT CARD SHEET
           // ============================================================
@@ -2193,32 +2528,14 @@ jobs:
               @Binding var cardNumber: String
               var onSave: (String) -> Void
               @State private var draft: String = ""
-
+          
               var body: some View {
                   NavigationView {
                       VStack(spacing: 18) {
-                          Image(systemName: "creditcard.fill")
-                              .font(.system(size: 50))
-                              .foregroundColor(.storePrimary)
-                              .padding(.top, 20)
-
-                          Text("Set Your Card Number")
-                              .font(.system(size: 18, weight: .bold))
-                              .foregroundColor(.storeText)
-
-                          Text("Enter the 16-digit number printed on the front of your card.")
-                              .font(.system(size: 12))
-                              .foregroundColor(.storeSub)
-                              .multilineTextAlignment(.center)
-                              .padding(.horizontal, 24)
-
-                          TextField("0000 0000 0000 0000", text: $draft)
-                              .font(.system(size: 16, weight: .bold, design: .monospaced))
-                              .padding(.horizontal, 14)
-                              .frame(height: 50)
-                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg))
-                              .padding(.horizontal, 20)
-                              .keyboardType(.numberPad)
+                          Image(systemName: "creditcard.fill").font(.system(size: 50)).foregroundColor(.storePrimary).padding(.top, 20)
+                          Text("Set Your Card Number").font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                          Text("Enter the 16-digit number printed on the front of your card.").font(.system(size: 12)).foregroundColor(.storeSub).multilineTextAlignment(.center).padding(.horizontal, 24)
+                          TextField("0000 0000 0000 0000", text: $draft).font(.system(size: 16, weight: .bold, design: .monospaced)).padding(.horizontal, 14).frame(height: 50).background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg)).padding(.horizontal, 20).keyboardType(.numberPad)
                               .onChange(of: draft) { newValue in
                                   let digits = newValue.filter { $0.isNumber }
                                   var formatted = ""
@@ -2228,49 +2545,31 @@ jobs:
                                   }
                                   if formatted != newValue { draft = formatted }
                               }
-
                           HStack(spacing: 6) {
-                              Image(systemName: "lock.fill")
-                                  .font(.system(size: 10))
-                                  .foregroundColor(.walletGreen)
-                              Text("Stored only on this device. Never shared.")
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.storeSub)
+                              Image(systemName: "lock.fill").font(.system(size: 10)).foregroundColor(.walletGreen)
+                              Text("Stored only on this device. Never shared.").font(.system(size: 10, weight: .medium)).foregroundColor(.storeSub)
                           }
                           .padding(.horizontal, 24)
-
                           Spacer()
-
                           Button {
                               let cleaned = draft.filter { $0.isNumber }
-                              if cleaned.count == 16 {
-                                  onSave(draft)
-                                  dismiss()
-                              }
+                              if cleaned.count == 16 { onSave(draft); dismiss() }
                           } label: {
-                              Text("Save Card")
-                                  .font(.system(size: 15, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: 50)
-                                  .background(Capsule().fill(Color.storePrimary))
+                              Text("Save Card").font(.system(size: 15, weight: .bold)).foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 50).background(Capsule().fill(Color.storePrimary))
                           }
-                          .padding(.horizontal, 20)
-                          .padding(.bottom, 30)
+                          .padding(.horizontal, 20).padding(.bottom, 30)
                       }
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button("Cancel") { dismiss() }.foregroundColor(.storePrimary)
-                          }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() }.foregroundColor(.storePrimary) }
                       }
                   }
                   .onAppear { draft = cardNumber }
                   .preferredColorScheme(.light)
               }
           }
-
+          
           // ============================================================
           // ALERTS TAB
           // ============================================================
@@ -2300,7 +2599,7 @@ jobs:
                   }
               }
           }
-
+          
           // ============================================================
           // SOCIAL / PROFILE TAB
           // ============================================================
@@ -2315,12 +2614,9 @@ jobs:
                                   Circle().fill(Color.storePrimary.opacity(0.15)).frame(width: 90, height: 90)
                                   Image(systemName: "person.fill").font(.system(size: 40)).foregroundColor(.storePrimary)
                               }
-                              Text(authManager.currentUser?.username ?? "User")
-                                  .font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
-                              Text(authManager.currentUser?.phoneNumber ?? "")
-                                  .font(.system(size: 12)).foregroundColor(.storeSub)
+                              Text(authManager.currentUser?.username ?? "User").font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                              Text(authManager.currentUser?.phoneNumber ?? "").font(.system(size: 12)).foregroundColor(.storeSub)
                           }
-
                           VStack(spacing: 10) {
                               ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
                               ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
@@ -2344,7 +2640,7 @@ jobs:
                   }
               }
           }
-
+          
           struct ProfileRow: View {
               let icon: String
               let label: String
@@ -2360,17 +2656,15 @@ jobs:
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
               }
           }
-
+          
           // ============================================================
           // SEARCH
           // ============================================================
           struct SearchView: View {
               @Environment(\.dismiss) private var dismiss
+              @ObservedObject var feed: StoreFeed
               @State private var query = ""
-              var results: [StoreApp] {
-                  if query.isEmpty { return StoreCatalog.wishlist }
-                  return StoreCatalog.wishlist.filter { $0.name.lowercased().contains(query.lowercased()) }
-              }
+              var results: [StoreAPIApp] { feed.search(query) }
               var body: some View {
                   NavigationView {
                       VStack {
@@ -2381,21 +2675,30 @@ jobs:
                           .padding(14)
                           .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeBg))
                           .padding(.horizontal, 16).padding(.top, 8)
-
+          
                           ScrollView {
                               LazyVStack(spacing: 10) {
                                   ForEach(results) { app in
-                                      HStack {
-                                          ZStack { RoundedRectangle(cornerRadius: 12).fill(app.color.opacity(0.15)).frame(width: 50, height: 50); Image(systemName: app.icon).foregroundColor(app.color) }
-                                          VStack(alignment: .leading) {
-                                              Text(app.name).font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
-                                              Text("\(app.category) · \(app.size)").font(.system(size: 11)).foregroundColor(.storeSub)
+                                      NavigationLink(destination: AppDetailView(app: app)) {
+                                          HStack {
+                                              RemoteIcon(url: app.icon, size: 50, cornerRadius: 12)
+                                              VStack(alignment: .leading) {
+                                                  Text(app.name).font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
+                                                  Text("\(app.category ?? "App") · \(app.ipaSize ?? "—")").font(.system(size: 11)).foregroundColor(.storeSub)
+                                              }
+                                              Spacer()
+                                              Image(systemName: "chevron.right").foregroundColor(.storeSub).font(.system(size: 12))
                                           }
-                                          Spacer()
-                                          Text("\(String(format: "%.1f", app.rating))★").font(.system(size: 12, weight: .bold)).foregroundColor(.storeYellow)
+                                          .padding(10)
+                                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
                                       }
-                                      .padding(10)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
+                                      .buttonStyle(.plain)
+                                  }
+                                  if results.isEmpty {
+                                      Text("No results")
+                                          .font(.system(size: 12, weight: .semibold))
+                                          .foregroundColor(.storeSub)
+                                          .padding(.top, 30)
                                   }
                               }
                               .padding(.horizontal, 16)
@@ -2411,7 +2714,7 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-
+          
           VIPEOF
 
 
