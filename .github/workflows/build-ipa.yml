@@ -48,6 +48,10 @@ jobs:
           curl -L -o Resources/wallet_onboarding3.png "https://up6.cc/2026/07/178465245783893.png"
           # Current Balance animation (GIF)
           curl -L -o Resources/balance_animation.gif "https://up6.cc/2026/07/178465646193711.gif"
+          # Alerts onboarding animations (GIFs)
+          curl -L -o Resources/alerts_onboarding1.gif "https://up6.cc/2026/07/178467158819014.gif"
+          curl -L -o Resources/alerts_onboarding2.gif "https://up6.cc/2026/07/178467158813032.gif"
+          curl -L -o Resources/alerts_onboarding3.gif "https://up6.cc/2026/07/17846720131242.gif"
           file Resources/*.png Resources/*.gif
           ls -lh Resources
 
@@ -2570,17 +2574,182 @@ jobs:
           }
           
           // ============================================================
-          // ALERTS TAB — matches the design: Alerts / Files segments,
-          // Downloading (with progress), Downloaded (with share + delete)
+          // ALERTS TAB — first-time onboarding (3 GIFs) + Alerts/Files segments.
+          // Real IPA download from the source URL with live progress,
+          // real share via UIActivityViewController, real file delete.
+          // Mirrors the same look/feel as the Wallet tab (BETA strip, version).
           // ============================================================
+          struct AlertsOnboardingPage: Identifiable {
+              let id = UUID()
+              let imageName: String   // resource name without ".gif"
+              let title: String
+              let description: String
+          }
+
+          struct AlertsOnboardingView: View {
+              @Binding var isPresented: Bool
+              @AppStorage("hasSeenAlertsOnboarding21s") private var hasSeenAlertsOnboarding: Bool = false
+              @State private var currentPage = 0
+              let pages: [AlertsOnboardingPage]
+
+              init(isPresented: Binding<Bool>, pages: [AlertsOnboardingPage]) {
+                  self._isPresented = isPresented
+                  self.pages = pages
+              }
+
+              var body: some View {
+                  ZStack {
+                      Color.storeBg.edgesIgnoringSafeArea(.all)
+
+                      VStack(spacing: 0) {
+                          HStack {
+                              Spacer()
+                              Button {
+                                  HapticManager.shared.selection()
+                                  hasSeenAlertsOnboarding = true
+                                  isPresented = false
+                              } label: {
+                                  Text("Skip")
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                                      .padding(.horizontal, 12).padding(.vertical, 8)
+                              }
+                          }
+                          .padding(.horizontal, 16)
+                          .padding(.top, 8)
+
+                          TabView(selection: $currentPage) {
+                              ForEach(pages.indices, id: \.self) { index in
+                                  VStack(spacing: 18) {
+                                      LoopingGifPlayer(
+                                          resourceName: pages[index].imageName,
+                                          ext: "gif"
+                                      )
+                                      .frame(width: 260, height: 260)
+                                      .padding(.top, 30)
+                                      .background(
+                                          RoundedRectangle(cornerRadius: 24)
+                                              .fill(Color.storeCard)
+                                              .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+                                      )
+                                      .padding(.horizontal, 28)
+
+                                      Text(pages[index].title)
+                                          .font(.system(size: 26, weight: .bold))
+                                          .foregroundColor(.storeText)
+                                          .multilineTextAlignment(.center)
+
+                                      Text(pages[index].description)
+                                          .font(.system(size: 14))
+                                          .foregroundColor(.storeSub)
+                                          .multilineTextAlignment(.center)
+                                          .padding(.horizontal, 32)
+
+                                      Spacer()
+                                  }
+                                  .padding(.horizontal, 16)
+                                  .tag(index)
+                              }
+                          }
+                          .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+                          .animation(.easeInOut, value: currentPage)
+
+                          HStack(spacing: 8) {
+                              ForEach(pages.indices, id: \.self) { index in
+                                  Circle()
+                                      .fill(currentPage == index ? Color.storePrimary : Color.storeDivider)
+                                      .frame(width: 8, height: 8)
+                                      .onTapGesture {
+                                          withAnimation { currentPage = index }
+                                      }
+                              }
+                          }
+                          .padding(.top, 20)
+
+                          Button {
+                              HapticManager.shared.impact(.medium)
+                              if currentPage < pages.count - 1 {
+                                  withAnimation { currentPage += 1 }
+                              } else {
+                                  hasSeenAlertsOnboarding = true
+                                  isPresented = false
+                              }
+                          } label: {
+                              HStack {
+                                  Text(currentPage == pages.count - 1 ? "Get Started" : "Next")
+                                      .font(.system(size: 16, weight: .semibold))
+                                  if currentPage < pages.count - 1 {
+                                      Image(systemName: "chevron.right")
+                                          .font(.system(size: 14, weight: .medium))
+                                  }
+                              }
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .frame(height: 54)
+                              .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .padding(.horizontal, 28)
+                          .padding(.top, 20)
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
           struct AlertsView: View {
               @ObservedObject var feed: StoreFeed
               @StateObject private var downloads = DownloadsManager.shared
               @State private var segment: AlertSegment = .alerts
+              @AppStorage("hasSeenAlertsOnboarding21s") private var hasSeenAlertsOnboarding: Bool = false
+              @State private var showAlertsOnboarding: Bool = false
+              @State private var showShareSheet: Bool = false
+              @State private var sharedFileURL: URL? = nil
+
+              // 3 onboarding GIFs — same look as the Wallet onboarding screens
+              private let onboardingPages: [AlertsOnboardingPage] = [
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding1",
+                      title: "Real Downloads",
+                      description: "Tap Install and the IPA is pulled straight from the source with a live progress bar you can pause or resume."
+                  ),
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding2",
+                      title: "Share Anywhere",
+                      description: "AirDrop, save to Files, or send the IPA to a friend using the standard iOS share sheet."
+                  ),
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding3",
+                      title: "Full Control",
+                      description: "Every file lives on your device. Tap the trash icon to delete it for good whenever you want."
+                  )
+              ]
 
               var body: some View {
                   VStack(spacing: 0) {
                       StoreHeader(title: "Alerts")
+
+                      // Wallet-style header strip with the same BETA-style details
+                      HStack {
+                          HStack(spacing: 6) {
+                              Image(systemName: "exclamationmark.shield.fill")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                              Text("ALERTS")
+                                  .font(.system(size: 13, weight: .black))
+                                  .foregroundColor(.white)
+                                  .tracking(1.5)
+                          }
+                          .padding(.horizontal, 12).padding(.vertical, 6)
+                          .background(Capsule().fill(Color.storePrimary))
+                          .shadow(color: Color.storePrimary.opacity(0.3), radius: 6, y: 3)
+                          Spacer()
+                          Text("Alerts v1.0")
+                              .font(.system(size: 11, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      }
+                      .padding(.horizontal, 20)
+                      .padding(.top, 4)
 
                       // Segment control: Alerts / Files
                       HStack(spacing: 0) {
@@ -2604,9 +2773,27 @@ jobs:
                   }
                   .background(Color.storeBg.ignoresSafeArea())
                   .onAppear {
-                      if let first = feed.featured.first {
-                          downloads.enqueue(app: first)
-                          downloads.enqueue(app: feed.allSorted.dropFirst().first ?? first)
+                      downloads.cleanupOrphanedFiles()
+                      if !hasSeenAlertsOnboarding {
+                          // Small delay so the alerts tab finishes rendering first
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                              showAlertsOnboarding = true
+                          }
+                      }
+                  }
+                  .fullScreenCover(isPresented: $showAlertsOnboarding) {
+                      AlertsOnboardingView(isPresented: $showAlertsOnboarding, pages: onboardingPages)
+                  }
+                  .sheet(isPresented: $showShareSheet) {
+                      if let url = sharedFileURL {
+                          ShareSheet(items: [url])
+                      }
+                  }
+                  .onChange(of: downloads.shareRequest) { newRequest in
+                      if let req = newRequest {
+                          sharedFileURL = req.fileURL
+                          showShareSheet = true
+                          downloads.clearShareRequest()
                       }
                   }
               }
@@ -2620,7 +2807,7 @@ jobs:
                       VStack(spacing: 8) {
                           Text(title)
                               .font(.system(size: 15, weight: .semibold))
-                              .foregroundColor(self.segment == segment ? .storeSub : .storeSub.opacity(0.7))
+                              .foregroundColor(self.segment == segment ? .storePrimary : .storeSub)
                           Rectangle()
                               .fill(self.segment == segment ? Color.storePrimary : Color.clear)
                               .frame(height: 2)
@@ -2651,7 +2838,7 @@ jobs:
                       } else {
                           ForEach(feed.allSorted.prefix(8)) { app in
                               AlertRow(app: app) {
-                                  // Install internally — enqueue into DownloadsManager
+                                  // Real Install — kicks off the actual IPA download
                                   downloads.enqueue(app: app)
                                   HapticManager.shared.success()
                               }
@@ -2747,6 +2934,15 @@ jobs:
 
           enum AlertSegment: Hashable { case alerts, files }
 
+          // MARK: - Share sheet (UIActivityViewController bridge)
+          struct ShareSheet: UIViewControllerRepresentable {
+              let items: [Any]
+              func makeUIViewController(context: Context) -> UIActivityViewController {
+                  UIActivityViewController(activityItems: items, applicationActivities: nil)
+              }
+              func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+          }
+
           // MARK: - Alerts list row (system notification style)
           struct AlertRow: View {
               let app: StoreAPIApp
@@ -2796,39 +2992,47 @@ jobs:
               var onTogglePause: () -> Void
 
               var body: some View {
-                  HStack(spacing: 14) {
-                      RemoteIcon(url: item.app.icon, size: 56, cornerRadius: 14)
-                      VStack(alignment: .leading, spacing: 6) {
-                          Text(item.app.name)
-                              .font(.system(size: 15, weight: .bold))
-                              .foregroundColor(.storeText)
-                              .lineLimit(1)
-                          HStack(spacing: 6) {
-                              if let v = item.app.bundleVersion {
-                                  Text("v\(v)").font(.system(size: 11, weight: .semibold)).foregroundColor(.storeSub)
+                  VStack(spacing: 8) {
+                      HStack(spacing: 14) {
+                          RemoteIcon(url: item.app.icon, size: 56, cornerRadius: 14)
+                          VStack(alignment: .leading, spacing: 6) {
+                              Text(item.app.name)
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(.storeText)
+                                  .lineLimit(1)
+                              HStack(spacing: 6) {
+                                  if let v = item.app.bundleVersion {
+                                      Text("v\(v)").font(.system(size: 11, weight: .semibold)).foregroundColor(.storeSub)
+                                  }
+                                  Text("•").font(.system(size: 11)).foregroundColor(.storeSub)
+                                  Text(item.app.ipaSize ?? "—")
+                                      .font(.system(size: 11, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                                  Spacer()
+                                  Text("\(Int(item.progress * 100))%")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storePrimary)
                               }
-                              Text("•").font(.system(size: 11)).foregroundColor(.storeSub)
-                              Text(item.app.ipaSize ?? "—")
-                                  .font(.system(size: 11, weight: .semibold))
-                                  .foregroundColor(.storeSub)
-                              Spacer()
-                              Text("\(Int(item.progress * 100))%")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.storePrimary)
                           }
-                          ProgressView(value: item.progress)
-                              .progressViewStyle(.linear)
-                              .tint(.storePrimary)
+                          Button(action: onTogglePause) {
+                              ZStack {
+                                  Circle()
+                                      .fill(Color.storePrimary.opacity(0.12))
+                                      .frame(width: 38, height: 38)
+                                  Image(systemName: item.isPaused ? "play.fill" : "pause.fill")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.storePrimary)
+                              }
+                          }
                       }
-                      Button(action: onTogglePause) {
-                          ZStack {
-                              Circle()
-                                  .fill(Color.storePrimary.opacity(0.12))
-                                  .frame(width: 38, height: 38)
-                              Image(systemName: item.isPaused ? "play.fill" : "pause.fill")
-                                  .font(.system(size: 14, weight: .bold))
-                                  .foregroundColor(.storePrimary)
-                          }
+                      ProgressView(value: max(0.001, item.progress))
+                          .progressViewStyle(.linear)
+                          .tint(.storePrimary)
+                      if let err = item.errorMessage {
+                          Text(err)
+                              .font(.system(size: 11, weight: .semibold))
+                              .foregroundColor(.storePink)
+                              .lineLimit(2)
                       }
                   }
                   .padding(14)
@@ -2913,70 +3117,213 @@ jobs:
               }
           }
 
-          // MARK: - Downloads Manager (mock progress simulation)
+          // MARK: - URLSession delegate that funnels progress + completion to a DownloadItem
+          final class ItemDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+              weak var item: DownloadItem?
+              init(item: DownloadItem) { self.item = item }
+
+              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                              didWriteData bytesWritten: Int64,
+                              totalBytesWritten: Int64,
+                              totalBytesExpectedToWrite: Int64) {
+                  guard totalBytesExpectedToWrite > 0 else { return }
+                  let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+                  item?.updateProgress(progress)
+                  item?.updateBytes(received: totalBytesWritten, total: totalBytesExpectedToWrite)
+              }
+
+              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                              didFinishDownloadingTo location: URL) {
+                  guard let item = item else { return }
+                  let dest = item.expectedLocalURL
+                  try? FileManager.default.removeItem(at: dest)
+                  do {
+                      try FileManager.default.moveItem(at: location, to: dest)
+                      item.setCompleted(fileURL: dest)
+                  } catch {
+                      item.setError("Failed to save file: \(error.localizedDescription)")
+                  }
+              }
+
+              func urlSession(_ session: URLSession, task: URLSessionTask,
+                              didCompleteWithError error: Error?) {
+                  guard let error = error as NSError? else { return }
+                  // Pausing produces a cancellation error — ignore it, resume data already saved
+                  if error.code == NSURLErrorCancelled { return }
+                  item?.setError(error.localizedDescription)
+              }
+          }
+
+          // MARK: - DownloadItem (real download backing one app)
           final class DownloadItem: ObservableObject, Identifiable {
               let id = UUID()
               let app: StoreAPIApp
-              @Published var progress: Double
-              @Published var isPaused: Bool
-              @Published var isCompleted: Bool
-              private var timer: Timer?
+              @Published var progress: Double = 0
+              @Published var isPaused: Bool = true
+              @Published var isCompleted: Bool = false
+              @Published var localFileURL: URL? = nil
+              @Published var errorMessage: String? = nil
+              @Published var totalBytes: Int64 = 0
+              @Published var receivedBytes: Int64 = 0
+
+              private var task: URLSessionDownloadTask?
+              private var session: URLSession?
+              private var delegate: ItemDownloadDelegate?
+              private var resumeData: Data? = nil
+              private let downloadURLString: String
 
               init(app: StoreAPIApp) {
                   self.app = app
-                  self.progress = 0
-                  self.isPaused = true
-                  self.isCompleted = false
+                  self.downloadURLString = app.ipaUrl ?? app.archiveUrl ?? app.githubUrl ?? ""
+              }
+
+              /// Returns the stable on-disk location for this item's IPA file.
+              var expectedLocalURL: URL {
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  return docs.appendingPathComponent("21s_\(app.id)_\(id.uuidString.prefix(8)).ipa")
+              }
+
+              /// If a previous file for this app still exists on disk, mark the item as already completed.
+              func restoreIfCompleted() {
+                  let url = expectedLocalURL
+                  if FileManager.default.fileExists(atPath: url.path) {
+                      self.localFileURL = url
+                      self.progress = 1.0
+                      self.isCompleted = true
+                      self.isPaused = false
+                  }
               }
 
               func start() {
-                  guard timer == nil, !isCompleted else { return }
-                  isPaused = false
-                  timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-                      guard let self else { return }
-                      DispatchQueue.main.async {
-                          if self.isPaused { return }
-                          if self.progress >= 1.0 {
-                              self.isCompleted = true
-                              self.timer?.invalidate()
-                              self.timer = nil
-                          } else {
-                              self.progress = min(1.0, self.progress + Double.random(in: 0.02...0.06))
-                          }
-                      }
+                  guard !isCompleted, task == nil else { return }
+                  guard let url = URL(string: downloadURLString), !downloadURLString.isEmpty else {
+                      self.errorMessage = "No download URL available"
+                      return
                   }
+                  self.errorMessage = nil
+                  self.isPaused = false
+
+                  let config = URLSessionConfiguration.default
+                  config.timeoutIntervalForRequest = 30
+                  config.timeoutIntervalForResource = 60 * 30
+                  let del = ItemDownloadDelegate(item: self)
+                  self.delegate = del
+                  let s = URLSession(configuration: config, delegate: del, delegateQueue: nil)
+                  self.session = s
+
+                  let t: URLSessionDownloadTask
+                  if let resumeData = resumeData {
+                      t = s.downloadTask(withResumeData: resumeData)
+                      self.resumeData = nil
+                  } else {
+                      t = s.downloadTask(with: url)
+                  }
+                  self.task = t
+                  t.resume()
               }
 
               func togglePause() {
                   if isCompleted { return }
                   isPaused.toggle()
                   if isPaused {
-                      timer?.invalidate()
-                      timer = nil
+                      task?.cancel(byProducingResumeData: { data in
+                          self.resumeData = data
+                      })
+                      cleanupSession()
                   } else {
                       start()
                   }
               }
 
-              deinit { timer?.invalidate() }
+              func cancel() {
+                  task?.cancel()
+                  cleanupSession()
+              }
+
+              private func cleanupSession() {
+                  task = nil
+                  session?.invalidateAndCancel()
+                  session = nil
+                  delegate = nil
+              }
+
+              // MARK: - Delegate callbacks (dispatched onto the main thread)
+              fileprivate func updateProgress(_ value: Double) {
+                  DispatchQueue.main.async {
+                      self.progress = min(1.0, max(0.0, value))
+                  }
+              }
+
+              fileprivate func updateBytes(received: Int64, total: Int64) {
+                  DispatchQueue.main.async {
+                      self.receivedBytes = received
+                      self.totalBytes = total
+                  }
+              }
+
+              fileprivate func setCompleted(fileURL: URL) {
+                  DispatchQueue.main.async {
+                      self.localFileURL = fileURL
+                      self.progress = 1.0
+                      self.isCompleted = true
+                      self.isPaused = false
+                      self.task = nil
+                      self.session?.finishTasksAndInvalidate()
+                      self.session = nil
+                      self.delegate = nil
+                      HapticManager.shared.success()
+                  }
+              }
+
+              fileprivate func setError(_ message: String) {
+                  DispatchQueue.main.async {
+                      self.errorMessage = message
+                      self.isPaused = true
+                      self.task = nil
+                      self.session?.finishTasksAndInvalidate()
+                      self.session = nil
+                      self.delegate = nil
+                  }
+              }
+
+              deinit {
+                  task?.cancel()
+              }
           }
 
+          // MARK: - Share request bridge (manager → view)
+          struct ShareRequest: Identifiable, Equatable {
+              let id = UUID()
+              let fileURL: URL
+              static func == (lhs: ShareRequest, rhs: ShareRequest) -> Bool { lhs.id == rhs.id }
+          }
+
+          // MARK: - DownloadsManager (real download / share / delete)
           final class DownloadsManager: ObservableObject {
               static let shared = DownloadsManager()
               @Published private(set) var all: [DownloadItem] = []
+              @Published var shareRequest: ShareRequest? = nil
 
               var active: [DownloadItem] { all.filter { !$0.isCompleted } }
               var completed: [DownloadItem] { all.filter { $0.isCompleted } }
 
+              init() {
+                  // No-op: completed items are restored lazily when the user re-installs
+                  // the same app (see DownloadItem.restoreIfCompleted). This avoids
+                  // creating phantom entries for orphan .ipa files.
+              }
+
               func enqueue(app: StoreAPIApp) {
-                  if all.contains(where: { $0.app.id == app.id && !$0.isCompleted }) { return }
-                  if all.contains(where: { $0.app.id == app.id && $0.isCompleted }) { return }
+                  // Already in flight or completed → no duplicate work
+                  if all.contains(where: { $0.app.id == app.id }) { return }
                   let item = DownloadItem(app: app)
-                  // Start with a small initial progress for a realistic feel
-                  item.progress = Double.random(in: 0.05...0.20)
+                  item.restoreIfCompleted()
                   all.insert(item, at: 0)
-                  // Begin downloading immediately
-                  item.start()
+                  if !item.isCompleted {
+                      item.start()
+                  } else {
+                      HapticManager.shared.success()
+                  }
               }
 
               func togglePause(item: DownloadItem) {
@@ -2989,17 +3336,44 @@ jobs:
                   }
               }
 
+              /// Real delete — removes the IPA file from the app's documents directory.
               func delete(item: DownloadItem) {
+                  if let url = item.localFileURL {
+                      try? FileManager.default.removeItem(at: url)
+                  } else {
+                      try? FileManager.default.removeItem(at: item.expectedLocalURL)
+                  }
                   all.removeAll { $0.id == item.id }
-              }
-
-              func share(item: DownloadItem) {
-                  guard let url = URL(string: item.app.ipaUrl ?? "") else { return }
-                  UIPasteboard.general.url = url
                   HapticManager.shared.success()
               }
+
+              /// Real share — publishes a ShareRequest that the view turns into a UIActivityViewController.
+              func share(item: DownloadItem) {
+                  guard let url = item.localFileURL,
+                        FileManager.default.fileExists(atPath: url.path) else {
+                      HapticManager.shared.error()
+                      return
+                  }
+                  shareRequest = ShareRequest(fileURL: url)
+              }
+
+              func clearShareRequest() {
+                  shareRequest = nil
+              }
+
+              /// Removes any .ipa files in documents/ that are no longer tracked.
+              func cleanupOrphanedFiles() {
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  let active = Set(all.compactMap { $0.localFileURL?.lastPathComponent })
+                  let activeExpected = Set(all.map { $0.expectedLocalURL.lastPathComponent })
+                  guard let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) else { return }
+                  for f in files where f.pathExtension == "ipa" {
+                      if !active.contains(f.lastPathComponent) && !activeExpected.contains(f.lastPathComponent) {
+                          try? FileManager.default.removeItem(at: f)
+                      }
+                  }
+              }
           }
-          
           // ============================================================
           // SOCIAL / PROFILE TAB
           // ============================================================
@@ -3186,6 +3560,9 @@ jobs:
           cp Resources/wallet_onboarding2.png        build-output/Payload/VIP21Store.app/
           cp Resources/wallet_onboarding3.png        build-output/Payload/VIP21Store.app/
           cp Resources/balance_animation.gif         build-output/Payload/VIP21Store.app/
+          cp Resources/alerts_onboarding1.gif        build-output/Payload/VIP21Store.app/
+          cp Resources/alerts_onboarding2.gif        build-output/Payload/VIP21Store.app/
+          cp Resources/alerts_onboarding3.gif        build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
           find build-output -name ".DS_Store" -delete
