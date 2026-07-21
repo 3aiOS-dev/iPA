@@ -31,13 +31,18 @@ jobs:
           command -v zip || { echo "❌ zip not installed"; exit 1; }
 
       # =========================================================
-      # RESOURCES & ASSETS — now downloaded from URLs
+      # RESOURCES & ASSETS — download images from URLs
       # =========================================================
       - name: Download project images
         run: |
           mkdir -p Resources
+          # Login / Register illustrations
           curl -L -o Resources/login_logo.png "https://up6.cc/2026/07/178463790906632.png"
           curl -L -o Resources/register_logo.png "https://up6.cc/2026/07/178463790901181.png"
+          # Onboarding images (3 pages)
+          curl -L -o Resources/onboarding1.png "https://up6.cc/2026/07/178463910434943.png"
+          curl -L -o Resources/onboarding2.png "https://up6.cc/2026/07/178463910431782.png"
+          curl -L -o Resources/onboarding3.png "https://up6.cc/2026/07/178463910425551.png"
           file Resources/*.png
           ls -lh Resources
 
@@ -127,19 +132,11 @@ jobs:
                       <key>UIPrerenderedIcon</key><false/>
                   </dict>
               </dict>
-
-              <!-- Critical: without a launch screen, iOS assumes this app was
-                   built for old, small, non-Retina screens and letterboxes it
-                   in a tiny centered window instead of filling the display.
-                   An empty UILaunchScreen dict opts the app into the modern,
-                   automatic, full-screen launch behavior on every device. -->
               <key>UILaunchScreen</key>
               <dict/>
-
               <key>UIRequiresFullScreen</key>          <true/>
               <key>UIStatusBarHidden</key>             <false/>
               <key>UIViewControllerBasedStatusBarAppearance</key><false/>
-
               <key>UIApplicationSceneManifest</key>
               <dict>
                   <key>UIApplicationSupportsMultipleScenes</key><false/>
@@ -165,8 +162,6 @@ jobs:
               static let hasSeenOnboardingKey = "hasSeenOnboarding21s"
           }
 
-          // Light, clean palette matching the reference login/register mockup:
-          // white surfaces, deep navy titles/buttons, slate-blue accents.
           extension Color {
               static let xcodeBackground = Color.white
               static let xcodeEditor     = Color(red: 0.95, green: 0.955, blue: 0.965)
@@ -180,8 +175,6 @@ jobs:
           }
 
           extension UIImage {
-              /// Loads an image bundled directly into the app (not an asset catalog),
-              /// e.g. the files copied into the .app bundle at build time.
               static func bundled(_ filename: String) -> UIImage? {
                   guard let path = Bundle.main.path(forResource: filename, ofType: nil) else { return nil }
                   return UIImage(contentsOfFile: path)
@@ -236,7 +229,6 @@ jobs:
           cat > Models.swift << 'VIPEOF'
           import Foundation
 
-          // MARK: - User Model for Authentication
           struct AppUser: Codable {
               let id: UUID
               let email: String
@@ -412,19 +404,19 @@ jobs:
               @State private var currentPage = 0
               private let pages: [OnboardingPage] = [
                   OnboardingPage(
-                      icon: "lock.shield.fill",
-                      title: "Secure & Private",
-                      description: "Your data is protected with advanced encryption. Login safely with your credentials."
+                      imageName: "onboarding1.png",
+                      title: "Research",
+                      description: "Collect data from problems that occur in the field."
                   ),
                   OnboardingPage(
-                      icon: "bolt.circle.fill",
-                      title: "Fast & Reliable",
-                      description: "Get instant access to your account and enjoy a smooth, responsive experience."
+                      imageName: "onboarding2.png",
+                      title: "Ideation",
+                      description: "Finding a problem that really matters is resolved"
                   ),
                   OnboardingPage(
-                      icon: "headphones.circle.fill",
-                      title: "24/7 Support",
-                      description: "Our team is always here to help you with any questions or issues."
+                      imageName: "onboarding3.png",
+                      title: "Prototyping",
+                      description: "Realizing a product design that can be tried immediately"
                   )
               ]
 
@@ -489,7 +481,7 @@ jobs:
 
           struct OnboardingPage: Identifiable {
               let id = UUID()
-              let icon: String
+              let imageName: String
               let title: String
               let description: String
           }
@@ -498,30 +490,42 @@ jobs:
               let page: OnboardingPage
 
               var body: some View {
-                  VStack(spacing: 24) {
-                      Image(systemName: page.icon)
-                          .font(.system(size: 80))
-                          .foregroundColor(.xcodeBlue)
-                          .padding(.top, 60)
+                  VStack(spacing: 20) {
+                      // Image
+                      if let img = UIImage.bundled(page.imageName) {
+                          Image(uiImage: img)
+                              .resizable()
+                              .aspectRatio(contentMode: .fit)
+                              .frame(width: 280, height: 280)
+                              .padding(.top, 40)
+                      } else {
+                          Image(systemName: "photo")
+                              .font(.system(size: 80))
+                              .foregroundColor(.xcodeAccent)
+                              .padding(.top, 40)
+                      }
 
+                      // Title
                       Text(page.title)
-                          .font(.system(size: 26, weight: .bold))
+                          .font(.system(size: 28, weight: .bold))
                           .foregroundColor(.xcodeBlue)
                           .multilineTextAlignment(.center)
 
+                      // Description
                       Text(page.description)
                           .font(.system(size: 16))
                           .foregroundColor(.xcodeSecondary)
                           .multilineTextAlignment(.center)
                           .padding(.horizontal, 32)
+
+                      Spacer()
                   }
                   .padding(.horizontal, 16)
-                  .frame(maxHeight: .infinity)
               }
           }
           VIPEOF
 
-      - name: Generate code - AuthViews.swift (updated with onboarding)
+      - name: Generate code - AuthViews.swift
         run: |
           cat > AuthViews.swift << 'VIPEOF'
           import SwiftUI
@@ -538,24 +542,19 @@ jobs:
               @State private var showUDIDInfo = false
               @State private var isPasswordVisible = false
               @State private var isConfirmPasswordVisible = false
-
-              // Onboarding state
               @State private var showOnboarding = false
 
               var body: some View {
                   Group {
                       if authManager.isAuthenticated {
-                          // Check if onboarding has been shown
                           let hasSeen = UserDefaults.standard.bool(forKey: AppConstants.hasSeenOnboardingKey)
                           if !hasSeen {
-                              // Show onboarding as full screen cover
                               Color.clear
                                   .fullScreenCover(isPresented: .constant(true)) {
                                       OnboardingView(isPresented: .constant(true))
                                   }
                                   .onAppear {
-                                      // Trigger cover manually because we can't bind to showOnboarding directly
-                                      // We'll use a different approach: present from a state
+                                      // Trigger onboarding via state
                                   }
                           } else {
                               ContentView(authManager: authManager)
@@ -585,10 +584,6 @@ jobs:
 
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 28) {
-
-                              // Illustration — big, no circle mask, sitting on top
-                              // of soft decorative blobs like the reference design.
-                              // Each screen (Login / Register) has its own image.
                               IllustrationHeader(isLoginMode: isLoginMode)
                                   .padding(.top, 24)
 
@@ -721,12 +716,8 @@ jobs:
               }
           }
 
-          /// Big illustration with soft decorative circles behind it, matching
-          /// the reference design. No circular mask/border on the image itself.
-          /// Login and Register each use their own dedicated image, same size.
           struct IllustrationHeader: View {
               let isLoginMode: Bool
-
               private var imageName: String { isLoginMode ? "login_logo.png" : "register_logo.png" }
 
               var body: some View {
@@ -963,19 +954,18 @@ jobs:
           cp Resources/AppIcon1024x1024.png          build-output/Payload/VIP21Store.app/
           cp Resources/login_logo.png                build-output/Payload/VIP21Store.app/
           cp Resources/register_logo.png             build-output/Payload/VIP21Store.app/
+          cp Resources/onboarding1.png               build-output/Payload/VIP21Store.app/
+          cp Resources/onboarding2.png               build-output/Payload/VIP21Store.app/
+          cp Resources/onboarding3.png               build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
-          # Clean all macOS metadata / resource fork files that can break extraction
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
 
-          # Use zip with -X to exclude extra file attributes (resource forks, etc.)
-          # and -r to recurse. This produces a standard IPA that most installers accept.
           cd build-output
           zip -r -X ../artifacts/21s.ipa Payload/
           cd ..
 
-          # Verify the zip is valid
           if ! unzip -t artifacts/21s.ipa >/dev/null 2>&1; then
             echo "❌ Error: IPA file is corrupt or invalid."
             exit 1
@@ -985,7 +975,7 @@ jobs:
       - name: Verify IPA package
         run: |
           echo "== IPA Contents =="
-          unzip -l artifacts/21s.ipa | head -35
+          unzip -l artifacts/21s.ipa | head -40
           if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
             echo "❌ Error: IPA does not contain a valid App Bundle"
             exit 1
