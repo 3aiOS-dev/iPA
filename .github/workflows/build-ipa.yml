@@ -1370,6 +1370,7 @@ jobs:
               @State private var tab: Int = 0
               @State private var showSearch = false
               @State private var showWalletOnboarding = false
+              @State private var showSettings = false
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
           
               var body: some View {
@@ -1379,7 +1380,7 @@ jobs:
                       // Fast tab switch: each tab is a persistent view hidden via opacity,
                       // so the content is already built and tapping a tab is instant.
                       ZStack {
-                          StoreHomeView(feed: feed)
+                          StoreHomeView(feed: feed, onMenu: { showSettings = true })
                               .opacity(tab == 0 ? 1 : 0)
                               .allowsHitTesting(tab == 0)
                           WalletView()
@@ -1397,6 +1398,9 @@ jobs:
                       StoreTabBar(tab: $tab, onSearch: { showSearch = true })
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
+                  .sheet(isPresented: $showSettings) {
+                      SettingsView(authManager: authManager, isPresented: $showSettings)
+                  }
                   .fullScreenCover(isPresented: $showWalletOnboarding) {
                       WalletOnboardingView(isPresented: $showWalletOnboarding)
                   }
@@ -1465,15 +1469,18 @@ jobs:
           // ================= Home Tab =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
+              var onMenu: (() -> Void)? = nil
 
               var body: some View {
                   NavigationStack {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 22) {
-                              StoreHeader(title: "Store", onRefresh: {
-                                  HapticManager.shared.impact(.light)
-                                  Task { await feed.refresh() }
-                              })
+                              StoreHeader(title: "Store",
+                                          onRefresh: {
+                                              HapticManager.shared.impact(.light)
+                                              Task { await feed.refresh() }
+                                          },
+                                          onMenu: { onMenu?() })
 
                               DiscountBanner()
                               StoreStatusBar(feed: feed)
@@ -1609,9 +1616,12 @@ jobs:
           struct StoreHeader: View {
               let title: String
               var onRefresh: (() -> Void)? = nil
+              var onMenu: (() -> Void)? = nil
               var body: some View {
                   HStack {
-                      Button { } label: {
+                      Button {
+                          if let onMenu { onMenu() }
+                      } label: {
                           Image(systemName: "line.3.horizontal")
                               .font(.system(size: 18, weight: .semibold))
                               .foregroundColor(.storeText)
@@ -3484,6 +3494,1342 @@ jobs:
           VIPEOF
 
       # =========================================================
+      # SETTINGS SCREEN + SUB-SCREENS (matches the design exactly)
+      # =========================================================
+      - name: Generate code - Settings.swift
+        run: |
+          cat > Settings.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+
+          // ================= Settings Sheet (Root) =================
+          // Mirrors the design: rounded top, back chevron, "Settings" title,
+          // profile card, "Other Settings" group, "About Application" group,
+          // red "Deactivate my account" row.
+          // NOTE: Dark mode toggle is intentionally NOT included.
+          struct SettingsView: View {
+              @ObservedObject var authManager: AuthManager
+              @Binding var isPresented: Bool
+              @State private var pushNotificationsEnabled: Bool = true
+              @State private var emailNotificationsEnabled: Bool = false
+              @State private var showProfileDetails = false
+              @State private var showChangePassword = false
+              @State private var showNotifications = false
+              @State private var showAbout = false
+              @State private var showHelp = false
+              @State private var showDeactivate = false
+              @State private var showDeactivateConfirm = false
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 0) {
+                              SettingsTopBar(
+                                  onBack: { isPresented = false },
+                                  title: "Settings"
+                              )
+
+                              VStack(spacing: 18) {
+                                  // ----- Profile card -----
+                                  Button {
+                                      HapticManager.shared.selection()
+                                      showProfileDetails = true
+                                  } label: {
+                                      ProfileCard(
+                                          username: authManager.currentUser?.username ?? "user",
+                                          handle: "@" + (authManager.currentUser?.phoneNumber ?? "21s User")
+                                      )
+                                  }
+                                  .buttonStyle(.plain)
+
+                                  // ----- Other Settings -----
+                                  SettingsGroup(title: "Other Settings") {
+                                      SettingsRow(
+                                          icon: "person.fill",
+                                          iconBg: Color.storePrimary,
+                                          title: "Profile details",
+                                          trailing: .chevron,
+                                          action: { showProfileDetails = true }
+                                      )
+                                      Divider().padding(.leading, 64)
+                                      SettingsRow(
+                                          icon: "lock.fill",
+                                          iconBg: Color(red: 0.95, green: 0.55, blue: 0.20),
+                                          title: "Password",
+                                          trailing: .chevron,
+                                          action: { showChangePassword = true }
+                                      )
+                                      Divider().padding(.leading, 64)
+                                      SettingsRow(
+                                          icon: "bell.fill",
+                                          iconBg: Color(red: 0.30, green: 0.80, blue: 0.90),
+                                          title: "Notifications",
+                                          trailing: .chevron,
+                                          action: { showNotifications = true }
+                                      )
+                                  }
+
+                                  // ----- About Application -----
+                                  SettingsGroup(title: nil) {
+                                      SettingsRow(
+                                          icon: "info.circle.fill",
+                                          iconBg: Color.storePrimary,
+                                          title: "About Application",
+                                          trailing: .chevron,
+                                          action: { showAbout = true }
+                                      )
+                                      Divider().padding(.leading, 64)
+                                      SettingsRow(
+                                          icon: "bubble.left.and.bubble.right.fill",
+                                          iconBg: Color(red: 0.55, green: 0.45, blue: 0.95),
+                                          title: "Help / FAQ",
+                                          trailing: .chevron,
+                                          action: { showHelp = true }
+                                      )
+                                      Divider().padding(.leading, 64)
+                                      SettingsRow(
+                                          icon: "trash.fill",
+                                          iconBg: Color.storePink,
+                                          title: "Deactivate my account",
+                                          titleColor: Color.storePink,
+                                          trailing: .chevronPink,
+                                          action: { showDeactivateConfirm = true }
+                                      )
+                                  }
+
+                                  Spacer(minLength: 40)
+                              }
+                              .padding(.horizontal, 20)
+                              .padding(.top, 4)
+                          }
+                          .padding(.bottom, 30)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  // ----- Detail navigations -----
+                  .sheet(isPresented: $showProfileDetails) {
+                      ProfileDetailsView(authManager: authManager, isPresented: $showProfileDetails)
+                  }
+                  .sheet(isPresented: $showChangePassword) {
+                      ChangePasswordView(authManager: authManager, isPresented: $showChangePassword)
+                  }
+                  .sheet(isPresented: $showNotifications) {
+                      NotificationsSettingsView(
+                          isPresented: $showNotifications,
+                          pushEnabled: $pushNotificationsEnabled,
+                          emailEnabled: $emailNotificationsEnabled
+                      )
+                  }
+                  .sheet(isPresented: $showAbout) {
+                      AboutApplicationView(isPresented: $showAbout)
+                  }
+                  .sheet(isPresented: $showHelp) {
+                      HelpFAQView(isPresented: $showHelp)
+                  }
+                  .sheet(isPresented: $showDeactivate) {
+                      DeactivateAccountView(
+                          authManager: authManager,
+                          isPresented: $showDeactivate,
+                          onDeactivated: { isPresented = false }
+                      )
+                  }
+                  .alert("Deactivate account?", isPresented: $showDeactivateConfirm) {
+                      Button("Cancel", role: .cancel) {}
+                      Button("Continue", role: .destructive) {
+                          showDeactivate = true
+                      }
+                  } message: {
+                      Text("You'll be asked to confirm. This action cannot be undone.")
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          // ================= Top Bar (back + title) =================
+          struct SettingsTopBar: View {
+              let onBack: () -> Void
+              let title: String
+
+              var body: some View {
+                  HStack {
+                      Button(action: onBack) {
+                          Image(systemName: "chevron.left")
+                              .font(.system(size: 16, weight: .bold))
+                              .foregroundColor(.storeText)
+                              .frame(width: 38, height: 38)
+                              .background(Circle().fill(Color.storeDivider.opacity(0.7)))
+                      }
+                      .buttonStyle(.plain)
+                      Spacer()
+                      Text(title)
+                          .font(.system(size: 17, weight: .bold))
+                          .foregroundColor(.storeText)
+                      Spacer()
+                      // Invisible placeholder for symmetry (so title stays centered)
+                      Color.clear.frame(width: 38, height: 38)
+                  }
+                  .padding(.horizontal, 20)
+                  .padding(.top, 10)
+                  .padding(.bottom, 14)
+              }
+          }
+
+          // ================= Profile Card =================
+          struct ProfileCard: View {
+              let username: String
+              let handle: String
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      // Avatar circle (generated from username initial)
+                      ZStack {
+                          Circle()
+                              .fill(LinearGradient(
+                                  colors: [Color.storePrimary, Color(red: 0.55, green: 0.35, blue: 0.95)],
+                                  startPoint: .topLeading, endPoint: .bottomTrailing))
+                              .frame(width: 46, height: 46)
+                          Text(String(username.prefix(1)).uppercased())
+                              .font(.system(size: 20, weight: .heavy))
+                              .foregroundColor(.white)
+                      }
+
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(username)
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(.storeText)
+                          Text(handle)
+                              .font(.system(size: 12, weight: .medium))
+                              .foregroundColor(.storeSub)
+                      }
+
+                      Spacer()
+
+                      Image(systemName: "chevron.right")
+                          .font(.system(size: 13, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                  }
+                  .padding(14)
+                  .background(
+                      RoundedRectangle(cornerRadius: 16)
+                          .fill(Color.storeCard)
+                          .overlay(
+                              RoundedRectangle(cornerRadius: 16)
+                                  .stroke(Color.storeDivider, lineWidth: 1)
+                          )
+                  )
+              }
+          }
+
+          // ================= Settings Group (card with rows) =================
+          struct SettingsGroup<Content: View>: View {
+              let title: String?
+              @ViewBuilder let content: () -> Content
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      if let title {
+                          Text(title)
+                              .font(.system(size: 14, weight: .bold))
+                              .foregroundColor(.storeText)
+                              .padding(.horizontal, 4)
+                      }
+                      VStack(spacing: 0) {
+                          content()
+                      }
+                      .background(
+                          RoundedRectangle(cornerRadius: 16)
+                              .fill(Color.storeCard)
+                              .overlay(
+                                  RoundedRectangle(cornerRadius: 16)
+                                      .stroke(Color.storeDivider, lineWidth: 1)
+                              )
+                      )
+                  }
+              }
+          }
+
+          // ================= Trailing kinds for settings rows =================
+          enum SettingsTrailing {
+              case chevron
+              case chevronPink
+              case none
+          }
+
+          // ================= Settings Row (icon + title + trailing) =================
+          struct SettingsRow: View {
+              let icon: String
+              let iconBg: Color
+              let title: String
+              var titleColor: Color = .storeText
+              let trailing: SettingsTrailing
+              let action: () -> Void
+
+              var body: some View {
+                  Button(action: {
+                      HapticManager.shared.selection()
+                      action()
+                  }) {
+                      HStack(spacing: 12) {
+                          ZStack {
+                              Circle()
+                                  .fill(iconBg.opacity(0.18))
+                                  .frame(width: 36, height: 36)
+                              Image(systemName: icon)
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(iconBg)
+                          }
+
+                          Text(title)
+                              .font(.system(size: 15, weight: .semibold))
+                              .foregroundColor(titleColor)
+
+                          Spacer()
+
+                          switch trailing {
+                          case .chevron:
+                              Image(systemName: "chevron.right")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.storeSub)
+                          case .chevronPink:
+                              Image(systemName: "chevron.right")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.storePink)
+                          case .none:
+                              EmptyView()
+                          }
+                      }
+                      .padding(.horizontal, 14)
+                      .padding(.vertical, 12)
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+
+          // ================= 1) Profile Details =================
+          struct ProfileDetailsView: View {
+              @ObservedObject var authManager: AuthManager
+              @Binding var isPresented: Bool
+              @State private var username: String = ""
+              @State private var phoneNumber: String = ""
+              @State private var udid: String = ""
+              @State private var showSavedToast = false
+              @State private var validationError: String? = nil
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 18) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "Profile details")
+                              .padding(.bottom, 4)
+
+                              // Avatar (matches ProfileCard style)
+                              ZStack {
+                                  Circle()
+                                      .fill(LinearGradient(
+                                          colors: [Color.storePrimary, Color(red: 0.55, green: 0.35, blue: 0.95)],
+                                          startPoint: .topLeading, endPoint: .bottomTrailing))
+                                      .frame(width: 96, height: 96)
+                                  Text(String(username.prefix(1)).uppercased())
+                                      .font(.system(size: 40, weight: .heavy))
+                                      .foregroundColor(.white)
+                              }
+                              .padding(.top, 4)
+
+                              VStack(spacing: 14) {
+                                  ProfileField(label: "Username", text: $username, icon: "person.fill")
+                                  ProfileField(label: "Phone number", text: $phoneNumber, icon: "phone.fill", keyboard: .phonePad)
+                                  ProfileField(label: "Device UDID", text: $udid, icon: "iphone", autocap: true)
+                              }
+                              .padding(.horizontal, 20)
+
+                              if let err = validationError {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "exclamationmark.triangle.fill")
+                                          .foregroundColor(.xcodeRed)
+                                          .font(.system(size: 12))
+                                      Text(err).font(.system(size: 12)).foregroundColor(.xcodeRed)
+                                      Spacer()
+                                  }
+                                  .padding(.horizontal, 24)
+                              }
+
+                              Button {
+                                  save()
+                              } label: {
+                                  Text("Save changes")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity)
+                                      .frame(height: 50)
+                                      .background(Capsule().fill(Color.storePrimary))
+                              }
+                              .padding(.horizontal, 20)
+                              .padding(.top, 6)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .onAppear { loadFromUser() }
+                  .overlay(alignment: .top) {
+                      if showSavedToast {
+                          HStack(spacing: 8) {
+                              Image(systemName: "checkmark.circle.fill")
+                                  .foregroundColor(.white)
+                              Text("Profile updated")
+                                  .font(.system(size: 13, weight: .semibold))
+                                  .foregroundColor(.white)
+                          }
+                          .padding(.horizontal, 18).padding(.vertical, 12)
+                          .background(Capsule().fill(Color.walletGreen))
+                          .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                          .transition(.move(edge: .top).combined(with: .opacity))
+                          .padding(.top, 60)
+                      }
+                  }
+                  .animation(.spring(), value: showSavedToast)
+                  .preferredColorScheme(.light)
+              }
+
+              private func loadFromUser() {
+                  guard let user = authManager.currentUser else { return }
+                  username = user.username
+                  phoneNumber = user.phoneNumber
+                  udid = user.udid
+              }
+
+              private func save() {
+                  validationError = nil
+                  let trimmedName = username.trimmingCharacters(in: .whitespaces)
+                  if trimmedName.count < 3 {
+                      validationError = "Username must be at least 3 characters"
+                      HapticManager.shared.error()
+                      return
+                  }
+                  let trimmedPhone = phoneNumber.trimmingCharacters(in: .whitespaces)
+                  if !trimmedPhone.hasPrefix("+") || trimmedPhone.dropFirst().filter({ $0.isNumber }).count < 7 {
+                      validationError = "Please enter a valid phone number with country code"
+                      HapticManager.shared.error()
+                      return
+                  }
+
+                  // Persist into AuthManager's user store
+                  if let user = authManager.currentUser {
+                      let key = AppConstants.userDefaultsKey
+                      if let data = UserDefaults.standard.data(forKey: key),
+                         var users = try? JSONDecoder().decode([AppUser].self, from: data),
+                         let idx = users.firstIndex(where: { $0.id == user.id }) {
+                          let updated = AppUser(
+                              phoneNumber: trimmedPhone,
+                              username: trimmedName,
+                              password: user.password,
+                              udid: user.udid
+                          )
+                          // Preserve id + createdAt
+                          let preserved = AppUser(
+                              id: user.id,
+                              phoneNumber: trimmedPhone,
+                              username: trimmedName,
+                              password: user.password,
+                              udid: user.udid,
+                              createdAt: user.createdAt
+                          )
+                          users[idx] = preserved
+                          if let encoded = try? JSONEncoder().encode(users) {
+                              UserDefaults.standard.set(encoded, forKey: key)
+                          }
+                      }
+                  }
+
+                  HapticManager.shared.success()
+                  showSavedToast = true
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                      showSavedToast = false
+                      isPresented = false
+                  }
+              }
+          }
+
+          // Re-declared AppUser with id + createdAt initializers (for editing)
+          extension AppUser {
+              init(id: UUID, phoneNumber: String, username: String, password: String, udid: String, createdAt: Date) {
+                  self.id = id
+                  self.phoneNumber = phoneNumber
+                  self.username = username
+                  self.password = password
+                  self.udid = udid
+                  self.createdAt = createdAt
+              }
+          }
+
+          struct ProfileField: View {
+              let label: String
+              @Binding var text: String
+              let icon: String
+              var keyboard: UIKeyboardType = .default
+              var autocap: Bool = false
+
+              var body: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: icon)
+                          .font(.system(size: 13, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                          .frame(width: 28, height: 28)
+                          .background(Circle().fill(Color.storeBg))
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(label)
+                              .font(.system(size: 10, weight: .bold))
+                              .foregroundColor(.storeSub)
+                              .tracking(0.5)
+                          TextField("", text: $text)
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.storeText)
+                              .keyboardType(keyboard)
+                              .autocapitalization(autocap ? .allCharacters : .none)
+                              .disableAutocorrection(true)
+                      }
+                      Spacer()
+                  }
+                  .padding(12)
+                  .background(
+                      RoundedRectangle(cornerRadius: 12)
+                          .fill(Color.storeCard)
+                          .overlay(
+                              RoundedRectangle(cornerRadius: 12)
+                                  .stroke(Color.storeDivider, lineWidth: 1)
+                          )
+                  )
+              }
+          }
+
+          // ================= 2) Change Password =================
+          struct ChangePasswordView: View {
+              @ObservedObject var authManager: AuthManager
+              @Binding var isPresented: Bool
+
+              @State private var currentPassword: String = ""
+              @State private var newPassword: String = ""
+              @State private var confirmPassword: String = ""
+              @State private var isCurrentVisible: Bool = false
+              @State private var isNewVisible: Bool = false
+              @State private var isConfirmVisible: Bool = false
+              @State private var error: String? = nil
+              @State private var showSavedToast = false
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 18) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "Password")
+
+                              VStack(spacing: 12) {
+                                  PasswordField(
+                                      label: "Current password",
+                                      text: $currentPassword,
+                                      isVisible: $isCurrentVisible
+                                  )
+                                  PasswordField(
+                                      label: "New password",
+                                      text: $newPassword,
+                                      isVisible: $isNewVisible
+                                  )
+                                  PasswordField(
+                                      label: "Confirm new password",
+                                      text: $confirmPassword,
+                                      isVisible: $isConfirmVisible
+                                  )
+                              }
+                              .padding(.horizontal, 20)
+
+                              if let err = error {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "exclamationmark.triangle.fill")
+                                          .foregroundColor(.xcodeRed)
+                                          .font(.system(size: 12))
+                                      Text(err).font(.system(size: 12)).foregroundColor(.xcodeRed)
+                                      Spacer()
+                                  }
+                                  .padding(.horizontal, 24)
+                              }
+
+                              // Password rules
+                              VStack(alignment: .leading, spacing: 6) {
+                                  rule("At least 6 characters", ok: newPassword.count >= 6)
+                                  rule("Passwords match", ok: !newPassword.isEmpty && newPassword == confirmPassword)
+                              }
+                              .padding(.horizontal, 24)
+                              .frame(maxWidth: .infinity, alignment: .leading)
+
+                              Button {
+                                  update()
+                              } label: {
+                                  Text("Update password")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity)
+                                      .frame(height: 50)
+                                      .background(Capsule().fill(Color.storePrimary))
+                              }
+                              .padding(.horizontal, 20)
+                              .padding(.top, 6)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .overlay(alignment: .top) {
+                      if showSavedToast {
+                          HStack(spacing: 8) {
+                              Image(systemName: "checkmark.circle.fill")
+                                  .foregroundColor(.white)
+                              Text("Password updated")
+                                  .font(.system(size: 13, weight: .semibold))
+                                  .foregroundColor(.white)
+                          }
+                          .padding(.horizontal, 18).padding(.vertical, 12)
+                          .background(Capsule().fill(Color.walletGreen))
+                          .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                          .transition(.move(edge: .top).combined(with: .opacity))
+                          .padding(.top, 60)
+                      }
+                  }
+                  .animation(.spring(), value: showSavedToast)
+                  .preferredColorScheme(.light)
+              }
+
+              private func rule(_ text: String, ok: Bool) -> some View {
+                  HStack(spacing: 6) {
+                      Image(systemName: ok ? "checkmark.circle.fill" : "circle")
+                          .foregroundColor(ok ? .walletGreen : .storeSub)
+                          .font(.system(size: 11, weight: .bold))
+                      Text(text).font(.system(size: 12, weight: .medium)).foregroundColor(ok ? .storeText : .storeSub)
+                  }
+              }
+
+              private func update() {
+                  error = nil
+                  guard let user = authManager.currentUser else { return }
+                  if currentPassword != user.password {
+                      error = "Current password is incorrect"
+                      HapticManager.shared.error(); return
+                  }
+                  if newPassword.count < 6 {
+                      error = "New password must be at least 6 characters"
+                      HapticManager.shared.error(); return
+                  }
+                  if newPassword != confirmPassword {
+                      error = "New passwords do not match"
+                      HapticManager.shared.error(); return
+                  }
+
+                  let key = AppConstants.userDefaultsKey
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     var users = try? JSONDecoder().decode([AppUser].self, from: data),
+                     let idx = users.firstIndex(where: { $0.id == user.id }) {
+                      users[idx] = AppUser(
+                          id: user.id,
+                          phoneNumber: user.phoneNumber,
+                          username: user.username,
+                          password: newPassword,
+                          udid: user.udid,
+                          createdAt: user.createdAt
+                      )
+                      if let encoded = try? JSONEncoder().encode(users) {
+                          UserDefaults.standard.set(encoded, forKey: key)
+                      }
+                  }
+
+                  HapticManager.shared.success()
+                  showSavedToast = true
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                      showSavedToast = false
+                      isPresented = false
+                  }
+              }
+          }
+
+          struct PasswordField: View {
+              let label: String
+              @Binding var text: String
+              @Binding var isVisible: Bool
+
+              var body: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: "lock.fill")
+                          .font(.system(size: 13, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                          .frame(width: 28, height: 28)
+                          .background(Circle().fill(Color.storeBg))
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(label)
+                              .font(.system(size: 10, weight: .bold))
+                              .foregroundColor(.storeSub)
+                              .tracking(0.5)
+                          if isVisible {
+                              TextField("", text: $text)
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.storeText)
+                                  .autocapitalization(.none)
+                                  .disableAutocorrection(true)
+                          } else {
+                              SecureField("", text: $text)
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.storeText)
+                          }
+                      }
+                      Spacer()
+                      Button { isVisible.toggle() } label: {
+                          Image(systemName: isVisible ? "eye.slash.fill" : "eye.fill")
+                              .font(.system(size: 13, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      }
+                  }
+                  .padding(12)
+                  .background(
+                      RoundedRectangle(cornerRadius: 12)
+                          .fill(Color.storeCard)
+                          .overlay(
+                              RoundedRectangle(cornerRadius: 12)
+                                  .stroke(Color.storeDivider, lineWidth: 1)
+                          )
+                  )
+              }
+          }
+
+          // ================= 3) Notifications =================
+          struct NotificationsSettingsView: View {
+              @Binding var isPresented: Bool
+              @Binding var pushEnabled: Bool
+              @Binding var emailEnabled: Bool
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 18) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "Notifications")
+
+                              VStack(alignment: .leading, spacing: 10) {
+                                  Text("Preferences")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                      .padding(.horizontal, 4)
+
+                                  VStack(spacing: 0) {
+                                      ToggleRow(
+                                          icon: "bell.badge.fill",
+                                          iconBg: Color(red: 0.30, green: 0.80, blue: 0.90),
+                                          title: "Push notifications",
+                                          subtitle: "Get alerts about new apps and updates",
+                                          isOn: $pushEnabled
+                                      )
+                                      Divider().padding(.leading, 64)
+                                      ToggleRow(
+                                          icon: "envelope.fill",
+                                          iconBg: Color.storePrimary,
+                                          title: "Email notifications",
+                                          subtitle: "Receive weekly digests and account news",
+                                          isOn: $emailEnabled
+                                      )
+                                  }
+                                  .background(
+                                      RoundedRectangle(cornerRadius: 16)
+                                          .fill(Color.storeCard)
+                                          .overlay(
+                                              RoundedRectangle(cornerRadius: 16)
+                                                  .stroke(Color.storeDivider, lineWidth: 1)
+                                          )
+                                  )
+                              }
+                              .padding(.horizontal, 20)
+
+                              // Quiet hours card
+                              VStack(alignment: .leading, spacing: 10) {
+                                  Text("Quiet hours")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                      .padding(.horizontal, 4)
+                                  HStack {
+                                      Image(systemName: "moon.fill")
+                                          .foregroundColor(Color(red: 0.40, green: 0.45, blue: 0.85))
+                                          .frame(width: 36, height: 36)
+                                          .background(Circle().fill(Color(red: 0.40, green: 0.45, blue: 0.85).opacity(0.18)))
+                                      VStack(alignment: .leading, spacing: 2) {
+                                          Text("Do not disturb")
+                                              .font(.system(size: 14, weight: .semibold))
+                                              .foregroundColor(.storeText)
+                                          Text("10:00 PM – 7:00 AM")
+                                              .font(.system(size: 12))
+                                              .foregroundColor(.storeSub)
+                                      }
+                                      Spacer()
+                                      Image(systemName: "chevron.right")
+                                          .font(.system(size: 12, weight: .bold))
+                                          .foregroundColor(.storeSub)
+                                  }
+                                  .padding(14)
+                                  .background(
+                                      RoundedRectangle(cornerRadius: 16)
+                                          .fill(Color.storeCard)
+                                          .overlay(
+                                              RoundedRectangle(cornerRadius: 16)
+                                                  .stroke(Color.storeDivider, lineWidth: 1)
+                                          )
+                                  )
+                              }
+                              .padding(.horizontal, 20)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct ToggleRow: View {
+              let icon: String
+              let iconBg: Color
+              let title: String
+              let subtitle: String
+              @Binding var isOn: Bool
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      ZStack {
+                          Circle().fill(iconBg.opacity(0.18)).frame(width: 36, height: 36)
+                          Image(systemName: icon)
+                              .font(.system(size: 14, weight: .bold))
+                              .foregroundColor(iconBg)
+                      }
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(title)
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.storeText)
+                          Text(subtitle)
+                              .font(.system(size: 11))
+                              .foregroundColor(.storeSub)
+                              .lineLimit(2)
+                      }
+                      Spacer()
+                      Toggle("", isOn: $isOn)
+                          .labelsHidden()
+                          .tint(.storePrimary)
+                  }
+                  .padding(.horizontal, 14)
+                  .padding(.vertical, 12)
+              }
+          }
+
+          // ================= 4) About Application =================
+          struct AboutApplicationView: View {
+              @Binding var isPresented: Bool
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 18) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "About")
+
+                              // App logo card
+                              VStack(spacing: 10) {
+                                  if let logo = UIImage.bundled("login_logo.png") {
+                                      Image(uiImage: logo)
+                                          .resizable()
+                                          .aspectRatio(contentMode: .fit)
+                                          .frame(width: 90, height: 90)
+                                  } else {
+                                      Image(systemName: "app.fill")
+                                          .font(.system(size: 50))
+                                          .foregroundColor(.storePrimary)
+                                  }
+                                  Text("21s")
+                                      .font(.system(size: 24, weight: .heavy))
+                                      .foregroundColor(.storeText)
+                                  Text("Version \(AppConstants.appVersion) (build 1)")
+                                      .font(.system(size: 12, weight: .medium))
+                                      .foregroundColor(.storeSub)
+                              }
+                              .padding(.vertical, 20)
+                              .frame(maxWidth: .infinity)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 16)
+                                      .fill(Color.storeCard)
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 16)
+                                              .stroke(Color.storeDivider, lineWidth: 1)
+                                      )
+                              )
+                              .padding(.horizontal, 20)
+
+                              // Info rows
+                              VStack(spacing: 0) {
+                                  InfoRow(label: "Bundle", value: AppConstants.storeName)
+                                  Divider().padding(.leading, 20)
+                                  InfoRow(label: "Developer", value: "21s Team")
+                                  Divider().padding(.leading, 20)
+                                  InfoRow(label: "Released", value: "2026")
+                                  Divider().padding(.leading, 20)
+                                  InfoRow(label: "Size", value: "12.4 MB")
+                              }
+                              .background(
+                                  RoundedRectangle(cornerRadius: 16)
+                                      .fill(Color.storeCard)
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 16)
+                                              .stroke(Color.storeDivider, lineWidth: 1)
+                                      )
+                              )
+                              .padding(.horizontal, 20)
+
+                              // Social links
+                              VStack(spacing: 12) {
+                                  SocialButton(icon: "globe", label: "Visit website", color: .storePrimary)
+                                  SocialButton(icon: "envelope.fill", label: "Contact support", color: .storePink)
+                                  SocialButton(icon: "star.fill", label: "Rate 21s", color: Color(red: 1.0, green: 0.78, blue: 0.20))
+                              }
+                              .padding(.horizontal, 20)
+
+                              Text("© 2026 21s. All rights reserved.")
+                                  .font(.system(size: 11, weight: .medium))
+                                  .foregroundColor(.storeSub)
+                                  .padding(.top, 4)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct InfoRow: View {
+              let label: String
+              let value: String
+
+              var body: some View {
+                  HStack {
+                      Text(label).font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
+                      Spacer()
+                      Text(value).font(.system(size: 13, weight: .medium)).foregroundColor(.storeSub)
+                  }
+                  .padding(.horizontal, 16)
+                  .padding(.vertical, 12)
+              }
+          }
+
+          struct SocialButton: View {
+              let icon: String
+              let label: String
+              let color: Color
+
+              var body: some View {
+                  Button {
+                      HapticManager.shared.selection()
+                      // External link action
+                  } label: {
+                      HStack(spacing: 10) {
+                          ZStack {
+                              Circle().fill(color.opacity(0.18)).frame(width: 32, height: 32)
+                              Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundColor(color)
+                          }
+                          Text(label).font(.system(size: 14, weight: .semibold)).foregroundColor(.storeText)
+                          Spacer()
+                          Image(systemName: "arrow.up.right.square.fill")
+                              .font(.system(size: 13, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      }
+                      .padding(12)
+                      .background(
+                          RoundedRectangle(cornerRadius: 12)
+                              .fill(Color.storeCard)
+                              .overlay(
+                                  RoundedRectangle(cornerRadius: 12)
+                                      .stroke(Color.storeDivider, lineWidth: 1)
+                              )
+                      )
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+
+          // ================= 5) Help / FAQ =================
+          struct HelpFAQView: View {
+              @Binding var isPresented: Bool
+              @State private var expandedID: UUID? = nil
+
+              struct FAQ: Identifiable {
+                  let id = UUID()
+                  let question: String
+                  let answer: String
+                  let icon: String
+                  let color: Color
+              }
+
+              private let faqs: [FAQ] = [
+                  FAQ(
+                      question: "How do I install an app?",
+                      answer: "Open the Store tab, choose any app, and tap the Install button. The IPA will be downloaded to your Files and you can install it via your favorite sideloader.",
+                      icon: "arrow.down.app.fill",
+                      color: .storePrimary
+                  ),
+                  FAQ(
+                      question: "What is the Wallet?",
+                      answer: "Wallet is a beta feature that lets you securely store a virtual User ID and card number on your device for in-app payments. Tap the eye icon to reveal a value, and it will also be copied to your clipboard.",
+                      icon: "creditcard.fill",
+                      color: .walletGreen
+                  ),
+                  FAQ(
+                      question: "How do I find my device UDID?",
+                      answer: "Connect your iPhone to a Mac, open Finder, click your device, then click the serial number until it changes to UDID. You can also use apps like UDID Calculator from the App Store.",
+                      icon: "iphone.gen3",
+                      color: Color(red: 0.30, green: 0.80, blue: 0.90)
+                  ),
+                  FAQ(
+                      question: "Can I use one account on multiple devices?",
+                      answer: "Each account is tied to a single device UDID. If you need to switch devices, please contact support so we can help you migrate safely.",
+                      icon: "iphone.radiowaves.left.and.right",
+                      color: Color(red: 0.55, green: 0.35, blue: 0.95)
+                  ),
+                  FAQ(
+                      question: "How do I delete a downloaded file?",
+                      answer: "Open the Alerts tab, switch to the Files segment, find the file you want to remove, and tap the red trash icon. The file is deleted from your device immediately.",
+                      icon: "trash.fill",
+                      color: .storePink
+                  ),
+                  FAQ(
+                      question: "Is my data safe?",
+                      answer: "Yes. All your data (user info, wallet details, downloads) is stored locally on your device only. We never send it to any external server.",
+                      icon: "lock.shield.fill",
+                      color: .walletGreen
+                  )
+              ]
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 14) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "Help / FAQ")
+
+                              // Search field
+                              HStack(spacing: 8) {
+                                  Image(systemName: "magnifyingglass")
+                                      .foregroundColor(.storeSub)
+                                  TextField("Search questions", text: .constant(""))
+                                      .font(.system(size: 14))
+                              }
+                              .padding(.horizontal, 14)
+                              .frame(height: 44)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 12)
+                                      .fill(Color.storeCard)
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 12)
+                                              .stroke(Color.storeDivider, lineWidth: 1)
+                                      )
+                              )
+                              .padding(.horizontal, 20)
+
+                              VStack(spacing: 10) {
+                                  ForEach(faqs) { faq in
+                                      FAQRow(faq: faq, isExpanded: expandedID == faq.id) {
+                                          withAnimation(.easeInOut(duration: 0.2)) {
+                                              expandedID = expandedID == faq.id ? nil : faq.id
+                                          }
+                                      }
+                                  }
+                              }
+                              .padding(.horizontal, 20)
+
+                              // Still need help?
+                              VStack(spacing: 10) {
+                                  Image(systemName: "questionmark.circle.fill")
+                                      .font(.system(size: 36))
+                                      .foregroundColor(.storePrimary)
+                                  Text("Still need help?")
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                  Text("Our support team usually replies within 24 hours.")
+                                      .font(.system(size: 12))
+                                      .foregroundColor(.storeSub)
+                                      .multilineTextAlignment(.center)
+                                  Button {
+                                      HapticManager.shared.impact(.light)
+                                  } label: {
+                                      Text("Contact support")
+                                          .font(.system(size: 14, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .padding(.horizontal, 24).padding(.vertical, 12)
+                                          .background(Capsule().fill(Color.storePrimary))
+                                  }
+                                  .buttonStyle(.plain)
+                                  .padding(.top, 4)
+                              }
+                              .padding(.vertical, 20)
+                              .frame(maxWidth: .infinity)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 16)
+                                      .fill(Color.storeCard)
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 16)
+                                              .stroke(Color.storeDivider, lineWidth: 1)
+                                      )
+                              )
+                              .padding(.horizontal, 20)
+                              .padding(.top, 4)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct FAQRow: View {
+              let faq: HelpFAQView.FAQ
+              let isExpanded: Bool
+              let onTap: () -> Void
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 0) {
+                      Button(action: onTap) {
+                          HStack(spacing: 12) {
+                              ZStack {
+                                  Circle().fill(faq.color.opacity(0.18)).frame(width: 36, height: 36)
+                                  Image(systemName: faq.icon)
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(faq.color)
+                              }
+                              Text(faq.question)
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.storeText)
+                                  .multilineTextAlignment(.leading)
+                              Spacer()
+                              Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.storeSub)
+                          }
+                          .padding(14)
+                      }
+                      .buttonStyle(.plain)
+
+                      if isExpanded {
+                          Text(faq.answer)
+                              .font(.system(size: 13))
+                              .foregroundColor(.storeSub)
+                              .lineSpacing(3)
+                              .padding(.horizontal, 14)
+                              .padding(.bottom, 14)
+                              .transition(.opacity.combined(with: .move(edge: .top)))
+                      }
+                  }
+                  .background(
+                      RoundedRectangle(cornerRadius: 14)
+                          .fill(Color.storeCard)
+                          .overlay(
+                              RoundedRectangle(cornerRadius: 14)
+                                  .stroke(Color.storeDivider, lineWidth: 1)
+                          )
+                  )
+              }
+          }
+
+          // ================= 6) Deactivate Account =================
+          struct DeactivateAccountView: View {
+              @ObservedObject var authManager: AuthManager
+              @Binding var isPresented: Bool
+              var onDeactivated: () -> Void
+
+              @State private var confirmText: String = ""
+              @State private var error: String? = nil
+
+              private let required = "DEACTIVATE"
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 18) {
+                              SettingsTopBar(onBack: { isPresented = false }, title: "Deactivate")
+
+                              VStack(spacing: 12) {
+                                  ZStack {
+                                      Circle()
+                                          .fill(Color.storePink.opacity(0.18))
+                                          .frame(width: 90, height: 90)
+                                      Image(systemName: "exclamationmark.triangle.fill")
+                                          .font(.system(size: 42))
+                                          .foregroundColor(.storePink)
+                                  }
+                                  .padding(.top, 10)
+
+                                  Text("Deactivate your account?")
+                                      .font(.system(size: 20, weight: .heavy))
+                                      .foregroundColor(.storeText)
+                                      .multilineTextAlignment(.center)
+
+                                  Text("This will permanently remove your account, downloads, and wallet data from this device. This action cannot be undone.")
+                                      .font(.system(size: 13))
+                                      .foregroundColor(.storeSub)
+                                      .multilineTextAlignment(.center)
+                                      .padding(.horizontal, 24)
+                              }
+
+                              // What will be deleted card
+                              VStack(alignment: .leading, spacing: 8) {
+                                  Text("What will be deleted:")
+                                      .font(.system(size: 12, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                      .tracking(0.5)
+                                  DeactivateBullet(icon: "person.crop.circle.fill", text: "Your account profile")
+                                  DeactivateBullet(icon: "creditcard.fill", text: "Wallet User ID and card number")
+                                  DeactivateBullet(icon: "arrow.down.circle.fill", text: "All downloaded files")
+                                  DeactivateBullet(icon: "bell.fill", text: "Notification preferences")
+                              }
+                              .padding(16)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 14)
+                                      .fill(Color.storeCard)
+                                      .overlay(
+                                          RoundedRectangle(cornerRadius: 14)
+                                              .stroke(Color.storeDivider, lineWidth: 1)
+                                      )
+                              )
+                              .padding(.horizontal, 20)
+
+                              // Confirm input
+                              VStack(alignment: .leading, spacing: 6) {
+                                  Text("Type \(required) to confirm")
+                                      .font(.system(size: 12, weight: .bold))
+                                      .foregroundColor(.storeSub)
+                                      .padding(.horizontal, 4)
+                                  HStack {
+                                      Image(systemName: "keyboard")
+                                          .foregroundColor(.storeSub)
+                                          .frame(width: 28)
+                                      TextField(required, text: $confirmText)
+                                          .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                                          .foregroundColor(.storeText)
+                                          .autocapitalization(.allCharacters)
+                                          .disableAutocorrection(true)
+                                  }
+                                  .padding(12)
+                                  .background(
+                                      RoundedRectangle(cornerRadius: 12)
+                                          .fill(Color.storeCard)
+                                          .overlay(
+                                              RoundedRectangle(cornerRadius: 12)
+                                                  .stroke(confirmText == required ? Color.storePink : Color.storeDivider, lineWidth: 1)
+                                          )
+                                  )
+                              }
+                              .padding(.horizontal, 20)
+
+                              if let err = error {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "exclamationmark.triangle.fill")
+                                          .foregroundColor(.xcodeRed)
+                                          .font(.system(size: 12))
+                                      Text(err).font(.system(size: 12)).foregroundColor(.xcodeRed)
+                                      Spacer()
+                                  }
+                                  .padding(.horizontal, 24)
+                              }
+
+                              Button {
+                                  performDeactivation()
+                              } label: {
+                                  Text("Deactivate my account")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity)
+                                      .frame(height: 50)
+                                      .background(Capsule().fill(Color.storePink))
+                                      .opacity(confirmText == required ? 1.0 : 0.5)
+                              }
+                              .padding(.horizontal, 20)
+                              .disabled(confirmText != required)
+
+                              Button {
+                                  isPresented = false
+                              } label: {
+                                  Text("Cancel")
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                              }
+                              .padding(.top, 4)
+
+                              Spacer(minLength: 30)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarHidden(true)
+                  }
+                  .preferredColorScheme(.light)
+              }
+
+              private func performDeactivation() {
+                  error = nil
+                  guard confirmText == required else {
+                      error = "Type \(required) to confirm"
+                      HapticManager.shared.error()
+                      return
+                  }
+                  // Remove the current user from storage
+                  let key = AppConstants.userDefaultsKey
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     var users = try? JSONDecoder().decode([AppUser].self, from: data),
+                     let user = authManager.currentUser {
+                      users.removeAll { $0.id == user.id }
+                      if let encoded = try? JSONEncoder().encode(users) {
+                          UserDefaults.standard.set(encoded, forKey: key)
+                      }
+                  }
+                  // Clear wallet data
+                  UserDefaults.standard.removeObject(forKey: "walletUserID_21s")
+                  UserDefaults.standard.removeObject(forKey: "walletCardNumber_21s")
+                  // Delete downloaded IPAs
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  if let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+                      for f in files where f.pathExtension == "ipa" {
+                          try? FileManager.default.removeItem(at: f)
+                      }
+                  }
+                  HapticManager.shared.success()
+                  authManager.logout()
+                  onDeactivated()
+              }
+          }
+
+          struct DeactivateBullet: View {
+              let icon: String
+              let text: String
+              var body: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: icon)
+                          .font(.system(size: 12, weight: .bold))
+                          .foregroundColor(.storePink)
+                          .frame(width: 22)
+                      Text(text)
+                          .font(.system(size: 13))
+                          .foregroundColor(.storeSub)
+                      Spacer()
+                  }
+              }
+          }
+          VIPEOF
+
+      # =========================================================
       # BUILD
       # =========================================================
       - name: Build the app
@@ -3501,6 +4847,7 @@ jobs:
             StoreView.swift \
             ContentView.swift \
             VIP21StoreApp.swift \
+            Settings.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
