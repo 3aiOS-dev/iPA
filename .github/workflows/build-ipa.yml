@@ -1182,12 +1182,12 @@ jobs:
           // ================= Remote Icon Cache =================
           // Loads app icons (PNG) from remote URLs with in-memory cache,
           // disk cache (Caches dir), and graceful placeholder fallback.
-          @MainActor
           final class RemoteIconCache: ObservableObject {
               static let shared = RemoteIconCache()
               @Published private(set) var cache: [String: UIImage] = [:]
               private let session: URLSession
               private let diskDir: URL
+              private let queue = DispatchQueue(label: "kurdstore.icons", qos: .utility)
 
               init() {
                   let cfg = URLSessionConfiguration.default
@@ -1204,31 +1204,49 @@ jobs:
                   self.diskDir = dir
               }
 
-              private func diskPath(for url: String) -> URL {
+              // Pure function — safe to call from any thread.
+              nonisolated private func diskPath(for url: String, dir: URL) -> URL {
                   let name = url
                       .replacingOccurrences(of: "https://", with: "")
                       .replacingOccurrences(of: "http://", with: "")
                       .replacingOccurrences(of: "/", with: "_")
                       .replacingOccurrences(of: ":", with: "_")
-                  return diskDir.appendingPathComponent(name)
+                  return dir.appendingPathComponent(name)
               }
 
+              // Read-only accessors; we hop to main only when mutating @Published cache.
               func image(for urlString: String?) -> UIImage? {
                   guard let s = urlString, let url = URL(string: s) else { return nil }
-                  if let cached = cache[s] { return cached }
-                  let path = diskPath(for: s)
+
+                  // Memory check on main
+                  if Thread.isMainThread, let cached = cache[s] { return cached }
+                  if !Thread.isMainThread {
+                      var hit: UIImage?
+                      DispatchQueue.main.sync { hit = self.cache[s] }
+                      if let hit { return hit }
+                  }
+
+                  // Disk check off-main
+                  let dir = self.diskDir
+                  let path = self.diskPath(for: s, dir: dir)
                   if let data = try? Data(contentsOf: path), let img = UIImage(data: data) {
-                      cache[s] = img
+                      if Thread.isMainThread {
+                          self.cache[s] = img
+                      } else {
+                          DispatchQueue.main.async { self.cache[s] = img }
+                      }
                       return img
                   }
-                  // Kick off background fetch; we return nil for now and the view
-                  // will refresh once the image is available in the cache.
+
+                  // Kick off background fetch; view will refresh when cache updates.
                   Task.detached { [weak self] in
                       guard let self else { return }
                       do {
                           let (data, _) = try await self.session.data(from: url)
                           guard let img = UIImage(data: data) else { return }
-                          try? data.write(to: self.diskPath(for: s))
+                          let dir = await MainActor.run(body: { self.diskDir })
+                          let path = self.diskPath(for: s, dir: dir)
+                          try? data.write(to: path)
                           await MainActor.run { self.cache[s] = img }
                       } catch { /* network failure, keep placeholder */ }
                   }
