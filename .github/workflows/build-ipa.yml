@@ -1394,7 +1394,7 @@ jobs:
                                       WalletView()
                                           .opacity(hasSeenWalletOnboarding ? 1 : 0)
                                   )
-                          case 2: AlertsView()
+                          case 2: AlertsView(feed: feed)
                           case 3: SocialView(authManager: authManager)
                           default: StoreHomeView(feed: feed)
                           }
@@ -1830,7 +1830,10 @@ jobs:
                                   }
                               }
                               Spacer()
-                              Button { HapticManager.shared.success() } label: {
+                              Button {
+                                  HapticManager.shared.success()
+                                  DownloadsManager.shared.enqueue(app: app)
+                              } label: {
                                   Text("Install")
                                       .font(.system(size: 13, weight: .bold))
                                       .foregroundColor(.white)
@@ -1895,29 +1898,7 @@ jobs:
                                   .foregroundColor(.storeSub)
                                   .lineSpacing(4)
 
-                              if let url = app.ipaUrl, let ipa = URL(string: url) {
-                                  HStack {
-                                      Text("Direct download").font(.system(size: 16, weight: .bold)).foregroundColor(.storeText)
-                                      Spacer()
-                                  }
-                                  .padding(.top, 6)
-                                  Button {
-                                      UIPasteboard.general.url = ipa
-                                      HapticManager.shared.success()
-                                  } label: {
-                                      HStack(spacing: 8) {
-                                          Image(systemName: "link")
-                                          Text(ipa.lastPathComponent)
-                                              .lineLimit(1)
-                                              .truncationMode(.middle)
-                                      }
-                                      .font(.system(size: 12, weight: .semibold))
-                                      .foregroundColor(.storePrimary)
-                                      .padding(.horizontal, 12).padding(.vertical, 10)
-                                      .frame(maxWidth: .infinity, alignment: .leading)
-                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary.opacity(0.10)))
-                                  }
-                              }
+                              // (Direct download removed — Install is internal only)
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
@@ -2589,22 +2570,77 @@ jobs:
           }
           
           // ============================================================
-          // ALERTS TAB
+          // ALERTS TAB — matches the design: Alerts / Files segments,
+          // Downloading (with progress), Downloaded (with share + delete)
           // ============================================================
           struct AlertsView: View {
+              @ObservedObject var feed: StoreFeed
+              @StateObject private var downloads = DownloadsManager.shared
+              @State private var segment: AlertSegment = .alerts
+
               var body: some View {
-                  ScrollView {
-                      VStack(spacing: 14) {
-                          StoreHeader(title: "Alerts")
-                          ForEach(0..<6) { i in
+                  VStack(spacing: 0) {
+                      StoreHeader(title: "Alerts")
+
+                      // Segment control: Alerts / Files
+                      HStack(spacing: 0) {
+                          segmentButton(title: "Alerts", segment: .alerts)
+                          segmentButton(title: "Files", segment: .files)
+                      }
+                      .padding(.horizontal, 20)
+                      .padding(.top, 6)
+
+                      ScrollView(showsIndicators: false) {
+                          VStack(alignment: .leading, spacing: 16) {
+                              if segment == .alerts {
+                                  alertsContent
+                              } else {
+                                  filesContent
+                              }
+                          }
+                          .padding(.top, 12)
+                          .padding(.bottom, 24)
+                      }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .onAppear {
+                      if let first = feed.featured.first {
+                          downloads.enqueue(app: first)
+                          downloads.enqueue(app: feed.allSorted.dropFirst().first ?? first)
+                      }
+                  }
+              }
+
+              @ViewBuilder
+              private func segmentButton(title: String, segment: AlertSegment) -> some View {
+                  Button {
+                      HapticManager.shared.selection()
+                      withAnimation(.easeInOut(duration: 0.2)) { self.segment = segment }
+                  } label: {
+                      VStack(spacing: 8) {
+                          Text(title)
+                              .font(.system(size: 15, weight: .semibold))
+                              .foregroundColor(self.segment == segment ? .storeSub : .storeSub.opacity(0.7))
+                          Rectangle()
+                              .fill(self.segment == segment ? Color.storePrimary : Color.clear)
+                              .frame(height: 2)
+                      }
+                      .frame(maxWidth: .infinity)
+                  }
+                  .buttonStyle(.plain)
+              }
+
+              // MARK: - Alerts content (system notifications feed)
+              @ViewBuilder
+              private var alertsContent: some View {
+                  VStack(spacing: 12) {
+                      if feed.apps.isEmpty && feed.isLoading {
+                          ForEach(0..<4, id: \.self) { _ in
                               HStack(spacing: 12) {
-                                  ZStack {
-                                      Circle().fill(Color.storePink.opacity(0.15)).frame(width: 44, height: 44)
-                                      Image(systemName: "bell.badge.fill").foregroundColor(.storePink)
-                                  }
-                                  VStack(alignment: .leading, spacing: 3) {
-                                      Text("New app available").font(.system(size: 13, weight: .semibold)).foregroundColor(.storeText)
-                                      Text("Update #\(i + 1) is ready to install now.").font(.system(size: 11)).foregroundColor(.storeSub)
+                                  Circle().fill(Color.storeDivider).frame(width: 44, height: 44)
+                                  VStack(alignment: .leading, spacing: 6) {
+                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 140, height: 10)
+                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 200, height: 8)
                                   }
                                   Spacer()
                               }
@@ -2612,9 +2648,355 @@ jobs:
                               .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
                               .padding(.horizontal, 20)
                           }
+                      } else {
+                          ForEach(feed.allSorted.prefix(8)) { app in
+                              AlertRow(app: app) {
+                                  // Install internally — enqueue into DownloadsManager
+                                  downloads.enqueue(app: app)
+                                  HapticManager.shared.success()
+                              }
+                              .padding(.horizontal, 20)
+                          }
                       }
-                      .padding(.top, 8)
                   }
+              }
+
+              // MARK: - Files content (Downloading / Downloaded sections)
+              @ViewBuilder
+              private var filesContent: some View {
+                  VStack(alignment: .leading, spacing: 14) {
+                      // ---- Downloading ----
+                      HStack {
+                          Text("Downloading")
+                              .font(.system(size: 17, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Text("\(downloads.active.count)")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.storePrimary)
+                              .padding(.horizontal, 8).padding(.vertical, 2)
+                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                          Spacer()
+                          if !downloads.active.isEmpty {
+                              Button {
+                                  HapticManager.shared.impact(.light)
+                                  downloads.pauseAll()
+                              } label: {
+                                  Text("Pause All")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storePrimary)
+                              }
+                          }
+                      }
+                      .padding(.horizontal, 20)
+
+                      if downloads.active.isEmpty {
+                          EmptyFilesState(
+                              icon: "arrow.down.circle",
+                              title: "No active downloads",
+                              subtitle: "Tap Install on any app to start downloading."
+                          )
+                          .padding(.horizontal, 20)
+                      } else {
+                          VStack(spacing: 12) {
+                              ForEach(downloads.active) { item in
+                                  DownloadingRow(item: item) {
+                                      downloads.togglePause(item: item)
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
+
+                      // ---- Downloaded ----
+                      HStack {
+                          Text("Downloaded")
+                              .font(.system(size: 17, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Text("\(downloads.completed.count)")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.storePrimary)
+                              .padding(.horizontal, 8).padding(.vertical, 2)
+                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                          Spacer()
+                      }
+                      .padding(.horizontal, 20)
+                      .padding(.top, 6)
+
+                      if downloads.completed.isEmpty {
+                          EmptyFilesState(
+                              icon: "tray",
+                              title: "No downloads yet",
+                              subtitle: "Completed downloads will appear here."
+                          )
+                          .padding(.horizontal, 20)
+                      } else {
+                          VStack(spacing: 12) {
+                              ForEach(downloads.completed) { item in
+                                  DownloadedRow(
+                                      item: item,
+                                      onShare: { downloads.share(item: item) },
+                                      onDelete: { downloads.delete(item: item) }
+                                  )
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          enum AlertSegment: Hashable { case alerts, files }
+
+          // MARK: - Alerts list row (system notification style)
+          struct AlertRow: View {
+              let app: StoreAPIApp
+              var onInstall: () -> Void
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      RemoteIcon(url: app.icon, size: 44, cornerRadius: 12)
+                      VStack(alignment: .leading, spacing: 3) {
+                          Text(app.name)
+                              .font(.system(size: 14, weight: .bold))
+                              .foregroundColor(.storeText)
+                              .lineLimit(1)
+                          HStack(spacing: 6) {
+                              if let v = app.bundleVersion {
+                                  Text("v\(v)")
+                                      .font(.system(size: 11, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                              }
+                              if let s = app.ipaSize {
+                                  Text("•")
+                                      .font(.system(size: 11))
+                                      .foregroundColor(.storeSub)
+                                  Text(s)
+                                      .font(.system(size: 11, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                              }
+                          }
+                      }
+                      Spacer()
+                      Button(action: onInstall) {
+                          Text("Install")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.white)
+                              .padding(.horizontal, 14).padding(.vertical, 7)
+                              .background(Capsule().fill(Color.storePrimary))
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+              }
+          }
+
+          // MARK: - Files: Downloading row (with progress + pause)
+          struct DownloadingRow: View {
+              @ObservedObject var item: DownloadItem
+              var onTogglePause: () -> Void
+
+              var body: some View {
+                  HStack(spacing: 14) {
+                      RemoteIcon(url: item.app.icon, size: 56, cornerRadius: 14)
+                      VStack(alignment: .leading, spacing: 6) {
+                          Text(item.app.name)
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(.storeText)
+                              .lineLimit(1)
+                          HStack(spacing: 6) {
+                              if let v = item.app.bundleVersion {
+                                  Text("v\(v)").font(.system(size: 11, weight: .semibold)).foregroundColor(.storeSub)
+                              }
+                              Text("•").font(.system(size: 11)).foregroundColor(.storeSub)
+                              Text(item.app.ipaSize ?? "—")
+                                  .font(.system(size: 11, weight: .semibold))
+                                  .foregroundColor(.storeSub)
+                              Spacer()
+                              Text("\(Int(item.progress * 100))%")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.storePrimary)
+                          }
+                          ProgressView(value: item.progress)
+                              .progressViewStyle(.linear)
+                              .tint(.storePrimary)
+                      }
+                      Button(action: onTogglePause) {
+                          ZStack {
+                              Circle()
+                                  .fill(Color.storePrimary.opacity(0.12))
+                                  .frame(width: 38, height: 38)
+                              Image(systemName: item.isPaused ? "play.fill" : "pause.fill")
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.storePrimary)
+                          }
+                      }
+                  }
+                  .padding(14)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+              }
+          }
+
+          // MARK: - Files: Downloaded row (with share + delete)
+          struct DownloadedRow: View {
+              @ObservedObject var item: DownloadItem
+              var onShare: () -> Void
+              var onDelete: () -> Void
+
+              var body: some View {
+                  HStack(spacing: 14) {
+                      RemoteIcon(url: item.app.icon, size: 56, cornerRadius: 14)
+                      VStack(alignment: .leading, spacing: 4) {
+                          Text(item.app.name)
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(.storeText)
+                              .lineLimit(1)
+                          HStack(spacing: 6) {
+                              if let v = item.app.bundleVersion {
+                                  Text("v\(v)").font(.system(size: 11, weight: .semibold)).foregroundColor(.storeSub)
+                              }
+                              Text("•").font(.system(size: 11)).foregroundColor(.storeSub)
+                              Text(item.app.ipaSize ?? "—")
+                                  .font(.system(size: 11, weight: .semibold))
+                                  .foregroundColor(.storeSub)
+                          }
+                      }
+                      Spacer()
+                      Button(action: onShare) {
+                          ZStack {
+                              Circle()
+                                  .fill(Color.storeSub.opacity(0.15))
+                                  .frame(width: 38, height: 38)
+                              Image(systemName: "square.and.arrow.up")
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.storeSub)
+                          }
+                      }
+                      Button(action: onDelete) {
+                          ZStack {
+                              Circle()
+                                  .fill(Color.storePink.opacity(0.15))
+                                  .frame(width: 38, height: 38)
+                              Image(systemName: "trash.fill")
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.storePink)
+                          }
+                      }
+                  }
+                  .padding(14)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+              }
+          }
+
+          // MARK: - Empty state
+          struct EmptyFilesState: View {
+              let icon: String
+              let title: String
+              let subtitle: String
+
+              var body: some View {
+                  VStack(spacing: 10) {
+                      Image(systemName: icon)
+                          .font(.system(size: 36, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                      Text(title)
+                          .font(.system(size: 14, weight: .bold))
+                          .foregroundColor(.storeText)
+                      Text(subtitle)
+                          .font(.system(size: 12))
+                          .foregroundColor(.storeSub)
+                          .multilineTextAlignment(.center)
+                          .padding(.horizontal, 30)
+                  }
+                  .frame(maxWidth: .infinity)
+                  .padding(.vertical, 30)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+              }
+          }
+
+          // MARK: - Downloads Manager (mock progress simulation)
+          final class DownloadItem: ObservableObject, Identifiable {
+              let id = UUID()
+              let app: StoreAPIApp
+              @Published var progress: Double
+              @Published var isPaused: Bool
+              @Published var isCompleted: Bool
+              private var timer: Timer?
+
+              init(app: StoreAPIApp) {
+                  self.app = app
+                  self.progress = 0
+                  self.isPaused = true
+                  self.isCompleted = false
+              }
+
+              func start() {
+                  guard timer == nil, !isCompleted else { return }
+                  isPaused = false
+                  timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+                      guard let self else { return }
+                      DispatchQueue.main.async {
+                          if self.isPaused { return }
+                          if self.progress >= 1.0 {
+                              self.isCompleted = true
+                              self.timer?.invalidate()
+                              self.timer = nil
+                          } else {
+                              self.progress = min(1.0, self.progress + Double.random(in: 0.02...0.06))
+                          }
+                      }
+                  }
+              }
+
+              func togglePause() {
+                  if isCompleted { return }
+                  isPaused.toggle()
+                  if isPaused {
+                      timer?.invalidate()
+                      timer = nil
+                  } else {
+                      start()
+                  }
+              }
+
+              deinit { timer?.invalidate() }
+          }
+
+          final class DownloadsManager: ObservableObject {
+              static let shared = DownloadsManager()
+              @Published private(set) var all: [DownloadItem] = []
+
+              var active: [DownloadItem] { all.filter { !$0.isCompleted } }
+              var completed: [DownloadItem] { all.filter { $0.isCompleted } }
+
+              func enqueue(app: StoreAPIApp) {
+                  if all.contains(where: { $0.app.id == app.id && !$0.isCompleted }) { return }
+                  if all.contains(where: { $0.app.id == app.id && $0.isCompleted }) { return }
+                  let item = DownloadItem(app: app)
+                  // Start with a small initial progress for a realistic feel
+                  item.progress = Double.random(in: 0.05...0.20)
+                  all.insert(item, at: 0)
+                  // Begin downloading immediately
+                  item.start()
+              }
+
+              func togglePause(item: DownloadItem) {
+                  item.togglePause()
+              }
+
+              func pauseAll() {
+                  active.forEach { item in
+                      if !item.isPaused { item.togglePause() }
+                  }
+              }
+
+              func delete(item: DownloadItem) {
+                  all.removeAll { $0.id == item.id }
+              }
+
+              func share(item: DownloadItem) {
+                  guard let url = URL(string: item.app.ipaUrl ?? "") else { return }
+                  UIPasteboard.general.url = url
+                  HapticManager.shared.success()
               }
           }
           
