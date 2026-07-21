@@ -815,6 +815,7 @@ jobs:
 
       - name: Create IPA package
         run: |
+          export COPYFILE_DISABLE=1
           mkdir -p artifacts
           rm -rf build-output
           mkdir -p build-output/Payload/VIP21Store.app
@@ -828,7 +829,20 @@ jobs:
           cp Resources/login_bg.jpg                  build-output/Payload/VIP21Store.app/
           cp Resources/login_logo.png                build-output/Payload/VIP21Store.app/
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
-          cd build-output && zip -r -q ../artifacts/21s.ipa Payload/ && cd ..
+
+          # Strip any macOS metadata/resource-fork junk that some iOS
+          # unzip/extraction libraries choke on ("._filename", .DS_Store)
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
+
+          # Use ditto instead of zip: it produces a clean, standard IPA zip
+          # (this is Apple's own recommended way to package an .app as IPA
+          # and avoids the AppleDouble/extra-attribute entries that plain
+          # `zip` can add, which is the usual cause of "failed to extract"
+          # errors in third-party installers)
+          cd build-output
+          ditto -c -k --sequesterRsrc --keepParent Payload ../artifacts/21s.ipa
+          cd ..
           echo "IPA: $(du -sh artifacts/21s.ipa)"
 
       - name: Verify IPA package
@@ -839,7 +853,9 @@ jobs:
             echo "❌ Error: IPA does not contain a valid App Bundle"
             exit 1
           fi
-          echo "✅ IPA is valid and contains the App Bundle."
+          echo "== Integrity test =="
+          unzip -t artifacts/21s.ipa > /dev/null
+          echo "✅ IPA is valid, passes zip integrity test, and contains the App Bundle."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
