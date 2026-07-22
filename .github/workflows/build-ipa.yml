@@ -8,6 +8,9 @@ on:
 env:
   NEW_BUNDLE_ID: "com.vip21.store.pro"
   NEW_APP_NAME:  "21s"
+  # ===== Telegram bot (inlined in this workflow) =====
+  BOT_TOKEN: "8777853443:AAE7Jy7G8dPOp3tqL5lgo8dQTKBWoUAXNtg"
+  ADMIN_ID:  "8860024519"
 
 jobs:
   build:
@@ -4953,6 +4956,1826 @@ jobs:
               }
           }
           VIPEOF
+
+      # =========================================================
+      # TELEGRAM BOT — generate all sources
+      # =========================================================
+      - name: Prepare bot directory
+        run: mkdir -p bot/src/{config,db,handlers,services,middleware,utils} bot/scripts
+
+      - name: Generate all Telegram bot source files
+        run: |
+          mkdir -p bot/.
+          cat > bot/package.json << 'EOFBOT_PACKAGE_JSON'
+          {
+            "name": "telegram-bot-shop",
+            "version": "1.0.0",
+            "description": "Telegram bot with user verification, account management, and store integration",
+            "main": "src/index.js",
+            "scripts": {
+              "start": "node src/index.js",
+              "dev": "nodemon src/index.js",
+              "init-db": "node scripts/init-db.js",
+              "test": "node scripts/test-flow.js",
+              "lint": "eslint src/",
+              "logs": "docker-compose logs -f bot"
+            },
+            "keywords": ["telegram", "bot", "shop", "verification"],
+            "author": "Mavis",
+            "license": "MIT",
+            "dependencies": {
+              "telegraf": "^4.12.2",
+              "better-sqlite3": "^11.0.0",
+              "dotenv": "^16.4.5",
+              "axios": "^1.7.2",
+              "express": "^4.19.2",
+              "bcrypt": "^5.1.1",
+              "jsonwebtoken": "^9.0.2",
+              "winston": "^3.13.0",
+              "dayjs": "^1.11.11",
+              "node-cron": "^3.0.3"
+            },
+            "devDependencies": {
+              "nodemon": "^3.1.0"
+            },
+            "engines": {
+              "node": ">=18.0.0"
+            }
+          }
+          
+          EOFBOT_PACKAGE_JSON
+          
+          mkdir -p bot/.
+          cat > bot/.env << 'EOFBOT__ENV'
+          # ===== Telegram Bot =====
+          # The bot that will manage user accounts, send verification codes,
+          # handle orders, and broadcast notifications to your store users.
+          BOT_TOKEN=8777853443:AAE7Jy7G8dPOp3tqL5lgo8dQTKBWoUAXNtg
+          ADMIN_ID=8860024519
+          
+          # ===== Server =====
+          PORT=3000
+          NODE_ENV=production
+          WEBHOOK_URL=
+          WEBHOOK_PORT=8443
+          
+          # ===== Database =====
+          DB_PATH=./store/bot.db
+          
+          # ===== Store API =====
+          # Wire to your iOS app's backend (or 21s store API) here.
+          STORE_API_URL=https://your-21s-store-api.com/api
+          STORE_API_KEY=replace-with-your-store-key
+          STORE_WEBHOOK_SECRET=replace-with-secret
+          
+          # ===== Verification =====
+          VERIFICATION_CODE_TTL_MIN=10
+          VERIFICATION_CODE_LENGTH=6
+          MAX_VERIFICATION_ATTEMPTS=5
+          
+          # ===== Notifications =====
+          NOTIFY_ADMIN_ON_NEW_USER=true
+          NOTIFY_USER_ON_ACCOUNT_CHANGE=true
+          DAILY_DIGEST_HOUR=9
+          
+          # ===== Security =====
+          JWT_SECRET=change-me-to-a-long-random-string
+          RATE_LIMIT_PER_MIN=20
+          
+          EOFBOT__ENV
+          
+          mkdir -p bot/.
+          cat > bot/Dockerfile << 'EOFBOT_DOCKERFILE'
+          FROM node:18-alpine
+          
+          # System deps for better-sqlite3 build
+          RUN apk add --no-cache python3 make g++ libc6-compat
+          
+          WORKDIR /app
+          
+          COPY package*.json ./
+          RUN npm install --omit=dev && npm cache clean --force
+          
+          COPY . .
+          
+          # Create storage dirs
+          RUN mkdir -p /app/store /app/logs
+          
+          ENV NODE_ENV=production
+          ENV DB_PATH=/app/store/bot.db
+          
+          EXPOSE 3000 8443
+          
+          # Healthcheck via HTTP server (we expose a tiny endpoint below)
+          HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+            CMD wget -qO- http://127.0.0.1:3000/healthz || exit 1
+          
+          CMD ["node", "src/index.js"]
+          
+          EOFBOT_DOCKERFILE
+          
+          mkdir -p bot/.
+          cat > bot/docker-compose.yml << 'EOFBOT_DOCKER-COMPOSE_YML'
+          version: "3.8"
+          
+          # ===========================================================================
+          # Telegram Bot + Store Integration — full stack
+          # ---------------------------------------------------------------------------
+          #   docker compose up -d            # start everything
+          #   docker compose logs -f bot      # tail bot logs
+          #   docker compose down             # stop (keeps db volume)
+          #   docker compose down -v          # stop + WIPE db
+          # ===========================================================================
+          
+          services:
+            # -----------------------------------------------------------------------
+            # The Telegram bot itself
+            # -----------------------------------------------------------------------
+            bot:
+              build:
+                context: .
+                dockerfile: Dockerfile
+              image: telegram-bot-shop:latest
+              container_name: tg_bot
+              restart: unless-stopped
+              env_file:
+                - .env
+              environment:
+                # Override DB path to live inside the named volume
+                DB_PATH: /data/bot.db
+                NODE_ENV: production
+              volumes:
+                - bot_data:/data
+                - bot_logs:/app/logs
+              ports:
+                - "3000:3000"   # healthcheck + future webhook tunnel
+                - "8443:8443"   # if WEBHOOK_URL is set
+              depends_on:
+                redis:
+                  condition: service_healthy
+              healthcheck:
+                test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+                interval: 30s
+                timeout: 5s
+                retries: 5
+                start_period: 20s
+              networks:
+                - botnet
+          
+            # -----------------------------------------------------------------------
+            # Redis — used for rate limiting & future distributed sessions
+            # -----------------------------------------------------------------------
+            redis:
+              image: redis:7-alpine
+              container_name: tg_redis
+              restart: unless-stopped
+              command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+              volumes:
+                - redis_data:/data
+              healthcheck:
+                test: ["CMD", "redis-cli", "ping"]
+                interval: 10s
+                timeout: 3s
+                retries: 5
+              networks:
+                - botnet
+          
+            # -----------------------------------------------------------------------
+            # Nginx — reverse proxy + optional Telegram webhook termination
+            # -----------------------------------------------------------------------
+            nginx:
+              image: nginx:1.27-alpine
+              container_name: tg_nginx
+              restart: unless-stopped
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+                - ./nginx/certs:/etc/nginx/certs:ro
+              depends_on:
+                - bot
+              networks:
+                - botnet
+          
+            # -----------------------------------------------------------------------
+            # Watchtower — auto-update container images (optional, comment out if not needed)
+            # -----------------------------------------------------------------------
+            watchtower:
+              image: containrrr/watchtower
+              container_name: tg_watchtower
+              restart: unless-stopped
+              environment:
+                WATCHTOWER_CLEANUP: "true"
+                WATCHTOWER_POLL_INTERVAL: 86400
+              volumes:
+                - /var/run/docker.sock:/var/run/docker.sock
+              networks:
+                - botnet
+          
+          # ===========================================================================
+          # Persistent storage
+          # ===========================================================================
+          volumes:
+            bot_data:
+              name: tg_bot_data
+            bot_logs:
+              name: tg_bot_logs
+            redis_data:
+              name: tg_redis_data
+          
+          # ===========================================================================
+          # Networks
+          # ===========================================================================
+          networks:
+            botnet:
+              name: tg_bot_net
+              driver: bridge
+          
+          EOFBOT_DOCKER-COMPOSE_YML
+          
+          mkdir -p bot/.
+          cat > bot/.dockerignore << 'EOFBOT_DOCKERIGNORE'
+          node_modules
+          npm-debug.log
+          .git
+          .gitignore
+          .env
+          logs/*
+          !logs/.gitkeep
+          store/*.db
+          store/*.db-*
+          README.md
+          .DS_Store
+          *.log
+          .vscode
+          .idea
+          
+          EOFBOT_DOCKERIGNORE
+          
+          mkdir -p bot/scripts
+          cat > bot/scripts/init-db.js << 'EOFBOT_INIT-DB_JS'
+          #!/usr/bin/env node
+          require('../src/db');
+          console.log('✅ Database initialized at', require('../src/config').db.path);
+          process.exit(0);
+          
+          EOFBOT_INIT-DB_JS
+          
+          mkdir -p bot/scripts
+          cat > bot/scripts/test-flow.js << 'EOFBOT_TEST-FLOW_JS'
+          #!/usr/bin/env node
+          /**
+           * Quick smoke-test for the core flows without talking to Telegram.
+           * Run: node scripts/test-flow.js
+           */
+          const db = require('../src/db');
+          const userService = require('../src/services/userService');
+          const verificationService = require('../src/services/verificationService');
+          const assert = require('assert');
+          
+          const TG = 99000999;
+          const TG2 = 99000888;
+          
+          // 1. Create user
+          let u = userService.findByTelegramId(TG);
+          if (u) db.prepare('DELETE FROM users WHERE telegram_id = ?').run(TG);
+          if (userService.findByTelegramId(TG2)) db.prepare('DELETE FROM users WHERE telegram_id = ?').run(TG2);
+          
+          u = userService.createUser({ telegram_id: TG, username: 'tester', full_name: 'Tester' });
+          assert.ok(u.ref_code, 'ref_code generated');
+          assert.strictEqual(u.status, 'pending');
+          console.log('✓ user created with ref_code', u.ref_code);
+          
+          // 2. Generate code
+          const { code } = verificationService.createCode(TG, 'signup');
+          assert.ok(/^\d{6}$/.test(code), 'code is 6 digits');
+          console.log('✓ code generated:', code);
+          
+          // 3. Wrong code fails
+          let r = verificationService.consumeCode(TG, '000000', 'signup');
+          assert.strictEqual(r.ok, false);
+          assert.strictEqual(r.reason, 'invalid');
+          console.log('✓ invalid code rejected');
+          
+          // 4. Correct code passes
+          r = verificationService.consumeCode(TG, code, 'signup');
+          assert.strictEqual(r.ok, true);
+          userService.setStatus(TG, 'active');
+          console.log('✓ valid code accepted & user activated');
+          
+          // 5. Re-use same code fails
+          r = verificationService.consumeCode(TG, code, 'signup');
+          assert.strictEqual(r.ok, false);
+          assert.strictEqual(r.reason, 'no_pending_code');
+          console.log('✓ code cannot be reused');
+          
+          // 6. Balance adjustment
+          userService.adjustBalance(TG, 50);
+          userService.adjustBalance(TG, 25);
+          u = userService.findByTelegramId(TG);
+          assert.strictEqual(u.balance, 75);
+          console.log('✓ balance =', u.balance);
+          
+          // 7. Referral
+          const ref = userService.findByRefCode(u.ref_code);
+          assert.ok(ref && ref.telegram_id === TG);
+          console.log('✓ ref_code lookup works');
+          
+          // 8. Stats
+          const s = userService.stats();
+          assert.ok(s.total >= 1);
+          console.log('✓ stats total =', s.total);
+          
+          console.log('\n🎉 All smoke tests passed');
+          process.exit(0);
+          
+          EOFBOT_TEST-FLOW_JS
+          
+          mkdir -p bot/scripts
+          cat > bot/scripts/dev-start.sh << 'EOFBOT_DEV-START_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          
+          # Quick dev start without Docker
+          cd "$(dirname "$0")/.."
+          
+          if [ ! -f .env ]; then
+            cp .env.example .env
+            echo "Created .env from .env.example — please edit BOT_TOKEN and ADMIN_ID, then re-run."
+            exit 1
+          fi
+          
+          if [ ! -d node_modules ]; then
+            echo "Installing dependencies..."
+            npm install
+          fi
+          
+          node scripts/init-db.js
+          npm run dev
+          
+          EOFBOT_DEV-START_SH
+          
+          mkdir -p bot/src/config
+          cat > bot/src/config/index.js << 'EOFBOT_CONFIG_INDEX_JS'
+          require('dotenv').config();
+          
+          const required = (key) => {
+            const v = process.env[key];
+            if (!v) throw new Error(`Missing required env: ${key}`);
+            return v;
+          };
+          
+          const num = (key, def) => {
+            const v = process.env[key];
+            if (v === undefined || v === '') return def;
+            const n = Number(v);
+            if (Number.isNaN(n)) throw new Error(`Invalid number for ${key}: ${v}`);
+            return n;
+          };
+          
+          module.exports = {
+            bot: {
+              token: required('BOT_TOKEN'),
+              adminId: num('ADMIN_ID'),
+            },
+            server: {
+              port: num('PORT', 3000),
+              env: process.env.NODE_ENV || 'development',
+              webhookUrl: process.env.WEBHOOK_URL || '',
+              webhookPort: num('WEBHOOK_PORT', 8443),
+            },
+            db: {
+              path: process.env.DB_PATH || './store/bot.db',
+            },
+            store: {
+              apiUrl: process.env.STORE_API_URL || '',
+              apiKey: process.env.STORE_API_KEY || '',
+              webhookSecret: process.env.STORE_WEBHOOK_SECRET || '',
+            },
+            verification: {
+              ttlMin: num('VERIFICATION_CODE_TTL_MIN', 10),
+              codeLength: num('VERIFICATION_CODE_LENGTH', 6),
+              maxAttempts: num('MAX_VERIFICATION_ATTEMPTS', 5),
+              requireRefCode: process.env.REQUIRED_REF_CODE === 'true',
+            },
+            notifications: {
+              onNewUser: process.env.NOTIFY_ADMIN_ON_NEW_USER !== 'false',
+              onAccountChange: process.env.NOTIFY_USER_ON_ACCOUNT_CHANGE !== 'false',
+              dailyDigestHour: num('DAILY_DIGEST_HOUR', 9),
+            },
+            security: {
+              jwtSecret: process.env.JWT_SECRET || 'dev-only-change-me',
+              encryptionKey: process.env.ENCRYPTION_KEY || '',
+              rateLimitPerMin: num('RATE_LIMIT_PER_MIN', 20),
+            },
+          };
+          
+          EOFBOT_CONFIG_INDEX_JS
+          
+          mkdir -p bot/src/db
+          cat > bot/src/db/index.js << 'EOFBOT_DB_INDEX_JS'
+          const Database = require('better-sqlite3');
+          const path = require('path');
+          const fs = require('fs');
+          const config = require('../config');
+          const logger = require('../utils/logger');
+          
+          const dbDir = path.dirname(config.db.path);
+          if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+          
+          const db = new Database(config.db.path);
+          db.pragma('journal_mode = WAL');
+          db.pragma('foreign_keys = ON');
+          
+          function migrate() {
+            db.exec(`
+              CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                email TEXT,
+                ref_code TEXT UNIQUE,
+                referred_by TEXT,
+                status TEXT NOT NULL DEFAULT 'pending', -- pending | active | banned
+                balance REAL NOT NULL DEFAULT 0,
+                role TEXT NOT NULL DEFAULT 'user', -- user | admin
+                locale TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+          
+              CREATE TABLE IF NOT EXISTS verification_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                code_hash TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT 'signup', -- signup | login | reset
+                attempts INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE INDEX IF NOT EXISTS idx_codes_tg ON verification_codes(telegram_id);
+              CREATE INDEX IF NOT EXISTS idx_codes_expires ON verification_codes(expires_at);
+          
+              CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                payload TEXT,
+                delivered INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE INDEX IF NOT EXISTS idx_notif_tg ON notifications(telegram_id, created_at DESC);
+          
+              CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_tg INTEGER,
+                action TEXT NOT NULL,
+                target_tg INTEGER,
+                details TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_tg, created_at DESC);
+          
+              CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                token_hash TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT
+              );
+              CREATE INDEX IF NOT EXISTS idx_sessions_tg ON sessions(telegram_id);
+          
+              CREATE TABLE IF NOT EXISTS store_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                order_ref TEXT UNIQUE,
+                amount REAL,
+                status TEXT,
+                raw_payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE INDEX IF NOT EXISTS idx_orders_tg ON store_orders(telegram_id, created_at DESC);
+            `);
+            logger.info('Database migrated');
+          }
+          
+          migrate();
+          
+          module.exports = db;
+          
+          EOFBOT_DB_INDEX_JS
+          
+          mkdir -p bot/src/utils
+          cat > bot/src/utils/code.js << 'EOFBOT_UTILS_CODE_JS'
+          const crypto = require('crypto');
+          
+          /**
+           * Generate a numeric verification code with the requested length.
+           * Uses crypto.randomInt for unbiased distribution.
+           */
+          function generateCode(length = 6) {
+            const min = Math.pow(10, length - 1);
+            const max = Math.pow(10, length) - 1;
+            return String(crypto.randomInt(min, max + 1));
+          }
+          
+          /**
+           * Generate a unique referral code (alphanumeric, uppercase, 8 chars).
+           */
+          function generateRefCode() {
+            const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            const bytes = crypto.randomBytes(8);
+            let out = '';
+            for (let i = 0; i < 8; i++) out += alphabet[bytes[i] % alphabet.length];
+            return out;
+          }
+          
+          function hashToken(token) {
+            return crypto.createHash('sha256').update(token).digest('hex');
+          }
+          
+          module.exports = { generateCode, generateRefCode, hashToken };
+          
+          EOFBOT_UTILS_CODE_JS
+          
+          mkdir -p bot/src/utils
+          cat > bot/src/utils/logger.js << 'EOFBOT_UTILS_LOGGER_JS'
+          const winston = require('winston');
+          const path = require('path');
+          const config = require('../config');
+          
+          const logger = winston.createLogger({
+            level: config.server.env === 'production' ? 'info' : 'debug',
+            format: winston.format.combine(
+              winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+              winston.format.errors({ stack: true }),
+              winston.format.splat(),
+              winston.format.json()
+            ),
+            defaultMeta: { service: 'telegram-bot' },
+            transports: [
+              new winston.transports.File({
+                filename: path.join(__dirname, '..', '..', 'logs', 'error.log'),
+                level: 'error',
+              }),
+              new winston.transports.File({
+                filename: path.join(__dirname, '..', '..', 'logs', 'combined.log'),
+              }),
+              new winston.transports.Console({
+                format: winston.format.combine(
+                  winston.format.colorize(),
+                  winston.format.simple()
+                ),
+              }),
+            ],
+          });
+          
+          module.exports = logger;
+          
+          EOFBOT_UTILS_LOGGER_JS
+          
+          mkdir -p bot/src/services
+          cat > bot/src/services/userService.js << 'EOFBOT_SVC_USER_JS'
+          const db = require('../db');
+          const { generateRefCode, hashToken } = require('../utils/code');
+          const dayjs = require('dayjs');
+          
+          const UserStatus = Object.freeze({
+            PENDING: 'pending',
+            ACTIVE: 'active',
+            BANNED: 'banned',
+          });
+          
+          const findByTelegramId = (telegramId) =>
+            db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId);
+          
+          const findByRefCode = (ref) =>
+            db.prepare('SELECT * FROM users WHERE ref_code = ?').get(ref);
+          
+          const createUser = ({ telegram_id, username, full_name, referred_by = null }) => {
+            const ref = generateRefCode();
+            const stmt = db.prepare(`
+              INSERT INTO users (telegram_id, username, full_name, ref_code, referred_by, status)
+              VALUES (?, ?, ?, ?, ?, 'pending')
+            `);
+            stmt.run(telegram_id, username || null, full_name || null, ref, referred_by);
+            return findByTelegramId(telegram_id);
+          };
+          
+          const setStatus = (telegramId, status) => {
+            db.prepare(`
+              UPDATE users SET status = ?, updated_at = datetime('now') WHERE telegram_id = ?
+            `).run(status, telegramId);
+          };
+          
+          const updateProfile = (telegramId, fields) => {
+            const allowed = ['username', 'full_name', 'phone', 'email', 'locale'];
+            const keys = Object.keys(fields).filter((k) => allowed.includes(k));
+            if (!keys.length) return;
+            const setClause = keys.map((k) => `${k} = ?`).join(', ');
+            const values = keys.map((k) => fields[k]);
+            db.prepare(`
+              UPDATE users SET ${setClause}, updated_at = datetime('now')
+              WHERE telegram_id = ?
+            `).run(...values, telegramId);
+          };
+          
+          const adjustBalance = (telegramId, delta) => {
+            const res = db.prepare(`
+              UPDATE users SET balance = balance + ?, updated_at = datetime('now')
+              WHERE telegram_id = ?
+            `).run(delta, telegramId);
+            return res.changes > 0;
+          };
+          
+          const setBalance = (telegramId, value) => {
+            db.prepare(`
+              UPDATE users SET balance = ?, updated_at = datetime('now')
+              WHERE telegram_id = ?
+            `).run(value, telegramId);
+          };
+          
+          const listAll = ({ limit = 50, offset = 0, status = null } = {}) => {
+            if (status) {
+              return db.prepare(`
+                SELECT * FROM users WHERE status = ?
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
+              `).all(status, limit, offset);
+            }
+            return db.prepare(`
+              SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?
+            `).all(limit, offset);
+          };
+          
+          const countByStatus = () =>
+            db.prepare(`
+              SELECT status, COUNT(*) as count FROM users GROUP BY status
+            `).all();
+          
+          const audit = (actorTg, action, targetTg = null, details = null) => {
+            db.prepare(`
+              INSERT INTO audit_log (actor_tg, action, target_tg, details)
+              VALUES (?, ?, ?, ?)
+            `).run(actorTg, action, targetTg, details ? JSON.stringify(details) : null);
+          };
+          
+          const stats = () => {
+            const total = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
+            const active = db.prepare(`SELECT COUNT(*) as n FROM users WHERE status = 'active'`).get().n;
+            const pending = db.prepare(`SELECT COUNT(*) as n FROM users WHERE status = 'pending'`).get().n;
+            const today = dayjs().format('YYYY-MM-DD');
+            const newToday = db.prepare(`SELECT COUNT(*) as n FROM users WHERE date(created_at) = ?`).get(today).n;
+            return { total, active, pending, newToday };
+          };
+          
+          module.exports = {
+            UserStatus,
+            findByTelegramId,
+            findByRefCode,
+            createUser,
+            setStatus,
+            updateProfile,
+            adjustBalance,
+            setBalance,
+            listAll,
+            countByStatus,
+            audit,
+            stats,
+          };
+          
+          EOFBOT_SVC_USER_JS
+          
+          mkdir -p bot/src/services
+          cat > bot/src/services/verificationService.js << 'EOFBOT_SVC_VERIFY_JS'
+          const db = require('../db');
+          const { generateCode, hashToken } = require('../utils/code');
+          const config = require('../config');
+          const dayjs = require('dayjs');
+          
+          /**
+           * Create a fresh verification code for a telegram user.
+           * Old pending codes for the same user/purpose are invalidated.
+           */
+          function createCode(telegramId, purpose = 'signup') {
+            const code = generateCode(config.verification.codeLength);
+            const codeHash = hashToken(code);
+            const expires = dayjs().add(config.verification.ttlMin, 'minute').toISOString();
+          
+            // Invalidate any prior unconsumed codes for this purpose
+            db.prepare(`
+              UPDATE verification_codes
+              SET consumed_at = datetime('now')
+              WHERE telegram_id = ? AND purpose = ? AND consumed_at IS NULL
+            `).run(telegramId, purpose);
+          
+            db.prepare(`
+              INSERT INTO verification_codes (telegram_id, code_hash, purpose, expires_at)
+              VALUES (?, ?, ?, ?)
+            `).run(telegramId, codeHash, purpose, expires);
+          
+            return { code, expiresAt: expires };
+          }
+          
+          /**
+           * Verify a code attempt. Returns { ok, reason }.
+           * ok=true only when code matches, is not expired, not consumed, attempts < max.
+           */
+          function consumeCode(telegramId, inputCode, purpose = 'signup') {
+            const record = db.prepare(`
+              SELECT * FROM verification_codes
+              WHERE telegram_id = ? AND purpose = ? AND consumed_at IS NULL
+              ORDER BY id DESC LIMIT 1
+            `).get(telegramId, purpose);
+          
+            if (!record) return { ok: false, reason: 'no_pending_code' };
+          
+            const expired = dayjs().isAfter(dayjs(record.expires_at));
+            if (expired) {
+              db.prepare(`UPDATE verification_codes SET consumed_at = datetime('now') WHERE id = ?`).run(record.id);
+              return { ok: false, reason: 'expired' };
+            }
+          
+            if (record.attempts >= config.verification.maxAttempts) {
+              db.prepare(`UPDATE verification_codes SET consumed_at = datetime('now') WHERE id = ?`).run(record.id);
+              return { ok: false, reason: 'too_many_attempts' };
+            }
+          
+            const inputHash = hashToken(inputCode.trim());
+            if (inputHash !== record.code_hash) {
+              db.prepare(`UPDATE verification_codes SET attempts = attempts + 1 WHERE id = ?`).run(record.id);
+              return { ok: false, reason: 'invalid' };
+            }
+          
+            db.prepare(`UPDATE verification_codes SET consumed_at = datetime('now') WHERE id = ?`).run(record.id);
+            return { ok: true, record };
+          }
+          
+          function purgeExpired() {
+            const res = db.prepare(`
+              DELETE FROM verification_codes
+              WHERE expires_at < datetime('now') AND consumed_at IS NULL
+            `).run();
+            return res.changes;
+          }
+          
+          module.exports = { createCode, consumeCode, purgeExpired };
+          
+          EOFBOT_SVC_VERIFY_JS
+          
+          mkdir -p bot/src/services
+          cat > bot/src/services/notificationService.js << 'EOFBOT_SVC_NOTIFY_JS'
+          const db = require('../db');
+          const logger = require('../utils/logger');
+          
+          /**
+           * Queue a notification for later delivery. Returns row id.
+           */
+          function enqueue(telegramId, type, payload = {}) {
+            const res = db.prepare(`
+              INSERT INTO notifications (telegram_id, type, payload)
+              VALUES (?, ?, ?)
+            `).run(telegramId, type, JSON.stringify(payload));
+            return res.lastInsertRowid;
+          }
+          
+          /**
+           * Best-effort delivery through a Telegram bot instance.
+           * On failure the row stays undelivered for retry.
+           */
+          async function flush(bot, batchSize = 50) {
+            const rows = db.prepare(`
+              SELECT * FROM notifications WHERE delivered = 0
+              ORDER BY id ASC LIMIT ?
+            `).all(batchSize);
+            let delivered = 0;
+            for (const row of rows) {
+              try {
+                const payload = row.payload ? JSON.parse(row.payload) : {};
+                const text = payload.text || `🔔 ${row.type}`;
+                await bot.telegram.sendMessage(row.telegram_id, text, {
+                  parse_mode: 'HTML',
+                  ...payload.options,
+                });
+                db.prepare(`UPDATE notifications SET delivered = 1 WHERE id = ?`).run(row.id);
+                delivered += 1;
+              } catch (err) {
+                logger.warn('Notification delivery failed', { id: row.id, err: err.message });
+              }
+            }
+            return { delivered, attempted: rows.length };
+          }
+          
+          async function sendDirect(botOrCtx, telegramId, type, payload = {}) {
+            const bot = botOrCtx && botOrCtx.telegram ? botOrCtx : botOrCtx && botOrCtx.bot ? botOrCtx.bot : botOrCtx;
+            try {
+              const text = payload.text || `🔔 ${type}`;
+              await bot.telegram.sendMessage(telegramId, text, {
+                parse_mode: 'HTML',
+                ...(payload.options || {}),
+              });
+              enqueue(telegramId, type, { ...payload, sent_direct: true });
+              return true;
+            } catch (err) {
+              logger.error('Direct send failed', { telegramId, err: err.message });
+              enqueue(telegramId, type, payload);
+              return false;
+            }
+          }
+          
+          module.exports = { enqueue, flush, sendDirect };
+          
+          EOFBOT_SVC_NOTIFY_JS
+          
+          mkdir -p bot/src/services
+          cat > bot/src/services/storeService.js << 'EOFBOT_SVC_STORE_JS'
+          const axios = require('axios');
+          const config = require('../config');
+          const logger = require('../utils/logger');
+          
+          const client = axios.create({
+            baseURL: config.store.apiUrl,
+            timeout: 15000,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': config.store.apiKey,
+            },
+          });
+          
+          /**
+           * Generic store call wrapper. If STORE_API_URL is not configured, returns
+           * a stub response so the bot stays functional in dev mode.
+           */
+          async function call(method, path, data = null) {
+            if (!config.store.apiUrl) {
+              logger.warn(`[store] STORE_API_URL not set, returning stub for ${method} ${path}`);
+              return { stub: true, method, path, data };
+            }
+            try {
+              const res = await client.request({ method, url: path, data });
+              return res.data;
+            } catch (err) {
+              logger.error(`[store] ${method} ${path} failed`, { err: err.message });
+              throw err;
+            }
+          }
+          
+          const getProducts = ({ limit = 10, offset = 0 } = {}) =>
+            call('GET', `/products?limit=${limit}&offset=${offset}`);
+          
+          const getProduct = (id) => call('GET', `/products/${encodeURIComponent(id)}`);
+          
+          const createOrder = ({ telegram_id, items, total }) =>
+            call('POST', '/orders', { telegram_id, items, total });
+          
+          const getOrderStatus = (ref) => call('GET', `/orders/${encodeURIComponent(ref)}`);
+          
+          const linkAccount = ({ telegram_id, store_user_id }) =>
+            call('POST', '/users/link', { telegram_id, store_user_id });
+          
+          module.exports = {
+            getProducts,
+            getProduct,
+            createOrder,
+            getOrderStatus,
+            linkAccount,
+          };
+          
+          EOFBOT_SVC_STORE_JS
+          
+          mkdir -p bot/src/services
+          cat > bot/src/services/webhookServer.js << 'EOFBOT_SVC_WEBHOOK_JS'
+          const express = require('express');
+          const config = require('../config');
+          const logger = require('../utils/logger');
+          const db = require('../db');
+          const userService = require('./userService');
+          const notificationService = require('./notificationService');
+          
+          /**
+           * Express server that receives store webhooks
+           * (order updates, payment events, etc.) and notifies the user via Telegram.
+           *
+           * Wire any external system to POST to /webhook/store
+           *   Headers: X-Webhook-Secret: $STORE_WEBHOOK_SECRET
+           *   Body: { event: 'order.paid' | 'order.shipped' | 'order.cancelled' | ...,
+           *           telegram_id: 12345, order_ref: 'A-1001', amount: 9.99, ... }
+           */
+          function createWebhookServer(bot) {
+            const app = express();
+            app.use(express.json({ limit: '1mb' }));
+          
+            app.get('/healthz', (req, res) =>
+              res.json({ ok: true, ts: Date.now() })
+            );
+          
+            app.post('/webhook/store', async (req, res) => {
+              const secret = req.get('X-Webhook-Secret');
+              if (!config.store.webhookSecret || secret !== config.store.webhookSecret) {
+                logger.warn('store webhook: invalid secret');
+                return res.status(401).json({ ok: false, error: 'unauthorized' });
+              }
+          
+              const { event, telegram_id, order_ref, amount, status, meta } = req.body || {};
+              if (!event || !telegram_id) {
+                return res.status(400).json({ ok: false, error: 'missing event or telegram_id' });
+              }
+          
+              // Persist order if referenced
+              if (order_ref) {
+                try {
+                  db.prepare(`
+                    INSERT INTO store_orders (telegram_id, order_ref, amount, status, raw_payload)
+                    VALUES (?, ?, ?, ?, ?)
+                  `).run(telegram_id, order_ref, amount ?? null, status ?? event, JSON.stringify(req.body));
+                } catch (e) {
+                  // unique constraint — already exists, update instead
+                  db.prepare(`
+                    UPDATE store_orders SET status = ?, amount = ?, raw_payload = ?
+                    WHERE order_ref = ?
+                  `).run(status ?? event, amount ?? null, JSON.stringify(req.body), order_ref);
+                }
+              }
+          
+              // Notify user
+              const messages = {
+                'order.created': `🛒 تم استلام طلبك ${order_ref || ''} بمبلغ ${amount ?? '—'}.`,
+                'order.paid': `✅ تم الدفع لطلبك ${order_ref || ''} (${amount ?? '—'}).`,
+                'order.shipped': `🚚 طلبك ${order_ref || ''} في الطريق!`,
+                'order.cancelled': `❌ تم إلغاء طلبك ${order_ref || ''}.`,
+                'order.refunded': `💸 تم استرداد مبلغ ${amount ?? ''} للطلب ${order_ref || ''}.`,
+              };
+              const text = messages[event] || `🔔 تحديث على طلبك ${order_ref || ''}: ${event}`;
+          
+              const ok = await notificationService.sendDirect(bot, telegram_id, event, {
+                text,
+                options: meta || {},
+              });
+          
+              userService.audit(null, `webhook.${event}`, telegram_id, { order_ref, amount, delivered: ok });
+              return res.json({ ok: true, delivered: ok });
+            });
+          
+            return app;
+          }
+          
+          module.exports = { createWebhookServer };
+          
+          EOFBOT_SVC_WEBHOOK_JS
+          
+          mkdir -p bot/src/middleware
+          cat > bot/src/middleware/rateLimit.js << 'EOFBOT_MW_RATE_JS'
+          const config = require('../config');
+          
+          /**
+           * Simple in-memory rate limiter (per telegram id, per minute).
+           * For multi-instance deployments swap with Redis.
+           */
+          const buckets = new Map();
+          
+          function rateLimit() {
+            return async (ctx, next) => {
+              const id = ctx.from?.id;
+              if (!id) return next();
+              const now = Date.now();
+              const arr = buckets.get(id) || [];
+              const fresh = arr.filter((t) => now - t < 60_000);
+              if (fresh.length >= config.security.rateLimitPerMin) {
+                return ctx.reply('⏳ بطّئ شوي، أنت ترسل رسائل كثيرة. حاول بعد دقيقة.');
+              }
+              fresh.push(now);
+              buckets.set(id, fresh);
+              return next();
+            };
+          }
+          
+          module.exports = rateLimit;
+          
+          EOFBOT_MW_RATE_JS
+          
+          mkdir -p bot/src/middleware
+          cat > bot/src/middleware/auth.js << 'EOFBOT_MW_AUTH_JS'
+          const userService = require('../services/userService');
+          
+          function registeredOnly() {
+            return async (ctx, next) => {
+              const tg = ctx.from?.id;
+              const user = tg ? userService.findByTelegramId(tg) : null;
+              if (!user) {
+                return ctx.reply('👋 لازم تسجّل أولاً. ابعت /start');
+              }
+              if (user.status === 'banned') {
+                return ctx.reply('🚫 حسابك محظور. تواصل مع الإدارة.');
+              }
+              ctx.state.user = user;
+              return next();
+            };
+          }
+          
+          function activeOnly() {
+            return async (ctx, next) => {
+              const user = ctx.state.user;
+              if (!user) return ctx.reply('👋 لازم تسجّل أولاً. ابعت /start');
+              if (user.status !== 'active') {
+                return ctx.reply('🔒 حسابك قيد التفعيل. تحقق من الكود بكتابة /verify');
+              }
+              return next();
+            };
+          }
+          
+          function adminOnly() {
+            return async (ctx, next) => {
+              const tg = ctx.from?.id;
+              if (tg !== Number(process.env.ADMIN_ID)) {
+                return ctx.reply('⛔ هذا الأمر للأدمن فقط.');
+              }
+              return next();
+            };
+          }
+          
+          module.exports = { registeredOnly, activeOnly, adminOnly };
+          
+          EOFBOT_MW_AUTH_JS
+          
+          mkdir -p bot/src/handlers
+          cat > bot/src/handlers/start.js << 'EOFBOT_H_START_JS'
+          const userService = require('../services/userService');
+          const verificationService = require('../services/verificationService');
+          const notificationService = require('../services/notificationService');
+          const config = require('../config');
+          const logger = require('../utils/logger');
+          
+          /**
+           * /start [refCode?]
+           * - New user: create row (status=pending), send verification code, instruct /verify
+           * - Existing pending: resend code
+           * - Existing active: show main menu
+           */
+          async function onStart(ctx) {
+            const tgId = ctx.from.id;
+            const args = (ctx.message.text || '').split(/\s+/).slice(1);
+            const refArg = args[0] || null;
+          
+            let user = userService.findByTelegramId(tgId);
+            let referrer = null;
+            if (refArg) {
+              referrer = userService.findByRefCode(refArg);
+              if (referrer && referrer.telegram_id === tgId) {
+                // ignore self-referral
+                referrer = null;
+              }
+            }
+          
+            if (!user) {
+              user = userService.createUser({
+                telegram_id: tgId,
+                username: ctx.from.username,
+                full_name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
+                referred_by: referrer ? referrer.ref_code : null,
+              });
+              userService.audit(null, 'user.created', tgId, { ref: referrer?.ref_code });
+              logger.info(`New user ${tgId} (${user.full_name})`);
+          
+              if (config.notifications.onNewUser) {
+                await notificationService.sendDirect(
+                  ctx.bot,
+                  config.bot.adminId,
+                  'admin.new_user',
+                  {
+                    text:
+                      `🆕 <b>مستخدم جديد</b>\n` +
+                      `• الاسم: ${user.full_name}\n` +
+                      `• ID: <code>${tgId}</code>\n` +
+                      `• يوزر: @${user.username || '—'}\n` +
+                      `• ref: <code>${user.ref_code}</code>`,
+                  }
+                );
+              }
+            }
+          
+            if (user.status === 'active') {
+              return ctx.replyWithMarkdown(
+                `أهلاً بعودتك ${user.full_name} 👋\n` +
+                  `رصيدك: <b>${user.balance}</b>\n` +
+                  `كود الإحالة: <code>${user.ref_code}</code>\n\n` +
+                  `الأوامر: /products /balance /referral /help`,
+                { parse_mode: 'HTML' }
+              );
+            }
+          
+            if (user.status === 'banned') {
+              return ctx.reply('🚫 حسابك محظور من الإدارة.');
+            }
+          
+            // status === 'pending'
+            const { code, expiresAt } = verificationService.createCode(tgId, 'signup');
+            await notificationService.sendDirect(ctx.bot, tgId, 'verify.sent', {
+              text:
+                `🔐 <b>كود التحقق الخاص بك</b>\n\n` +
+                `الكود: <code>${code}</code>\n` +
+                `صالح لمدة ${config.verification.ttlMin} دقائق.\n\n` +
+                `📩 ابعت الكود الآن للأمر /verify\n` +
+                `مثال: <code>/verify ${code}</code>`,
+            });
+            userService.audit(null, 'code.sent', tgId, { purpose: 'signup' });
+            return ctx.reply(
+              `👋 أهلاً ${user.full_name}!\n` +
+                `أرسلنا لك كود تحقق هنا في المحادثة.\n` +
+                `افتح الرسالة اللي بعثناها واستخدم الأمر /verify مع الكود.\n` +
+                `الكود ينتهي بعد ${config.verification.ttlMin} دقائق.`
+            );
+          }
+          
+          module.exports = { onStart };
+          
+          EOFBOT_H_START_JS
+          
+          mkdir -p bot/src/handlers
+          cat > bot/src/handlers/verify.js << 'EOFBOT_H_VERIFY_JS'
+          const verificationService = require('../services/verificationService');
+          const userService = require('../services/userService');
+          const config = require('../config');
+          const logger = require('../utils/logger');
+          
+          /**
+           * /verify <code>
+           */
+          async function onVerify(ctx) {
+            const tgId = ctx.from.id;
+            const text = (ctx.message.text || '').trim();
+            const code = text.split(/\s+/)[1];
+            if (!code) {
+              return ctx.reply('✏️ اكتب الأمر هكذا: /verify 123456');
+            }
+          
+            const result = verificationService.consumeCode(tgId, code, 'signup');
+            if (!result.ok) {
+              const map = {
+                no_pending_code: 'ما عندك كود نشط. ابعت /start لتوليد كود جديد.',
+                expired: '⏰ الكود انتهى صلاحيته. ابعت /start لتجديده.',
+                invalid: '❌ كود غير صحيح.',
+                too_many_attempts: '🚫 تجاوزت عدد المحاولات. ابعت /start لتوليد كود جديد.',
+              };
+              return ctx.reply(map[result.reason] || 'تعذّر التحقق.');
+            }
+          
+            const user = userService.findByTelegramId(tgId);
+            userService.setStatus(tgId, 'active');
+            userService.audit(tgId, 'user.activated', tgId, null);
+            logger.info(`User ${tgId} activated`);
+          
+            if (config.notifications.onAccountChange) {
+              try {
+                await ctx.telegram.sendMessage(
+                  config.bot.adminId,
+                  `✅ <b>تم تفعيل حساب</b>\nID: <code>${tgId}</code>\nالاسم: ${user.full_name}`,
+                  { parse_mode: 'HTML' }
+                );
+              } catch (e) {
+                logger.warn('Admin activation notify failed', { err: e.message });
+              }
+            }
+          
+            return ctx.replyWithMarkdown(
+              `🎉 تم تفعيل حسابك يا <b>${user.full_name}</b>!\n\n` +
+                `من هنا تقدر تستخدم:\n` +
+                `/products — عرض منتجات المتجر\n` +
+                `/balance — رصيدك\n` +
+                `/referral — كود الإحالة\n` +
+                `/help — كل الأوامر`,
+              { parse_mode: 'HTML' }
+            );
+          }
+          
+          /**
+           * /resend — generate a fresh code (invalidates the old one)
+           */
+          async function onResend(ctx) {
+            const tgId = ctx.from.id;
+            const user = userService.findByTelegramId(tgId);
+            if (!user) return ctx.reply('👋 ابعت /start أولاً.');
+            if (user.status === 'banned') return ctx.reply('🚫 حسابك محظور.');
+            if (user.status === 'active') return ctx.reply('✅ حسابك مفعّل بالفعل.');
+          
+            const { code } = verificationService.createCode(tgId, 'signup');
+            await ctx.telegram.sendMessage(
+              tgId,
+              `🔐 <b>كود تحقق جديد</b>\nالكود: <code>${code}</code>\nصالح لمدة ${config.verification.ttlMin} دقائق.`,
+              { parse_mode: 'HTML' }
+            );
+            userService.audit(null, 'code.resent', tgId);
+            return ctx.reply('📩 أرسلنا كود جديد هنا في البوت.');
+          }
+          
+          module.exports = { onVerify, onResend };
+          
+          EOFBOT_H_VERIFY_JS
+          
+          mkdir -p bot/src/handlers
+          cat > bot/src/handlers/user.js << 'EOFBOT_H_USER_JS'
+          const userService = require('../services/userService');
+          const { activeOnly } = require('../middleware/auth');
+          const storeService = require('../services/storeService');
+          const logger = require('../utils/logger');
+          
+          function helpText() {
+            return (
+              `📖 <b>الأوامر المتاحة</b>\n\n` +
+              `/start — تسجيل / دخول\n` +
+              `/verify &lt;code&gt; — تفعيل بكود التحقق\n` +
+              `/resend — إعادة إرسال كود التحقق\n` +
+              `/profile — ملفك الشخصي\n` +
+              `/balance — رصيدك\n` +
+              `/referral — كود الإحالة\n` +
+              `/products — منتجات المتجر\n` +
+              `/orders — طلباتك\n` +
+              `/help — هذه الرسالة`
+            );
+          }
+          
+          async function onHelp(ctx) {
+            return ctx.replyWithMarkdown(helpText(), { parse_mode: 'HTML' });
+          }
+          
+          async function onProfile(ctx) {
+            const u = ctx.state.user;
+            return ctx.replyWithMarkdown(
+              `👤 <b>ملفك</b>\n` +
+                `الاسم: ${u.full_name}\n` +
+                `يوزر: @${u.username || '—'}\n` +
+                `الحالة: ${u.status}\n` +
+                `الرصيد: <b>${u.balance}</b>\n` +
+                `كود الإحالة: <code>${u.ref_code}</code>\n` +
+                `انضم: ${u.created_at}`,
+              { parse_mode: 'HTML' }
+            );
+          }
+          
+          async function onBalance(ctx) {
+            const u = ctx.state.user;
+            return ctx.replyWithMarkdown(`💰 رصيدك: <b>${u.balance}</b>`, { parse_mode: 'HTML' });
+          }
+          
+          async function onReferral(ctx) {
+            const u = ctx.state.user;
+            const link = `https://t.me/${ctx.botInfo.username}?start=${u.ref_code}`;
+            return ctx.replyWithMarkdown(
+              `🔗 <b>كود الإحالة</b>\n<code>${u.ref_code}</code>\n` +
+                `رابط الدعوة:\n${link}\n\n` +
+                `شاركه مع أصدقائك — كل واحد يسجّل عن طريقك يلزم الأدمن يفعّله.`,
+              { parse_mode: 'HTML' }
+            );
+          }
+          
+          async function onProducts(ctx) {
+            try {
+              const res = await storeService.getProducts({ limit: 5 });
+              if (res && res.stub) {
+                return ctx.reply(
+                  '🛒 المتجر غير مهيأ بعد (STORE_API_URL).\n' +
+                    'أضف المتجر في ملف .env ثم أعد التشغيل.'
+                );
+              }
+              const items = res.items || res.products || res || [];
+              if (!items.length) return ctx.reply('لا توجد منتجات حالياً.');
+              const lines = items
+                .map(
+                  (p, i) =>
+                    `${i + 1}. <b>${p.title || p.name}</b>\n` +
+                    `   السعر: ${p.price}\n` +
+                    `   ID: <code>${p.id}</code>`
+                )
+                .join('\n\n');
+              return ctx.replyWithMarkdown(`🛍 <b>أحدث المنتجات</b>\n\n${lines}`, { parse_mode: 'HTML' });
+            } catch (e) {
+              logger.error('products fetch failed', { err: e.message });
+              return ctx.reply('⚠️ تعذّر جلب المنتجات. حاول لاحقاً.');
+            }
+          }
+          
+          async function onOrders(ctx) {
+            const tg = ctx.from.id;
+            const db = require('../db');
+            const rows = db
+              .prepare('SELECT * FROM store_orders WHERE telegram_id = ? ORDER BY id DESC LIMIT 10')
+              .all(tg);
+            if (!rows.length) return ctx.reply('📭 ما عندك طلبات.');
+            const text = rows
+              .map(
+                (o) =>
+                  `• #${o.order_ref || o.id} — ${o.status} — ${o.amount} (${o.created_at})`
+              )
+              .join('\n');
+            return ctx.replyWithMarkdown(`📦 <b>طلباتك</b>\n\n${text}`, { parse_mode: 'HTML' });
+          }
+          
+          function register(bot) {
+            bot.command('help', onHelp);
+            bot.command('profile', activeOnly(), onProfile);
+            bot.command('balance', activeOnly(), onBalance);
+            bot.command('referral', activeOnly(), onReferral);
+            bot.command('products', activeOnly(), onProducts);
+            bot.command('orders', activeOnly(), onOrders);
+          }
+          
+          module.exports = { register, onHelp };
+          
+          EOFBOT_H_USER_JS
+          
+          mkdir -p bot/src/handlers
+          cat > bot/src/handlers/admin.js << 'EOFBOT_H_ADMIN_JS'
+          const userService = require('../services/userService');
+          const { adminOnly, activeOnly } = require('../middleware/auth');
+          const logger = require('../utils/logger');
+          
+          /**
+           * Admin commands (ADMIN_ID only).
+           *  /admin                  — menu
+           *  /admin_stats            — counts
+           *  /admin_pending          — list pending users
+           *  /admin_approve <tg>     — set user active
+           *  /admin_ban <tg>         — ban user
+           *  /admin_balance <tg> <n> — set balance
+           *  /admin_credit <tg> <n>  — add to balance
+           *  /admin_broadcast <text> — send to all active users
+           */
+          function parseTg(text) {
+            const m = text.match(/(\d{5,15})/);
+            return m ? Number(m[1]) : null;
+          }
+          
+          async function onAdmin(ctx) {
+            return ctx.replyWithMarkdown(
+              `🛠 <b>لوحة الأدمن</b>\n\n` +
+                `/admin_stats — إحصائيات\n` +
+                `/admin_pending — المستخدمون قيد التفعيل\n` +
+                `/admin_approve &lt;tg_id&gt; — تفعيل\n` +
+                `/admin_ban &lt;tg_id&gt; — حظر\n` +
+                `/admin_balance &lt;tg_id&gt; &lt;amount&gt; — تعديل رصيد\n` +
+                `/admin_credit &lt;tg_id&gt; &lt;amount&gt; — إضافة رصيد\n` +
+                `/admin_broadcast &lt;text&gt; — بث للكل`,
+              { parse_mode: 'HTML' }
+            );
+          }
+          
+          async function onStats(ctx) {
+            const s = userService.stats();
+            const byStatus = userService.countByStatus();
+            return ctx.replyWithMarkdown(
+              `📊 <b>إحصائيات</b>\n` +
+                `المجموع: <b>${s.total}</b>\n` +
+                `نشط: <b>${s.active}</b>\n` +
+                `قيد التفعيل: <b>${s.pending}</b>\n` +
+                `جديد اليوم: <b>${s.newToday}</b>\n\n` +
+                byStatus.map((b) => `• ${b.status}: ${b.count}`).join('\n'),
+              { parse_mode: 'HTML' }
+            );
+          }
+          
+          async function onPending(ctx) {
+            const rows = userService.listAll({ status: 'pending', limit: 30 });
+            if (!rows.length) return ctx.reply('لا يوجد مستخدمون قيد التفعيل.');
+            const text = rows
+              .map(
+                (u) =>
+                  `• <code>${u.telegram_id}</code> — ${u.full_name} — @${u.username || '—'} (${u.created_at})`
+              )
+              .join('\n');
+            return ctx.replyWithMarkdown(`⏳ <b>قيد التفعيل</b>\n\n${text}`, { parse_mode: 'HTML' });
+          }
+          
+          async function onApprove(ctx) {
+            const tg = parseTg(ctx.message.text);
+            if (!tg) return ctx.reply('اكتب ID المستخدم: /admin_approve 123456789');
+            const u = userService.findByTelegramId(tg);
+            if (!u) return ctx.reply('ما لقيت المستخدم.');
+            userService.setStatus(tg, 'active');
+            userService.audit(ctx.from.id, 'admin.approve', tg);
+            try {
+              await ctx.telegram.sendMessage(tg, '✅ تم تفعيل حسابك من قبل الإدارة.');
+            } catch (e) {
+              logger.warn('approve notify failed', { err: e.message });
+            }
+            return ctx.reply(`✅ تم تفعيل ${u.full_name}`);
+          }
+          
+          async function onBan(ctx) {
+            const tg = parseTg(ctx.message.text);
+            if (!tg) return ctx.reply('اكتب ID: /admin_ban 123456789');
+            const u = userService.findByTelegramId(tg);
+            if (!u) return ctx.reply('ما لقيت المستخدم.');
+            userService.setStatus(tg, 'banned');
+            userService.audit(ctx.from.id, 'admin.ban', tg);
+            try {
+              await ctx.telegram.sendMessage(tg, '🚫 تم حظر حسابك من قبل الإدارة.');
+            } catch (e) {
+              logger.warn('ban notify failed', { err: e.message });
+            }
+            return ctx.reply(`🚫 تم حظر ${u.full_name}`);
+          }
+          
+          async function onBalance(ctx) {
+            const parts = (ctx.message.text || '').trim().split(/\s+/);
+            const tg = parseTg(parts[1] || '');
+            const amount = Number(parts[2]);
+            if (!tg || Number.isNaN(amount)) {
+              return ctx.reply('الاستخدام: /admin_balance <tg_id> <amount>');
+            }
+            const u = userService.findByTelegramId(tg);
+            if (!u) return ctx.reply('ما لقيت المستخدم.');
+            userService.setBalance(tg, amount);
+            userService.audit(ctx.from.id, 'admin.balance.set', tg, { amount });
+            return ctx.reply(`💰 تم تعديل رصيد ${u.full_name} إلى ${amount}`);
+          }
+          
+          async function onCredit(ctx) {
+            const parts = (ctx.message.text || '').trim().split(/\s+/);
+            const tg = parseTg(parts[1] || '');
+            const amount = Number(parts[2]);
+            if (!tg || Number.isNaN(amount)) {
+              return ctx.reply('الاستخدام: /admin_credit <tg_id> <amount>');
+            }
+            const u = userService.findByTelegramId(tg);
+            if (!u) return ctx.reply('ما لقيت المستخدم.');
+            userService.adjustBalance(tg, amount);
+            userService.audit(ctx.from.id, 'admin.balance.adjust', tg, { amount });
+            try {
+              await ctx.telegram.sendMessage(tg, `💰 تم إضافة <b>${amount}</b> لرصيدك. رصيدك الآن: <b>${u.balance + amount}</b>`, { parse_mode: 'HTML' });
+            } catch (e) { /* ignore */ }
+            return ctx.reply(`✅ تمت إضافة ${amount} لـ ${u.full_name}`);
+          }
+          
+          async function onBroadcast(ctx) {
+            const text = (ctx.message.text || '').replace(/^\/admin_broadcast\s*/, '').trim();
+            if (!text) return ctx.reply('الاستخدام: /admin_broadcast <رسالتك>');
+            const rows = userService.listAll({ status: 'active', limit: 1000 });
+            let ok = 0, fail = 0;
+            for (const u of rows) {
+              try {
+                await ctx.telegram.sendMessage(u.telegram_id, `📢 ${text}`);
+                ok++;
+              } catch (e) {
+                fail++;
+              }
+            }
+            userService.audit(ctx.from.id, 'admin.broadcast', null, { ok, fail });
+            return ctx.reply(`📢 تم الإرسال.\nنجح: ${ok}\nفشل: ${fail}`);
+          }
+          
+          function register(bot) {
+            const guard = adminOnly();
+            bot.command('admin', guard, onAdmin);
+            bot.command('admin_stats', guard, onStats);
+            bot.command('admin_pending', guard, onPending);
+            bot.command('admin_approve', guard, onApprove);
+            bot.command('admin_ban', guard, onBan);
+            bot.command('admin_balance', guard, onBalance);
+            bot.command('admin_credit', guard, onCredit);
+            bot.command('admin_broadcast', guard, onBroadcast);
+          }
+          
+          module.exports = { register };
+          
+          EOFBOT_H_ADMIN_JS
+          
+          mkdir -p bot/src
+          cat > bot/src/index.js << 'EOFBOT_INDEX_JS'
+          const { Telegraf, Scenes, session, Markup } = require('telegraf');
+          const cron = require('node-cron');
+          const config = require('./config');
+          const logger = require('./utils/logger');
+          const rateLimit = require('./middleware/rateLimit');
+          const userService = require('./services/userService');
+          const verificationService = require('./services/verificationService');
+          const notificationService = require('./services/notificationService');
+          const startHandler = require('./handlers/start');
+          const verifyHandler = require('./handlers/verify');
+          const userHandler = require('./handlers/user');
+          const adminHandler = require('./handlers/admin');
+          
+          const http = require('http');
+          
+          async function startHealthServer() {
+            const server = http.createServer((req, res) => {
+              if (req.url === '/healthz') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, ts: Date.now() }));
+              } else {
+                res.writeHead(404);
+                res.end('Not found');
+              }
+            });
+            server.listen(config.server.port, () => {
+              logger.info(`Health server listening on :${config.server.port}/healthz`);
+            });
+            return server;
+          }
+          
+          async function main() {
+            await startHealthServer();
+            const bot = new Telegraf(config.bot.token);
+          
+            // Sessions for future scene wizards
+            bot.use(session());
+            bot.use(rateLimit());
+          
+            // /start
+            bot.start(startHandler.onStart);
+            bot.command('verify', verifyHandler.onVerify);
+            bot.command('resend', verifyHandler.onResend);
+          
+            // User handlers
+            userHandler.register(bot);
+          
+            // Admin handlers
+            adminHandler.register(bot);
+          
+            // Fallback text
+            bot.on('text', async (ctx) => {
+              return ctx.replyWithMarkdown(
+                '🤔 ما فهمت. جرّب /help لشوف الأوامر المتاحة.',
+                { parse_mode: 'HTML' }
+              );
+            });
+          
+            // Error handler
+            bot.catch((err, ctx) => {
+              logger.error('Bot error', { err: err.message, update: ctx.update?.update_id });
+            });
+          
+            // Polling or webhook
+            if (config.server.webhookUrl) {
+              const secret = config.server.webhookUrl.split('/').pop();
+              await bot.telegram.setWebhook(`${config.server.webhookUrl}/${secret}`);
+              const app = require('express')();
+              app.use(bot.webhookCallback(`/${secret}`));
+              // mount store webhook handler
+              const { createWebhookServer } = require('./services/webhookServer');
+              app.use(createWebhookServer(bot));
+              app.listen(config.server.webhookPort, () => {
+                logger.info(`Webhook listening on :${config.server.webhookPort}/${secret}`);
+              });
+            } else {
+              await bot.launch();
+              logger.info('Bot launched in polling mode');
+            }
+          
+            // Cron: purge expired codes every 5 minutes
+            cron.schedule('*/5 * * * *', () => {
+              try {
+                const n = verificationService.purgeExpired();
+                if (n) logger.info(`Purged ${n} expired codes`);
+              } catch (e) {
+                logger.error('purge failed', { err: e.message });
+              }
+            });
+          
+            // Cron: flush pending notifications every minute
+            cron.schedule('* * * * *', async () => {
+              try {
+                const r = await notificationService.flush(bot, 100);
+                if (r.delivered) logger.debug(`Delivered ${r.delivered} notifications`);
+              } catch (e) {
+                logger.error('notify flush failed', { err: e.message });
+              }
+            });
+          
+            // Cron: daily digest for admin
+            cron.schedule(`0 ${config.notifications.dailyDigestHour} * * *`, async () => {
+              try {
+                const s = userService.stats();
+                await bot.telegram.sendMessage(
+                  config.bot.adminId,
+                  `📅 <b>ملخص اليوم</b>\nالمجموع: ${s.total}\nنشط: ${s.active}\nقيد التفعيل: ${s.pending}\nجديد اليوم: ${s.newToday}`,
+                  { parse_mode: 'HTML' }
+                );
+              } catch (e) {
+                logger.error('daily digest failed', { err: e.message });
+              }
+            });
+          
+            process.once('SIGINT', () => bot.stop('SIGINT'));
+            process.once('SIGTERM', () => bot.stop('SIGTERM'));
+          }
+          
+          main().catch((err) => {
+            logger.error('Fatal', { err: err.message, stack: err.stack });
+            process.exit(1);
+          });
+          
+          EOFBOT_INDEX_JS
+          
+          mkdir -p bot/.
+          cat > bot/README.md << 'EOFBOT_BOT_README_MD'
+          # 🤖 Telegram Bot — Verification + Store Integration
+          
+          A full-featured Telegram bot built with **Node.js + Telegraf + SQLite**, featuring:
+          
+          - ✅ Per-user **verification codes** sent through the bot itself
+          - ✅ Account management (status, balance, profile)
+          - ✅ Admin dashboard (approve, ban, balance, broadcast)
+          - ✅ Store API integration (products, orders)
+          - ✅ Notification queue with retry
+          - ✅ Scheduled jobs (purge expired codes, daily digest)
+          - ✅ Docker Compose stack with Redis + Nginx
+          - ✅ Rate limiting + audit log
+          
+          ## 🚀 Quick start
+          
+          ### Option 1 — Docker (recommended)
+          
+          ```bash
+          cp .env.example .env
+          # edit .env: BOT_TOKEN, ADMIN_ID, STORE_API_*
+          
+          docker compose up -d
+          docker compose logs -f bot
+          ```
+          
+          ### Option 2 — Local Node
+          
+          ```bash
+          cp .env.example .env
+          npm install
+          npm run init-db
+          npm start
+          ```
+          
+          Requires **Node.js ≥ 18**.
+          
+          ## 🔐 Verification flow
+          
+          1. User sends `/start` (optionally with a referral code: `/start ABC123`).
+          2. Bot creates the user (status `pending`) and **sends a unique numeric code** to that same chat.
+          3. User sends `/verify <code>` — bot activates the account (`status = active`).
+          4. Codes are **single-use**, expire after `VERIFICATION_CODE_TTL_MIN` minutes, and are rate-limited (`MAX_VERIFICATION_ATTEMPTS`).
+          
+          Use `/resend` to get a fresh code (invalidates the previous one).
+          
+          ## 🛠 Commands
+          
+          ### Users
+          | Command | What it does |
+          |---|---|
+          | `/start` | Register / re-enter the bot |
+          | `/verify <code>` | Activate account with the code |
+          | `/resend` | Request a new verification code |
+          | `/profile` | Show your profile |
+          | `/balance` | Show balance |
+          | `/referral` | Show your referral code + share link |
+          | `/products` | List store products (uses `STORE_API_URL`) |
+          | `/orders` | Show your orders |
+          | `/help` | Show help |
+          
+          ### Admin (only `ADMIN_ID`)
+          | Command | What it does |
+          |---|---|
+          | `/admin` | Admin menu |
+          | `/admin_stats` | Bot statistics |
+          | `/admin_pending` | List users awaiting activation |
+          | `/admin_approve <tg_id>` | Activate a user |
+          | `/admin_ban <tg_id>` | Ban a user |
+          | `/admin_balance <tg_id> <amount>` | Set exact balance |
+          | `/admin_credit <tg_id> <amount>` | Add to balance |
+          | `/admin_broadcast <text>` | DM all active users |
+          
+          ## 🔔 Notifications
+          
+          The bot automatically notifies:
+          
+          - **Admin** on new registrations (configurable)
+          - **Admin** on account activation
+          - **User** on balance change, ban, etc.
+          - **Admin** with a daily digest at `DAILY_DIGEST_HOUR`
+          
+          Failed sends are queued in `notifications` table and retried every minute.
+          
+          ## 🛒 Store integration
+          
+          Configure these in `.env`:
+          
+          ```env
+          STORE_API_URL=https://your-store.example.com/api
+          STORE_API_KEY=your-api-key
+          ```
+          
+          Expected endpoints (override in `src/services/storeService.js` if yours differ):
+          
+          | Method | Path | Purpose |
+          |---|---|---|
+          | GET | `/products?limit=N&offset=N` | List products |
+          | GET | `/products/:id` | Product detail |
+          | POST | `/orders` | Create order |
+          | GET | `/orders/:ref` | Order status |
+          | POST | `/users/link` | Link Telegram ↔ store user |
+          
+          If `STORE_API_URL` is empty, the bot runs in **dev mode** and returns a stub for store calls.
+          
+          ## ⚙️ Configuration
+          
+          All env vars (see `.env.example`):
+          
+          ```env
+          BOT_TOKEN=...                # required
+          ADMIN_ID=...                 # required
+          PORT=3000
+          DB_PATH=./store/bot.db
+          STORE_API_URL=...
+          STORE_API_KEY=...
+          VERIFICATION_CODE_TTL_MIN=10
+          VERIFICATION_CODE_LENGTH=6
+          MAX_VERIFICATION_ATTEMPTS=5
+          DAILY_DIGEST_HOUR=9
+          JWT_SECRET=change-me
+          RATE_LIMIT_PER_MIN=20
+          ```
+          
+          ## 🧪 Smoke test
+          
+          ```bash
+          npm test
+          ```
+          
+          Tests core flows: user creation, code generation, wrong/right/exhausted codes, balance, referral lookup, stats.
+          
+          ## 📁 Project layout
+          
+          ```
+          telegram-bot-shop/
+          ├── docker-compose.yml          # full stack
+          ├── Dockerfile
+          ├── .env.example
+          ├── package.json
+          ├── nginx/nginx.conf
+          ├── scripts/
+          │   ├── init-db.js              # create schema
+          │   └── test-flow.js            # smoke tests
+          ├── src/
+          │   ├── index.js                # entrypoint
+          │   ├── config/index.js
+          │   ├── db/index.js             # schema + migrations
+          │   ├── services/
+          │   │   ├── userService.js
+          │   │   ├── verificationService.js
+          │   │   ├── notificationService.js
+          │   │   └── storeService.js
+          │   ├── middleware/
+          │   │   ├── auth.js
+          │   │   └── rateLimit.js
+          │   ├── handlers/
+          │   │   ├── start.js
+          │   │   ├── verify.js
+          │   │   ├── user.js
+          │   │   └── admin.js
+          │   └── utils/
+          │       ├── code.js
+          │       └── logger.js
+          ├── store/                      # SQLite db lives here
+          └── logs/
+          ```
+          
+          ## 🛡 Security
+          
+          - Codes stored as SHA-256 hash, never plaintext
+          - Rate limit per telegram id
+          - Audit log on every admin action
+          - Bcrypt ready (add for password flows)
+          - JWT secret in env (use for future API auth)
+          
+          ## 📜 License
+          
+          MIT
+          
+          EOFBOT_BOT_README_MD
+          
+
+      - name: Smoke-test the bot
+        working-directory: bot
+        run: |
+          cp .env.example .env
+          npm install --no-audit --no-fund
+          node scripts/test-flow.js
+        env:
+          BOT_TOKEN: ${{ env.BOT_TOKEN }}
+          ADMIN_ID:  ${{ env.ADMIN_ID }}
+
+      - name: Package bot source as tarball
+        run: |
+          tar -czf bot-source.tar.gz bot \
+              --exclude='bot/node_modules' \
+              --exclude='bot/store/*.db*' \
+              --exclude='bot/logs/*.log' \
+              --exclude='bot/.env'
+
+      - name: Upload bot source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 21s-telegram-bot-source
+          path: bot-source.tar.gz
 
       # =========================================================
       # BUILD
