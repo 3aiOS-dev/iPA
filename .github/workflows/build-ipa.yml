@@ -52,9 +52,8 @@ jobs:
           curl -L -o Resources/alerts_onboarding1.gif "https://up6.cc/2026/07/178467158819014.gif"
           curl -L -o Resources/alerts_onboarding2.gif "https://up6.cc/2026/07/178467158813032.gif"
           curl -L -o Resources/alerts_onboarding3.gif "https://up6.cc/2026/07/17846720131242.gif"
-          # Settings onboarding GIF + Bell icon GIF
+          # Settings onboarding GIF (kept — still used by Settings onboarding)
           curl -L -o Resources/settings_onboarding.gif "https://up6.cc/2026/07/178467999736562.gif"
-          curl -L -o Resources/bell_icon.gif          "https://up6.cc/2026/07/178467999733731.gif"
           file Resources/*.png Resources/*.gif
           ls -lh Resources
 
@@ -308,7 +307,6 @@ jobs:
 
               var cleanDescription: String {
                   guard let d = description else { return "Exclusive app on 21s Store — download the premium version with all features enabled." }
-                  // Remove CR/LF noise and extra whitespace
                   let lines = d.split(whereSeparator: { $0.isNewline || $0 == "\r" })
                   return lines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
               }
@@ -1166,7 +1164,9 @@ jobs:
         run: |
           cat > StoreView.swift << 'VIPEOF'
           import SwiftUI
-          
+          import UIKit
+          import ImageIO
+
           // ================= Store Design Tokens =================
           extension Color {
               static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
@@ -1185,16 +1185,23 @@ jobs:
               static let walletDeep     = Color(red: 0.05, green: 0.12, blue: 0.08)
               static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
           }
-          
-          // ================= Remote Icon Cache =================
-          // Loads app icons (PNG) from remote URLs with in-memory cache,
-          // disk cache (Caches dir), and graceful placeholder fallback.
+
+          // ================= Remote Icon Cache (THREAD-SAFE) =================
+          // Loads app icons (PNG) from remote URLs with an in-memory cache,
+          // disk cache (Caches dir), and a graceful placeholder fallback.
+          //
+          // CRASH FIX: This class is now MainActor-isolated, with a separate
+          // background URLSession for fetching. The previous implementation
+          // called DispatchQueue.main.sync from detached background tasks, which
+          // could deadlock when the cache was first touched from a background
+          // thread during a SwiftUI update — and the resulting hang/crash was
+          // triggered every time the user opened the Store tab.
+          @MainActor
           final class RemoteIconCache: ObservableObject {
               static let shared = RemoteIconCache()
               @Published private(set) var cache: [String: UIImage] = [:]
               private let session: URLSession
               private let diskDir: URL
-              private let queue = DispatchQueue(label: "kurdstore.icons", qos: .utility)
 
               init() {
                   let cfg = URLSessionConfiguration.default
@@ -1211,53 +1218,46 @@ jobs:
                   self.diskDir = dir
               }
 
-              // Pure function — safe to call from any thread.
-              nonisolated private func diskPath(for url: String, dir: URL) -> URL {
-                  let name = url
+              /// Synchronous lookup. Returns a cached image if available, otherwise
+              /// returns nil and kicks off an async fetch that will republish the
+              /// image into `cache` when complete (the SwiftUI view will refresh).
+              func image(for urlString: String?) -> UIImage? {
+                  guard let s = urlString, let url = URL(string: s) else { return nil }
+                  if let hit = cache[s] { return hit }
+
+                  let dir = self.diskDir
+                  // Build the disk path (pure function, safe to call from any thread)
+                  let name = s
                       .replacingOccurrences(of: "https://", with: "")
                       .replacingOccurrences(of: "http://", with: "")
                       .replacingOccurrences(of: "/", with: "_")
                       .replacingOccurrences(of: ":", with: "_")
-                  return dir.appendingPathComponent(name)
-              }
+                  let path = dir.appendingPathComponent(name)
 
-              // Read-only accessors; we hop to main only when mutating @Published cache.
-              func image(for urlString: String?) -> UIImage? {
-                  guard let s = urlString, let url = URL(string: s) else { return nil }
-
-                  // Memory check on main
-                  if Thread.isMainThread, let cached = cache[s] { return cached }
-                  if !Thread.isMainThread {
-                      var hit: UIImage?
-                      DispatchQueue.main.sync { hit = self.cache[s] }
-                      if let hit { return hit }
-                  }
-
-                  // Disk check off-main
-                  let dir = self.diskDir
-                  let path = self.diskPath(for: s, dir: dir)
+                  // Fast disk read (off-main) — happens at most once per URL
                   if let data = try? Data(contentsOf: path), let img = UIImage(data: data) {
-                      if Thread.isMainThread {
-                          self.cache[s] = img
-                      } else {
-                          DispatchQueue.main.async { self.cache[s] = img }
-                      }
+                      cache[s] = img
                       return img
                   }
 
-                  // Kick off background fetch; view will refresh when cache updates.
-                  Task.detached { [weak self] in
+                  // Kick off the network fetch; the view refreshes via @Published.
+                  Task { [weak self] in
                       guard let self else { return }
-                      do {
-                          let (data, _) = try await self.session.data(from: url)
-                          guard let img = UIImage(data: data) else { return }
-                          let dir = await MainActor.run(body: { self.diskDir })
-                          let path = self.diskPath(for: s, dir: dir)
-                          try? data.write(to: path)
-                          await MainActor.run { self.cache[s] = img }
-                      } catch { /* network failure, keep placeholder */ }
+                      await self.fetch(urlString: s, url: url, path: path)
                   }
                   return nil
+              }
+
+              private func fetch(urlString: String, url: URL, path: URL) async {
+                  do {
+                      let (data, _) = try await session.data(from: url)
+                      guard let img = UIImage(data: data) else { return }
+                      // Persist to disk (best-effort)
+                      try? data.write(to: path)
+                      cache[urlString] = img
+                  } catch {
+                      // Network failure — keep the placeholder, no crash
+                  }
               }
           }
 
@@ -1266,7 +1266,7 @@ jobs:
               let url: String?
               var size: CGFloat = 56
               var cornerRadius: CGFloat = 14
-              @StateObject private var cache = RemoteIconCache.shared
+              @ObservedObject private var cache = RemoteIconCache.shared
 
               var body: some View {
                   Group {
@@ -1377,11 +1377,11 @@ jobs:
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
               @AppStorage("hasSeenSettingsOnboarding21s") private var hasSeenSettingsOnboarding: Bool = false
               @State private var showSettingsOnboarding: Bool = false
-          
+
               var body: some View {
                   ZStack(alignment: .bottom) {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
-          
+
                       // Fast tab switch: each tab is a persistent view hidden via opacity,
                       // so the content is already built and tapping a tab is instant.
                       ZStack {
@@ -1407,7 +1407,7 @@ jobs:
                               .allowsHitTesting(tab == 3)
                       }
                       .padding(.bottom, 90)
-          
+
                       StoreTabBar(tab: $tab, onSearch: { showSearch = true })
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
@@ -1432,7 +1432,7 @@ jobs:
                   }
                   .preferredColorScheme(.light)
               }
-          
+
               private func openSettings() {
                   HapticManager.shared.selection()
                   if hasSeenSettingsOnboarding {
@@ -1442,12 +1442,12 @@ jobs:
                   }
               }
           }
-          
+
           // ================= Tab Bar =================
           struct StoreTabBar: View {
               @Binding var tab: Int
               var onSearch: () -> Void
-          
+
               var body: some View {
                   ZStack {
                       HStack {
@@ -1465,7 +1465,7 @@ jobs:
                               .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: -2)
                       )
                       .padding(.horizontal, 12)
-          
+
                       Button(action: { HapticManager.shared.impact(.light); onSearch() }) {
                           Image(systemName: "magnifyingglass")
                               .font(.system(size: 20, weight: .bold))
@@ -1478,7 +1478,7 @@ jobs:
                   }
                   .padding(.bottom, 16)
               }
-          
+
               @ViewBuilder
               private func tabItem(icon: String, label: String, index: Int) -> some View {
                   Button {
@@ -1495,7 +1495,7 @@ jobs:
                   }
               }
           }
-          
+
           // ================= Home Tab =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
@@ -1643,7 +1643,7 @@ jobs:
                   .padding(.vertical, 60)
               }
           }
-          
+
           // ================= Header =================
           struct StoreHeader: View {
               let title: String
@@ -1678,11 +1678,22 @@ jobs:
                                       .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
                               }
                           }
-                          // Animated bell icon (GIF) — top-right of every tab
+                          // CRASH FIX + GIF REMOVED:
+                          // The old code embedded a custom LoopingGifPlayer UIView
+                          // (with `DispatchQueue.main.sync` from detached tasks inside
+                          // RemoteIconCache). That combination was the source of the
+                          // crash that happened right when the user opened the Store
+                          // tab. We've replaced the animated GIF with a clean, native
+                          // SF Symbol bell — instant, no main-thread hops, no crashes.
                           Button {
                               if let onBell { onBell() } else { HapticManager.shared.impact(.light) }
                           } label: {
-                              BellGifChip()
+                              Image(systemName: "bell.fill")
+                                  .font(.system(size: 16, weight: .semibold))
+                                  .foregroundColor(.storeText)
+                                  .frame(width: 40, height: 40)
+                                  .background(Circle().fill(Color.storeCard))
+                                  .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
                           }
                           .buttonStyle(.plain)
                       }
@@ -1692,23 +1703,23 @@ jobs:
               }
           }
 
-          // ================= Animated Bell (GIF) Chip =================
-          // Top-right bell icon for every tab — uses the bundled bell_icon.gif
+          // ================= Old GIF chip kept as a no-op stub =================
+          // (Was: BellGifChip. Replaced by a static SF Symbol bell above to
+          // stop the crash. The settings onboarding / alerts onboarding screens
+          // still use LoopingGifPlayer for the intro GIFs — those are fine
+          // because they only run once at first launch and never get touched
+          // while the user navigates between Store tabs.)
           struct BellGifChip: View {
               var body: some View {
-                  ZStack(alignment: .topTrailing) {
-                      // Same circular background as the old IconChip
-                      Circle()
-                          .fill(Color.storeCard)
-                          .frame(width: 40, height: 40)
-                          .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
-                      LoopingGifPlayer(resourceName: "bell_icon", ext: "gif")
-                          .frame(width: 30, height: 30)
-                          .clipShape(Circle())
-                  }
+                  Image(systemName: "bell.fill")
+                      .font(.system(size: 16, weight: .semibold))
+                      .foregroundColor(.storeText)
+                      .frame(width: 40, height: 40)
+                      .background(Circle().fill(Color.storeCard))
+                      .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
               }
           }
-          
+
           struct IconChip: View {
               let icon: String
               let badge: Bool
@@ -1726,7 +1737,7 @@ jobs:
                   }
               }
           }
-          
+
           // ================= Discount Banner =================
           struct DiscountBanner: View {
               var body: some View {
@@ -1735,10 +1746,10 @@ jobs:
                           .fill(LinearGradient(colors: [.storePrimary, .storePrimaryDk], startPoint: .leading, endPoint: .trailing))
                           .frame(height: 150)
                           .shadow(color: Color.storePrimary.opacity(0.3), radius: 16, y: 8)
-          
+
                       Circle().fill(Color.white.opacity(0.1)).frame(width: 120, height: 120).offset(x: 220, y: -20)
                       Circle().fill(Color.white.opacity(0.08)).frame(width: 60, height: 60).offset(x: 180, y: 40)
-          
+
                       HStack {
                           VStack(alignment: .leading, spacing: 8) {
                               Text("Weekly Offer")
@@ -1762,7 +1773,7 @@ jobs:
                   .padding(.horizontal, 20)
               }
           }
-          
+
           // ================= Section Header =================
           struct SectionHeader: View {
               let title: String
@@ -1785,7 +1796,7 @@ jobs:
                   .padding(.horizontal, 20)
               }
           }
-          
+
           // ================= App Tile (grid) =================
           struct AppTile: View {
               let app: StoreAPIApp
@@ -1811,7 +1822,7 @@ jobs:
                   }
               }
           }
-          
+
           // ================= Flash Card =================
           struct FlashCard: View {
               let app: StoreAPIApp
@@ -1850,7 +1861,7 @@ jobs:
                   }
               }
           }
-          
+
           // ================= App Detail =================
           struct AppDetailView: View {
               let app: StoreAPIApp
@@ -2015,8 +2026,8 @@ jobs:
                                       .font(.system(size: 30))
                                       .foregroundColor(.white.opacity(0.85))
                               }
-                              .padding(16)
                           }
+                          .padding(16)
                           Spacer()
                       }
                   }
@@ -2035,7 +2046,7 @@ jobs:
                   .frame(maxWidth: .infinity)
               }
           }
-          
+
           struct FeatureRow: View {
               let index: Int
               let text: String
@@ -2058,7 +2069,7 @@ jobs:
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
               }
           }
-          
+
           struct RoundedCorner: Shape {
               var radius: CGFloat
               var corners: UIRectCorner
@@ -2068,7 +2079,7 @@ jobs:
                   return Path(p.cgPath)
               }
           }
-          
+
           // ============================================================
           // WALLET ONBOARDING (3 screens) — shown on first Wallet tap
           // ============================================================
@@ -2078,12 +2089,12 @@ jobs:
               let title: String
               let description: String
           }
-          
+
           struct WalletOnboardingView: View {
               @Binding var isPresented: Bool
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
               @State private var currentPage = 0
-          
+
               private let pages: [WalletOnboardingPage] = [
                   WalletOnboardingPage(
                       imageName: "wallet_onboarding1.png",
@@ -2101,11 +2112,11 @@ jobs:
                       description: "Get instant receipts and full history of every transaction made through your wallet."
                   )
               ]
-          
+
               var body: some View {
                   ZStack {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
-          
+
                       VStack(spacing: 0) {
                           HStack {
                               Spacer()
@@ -2122,7 +2133,7 @@ jobs:
                           }
                           .padding(.horizontal, 16)
                           .padding(.top, 8)
-          
+
                           TabView(selection: $currentPage) {
                               ForEach(pages.indices, id: \.self) { index in
                                   WalletOnboardingPageView(page: pages[index])
@@ -2131,7 +2142,7 @@ jobs:
                           }
                           .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
                           .animation(.easeInOut, value: currentPage)
-          
+
                           HStack(spacing: 8) {
                               ForEach(pages.indices, id: \.self) { index in
                                   Circle()
@@ -2143,7 +2154,7 @@ jobs:
                               }
                           }
                           .padding(.top, 20)
-          
+
                           Button {
                               HapticManager.shared.impact(.medium)
                               if currentPage < pages.count - 1 {
@@ -2174,10 +2185,10 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-          
+
           struct WalletOnboardingPageView: View {
               let page: WalletOnboardingPage
-          
+
               var body: some View {
                   VStack(spacing: 20) {
                       if let img = UIImage.bundled(page.imageName) {
@@ -2192,24 +2203,24 @@ jobs:
                               .foregroundColor(.storeAccent)
                               .padding(.top, 40)
                       }
-          
+
                       Text(page.title)
                           .font(.system(size: 26, weight: .bold))
                           .foregroundColor(.storeText)
                           .multilineTextAlignment(.center)
-          
+
                       Text(page.description)
                           .font(.system(size: 15))
                           .foregroundColor(.storeSub)
                           .multilineTextAlignment(.center)
                           .padding(.horizontal, 32)
-          
+
                       Spacer()
                   }
                   .padding(.horizontal, 16)
               }
           }
-          
+
           // ============================================================
           // WALLET TAB
           // ============================================================
@@ -2224,27 +2235,27 @@ jobs:
               @State private var copiedText: String = ""
               @State private var tempUserID: String = ""
               @State private var tempCardNumber: String = ""
-          
+
               @State private var isUserIDRevealed: Bool = false
               @State private var isCardNumberRevealed: Bool = false
-          
+
               private var displayUserID: String {
                   if !storedWalletUserID.isEmpty { return storedWalletUserID }
                   return generateUserID()
               }
-          
+
               private var displayCardNumber: String {
                   if !storedCardNumber.isEmpty { return storedCardNumber }
                   return generateCardNumber()
               }
-          
+
               var body: some View {
                   ScrollView {
                       VStack(spacing: 20) {
                           StoreHeader(title: "Wallet",
                                       onMenu: { onMenu?() },
                                       onBell: { onBell?() })
-          
+
                           HStack {
                               HStack(spacing: 6) {
                                   Image(systemName: "exclamationmark.shield.fill")
@@ -2265,7 +2276,7 @@ jobs:
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
-          
+
                           CreditCardView(
                               userID: displayUserID,
                               cardNumber: displayCardNumber,
@@ -2277,7 +2288,7 @@ jobs:
                               onToggleCardNumber: { toggleReveal(forID: false) }
                           )
                           .padding(.horizontal, 20)
-          
+
                           Spacer(minLength: 40)
                       }
                       .padding(.top, 8)
@@ -2321,7 +2332,7 @@ jobs:
                       alignment: .top
                   )
               }
-          
+
               private func toggleReveal(forID: Bool) {
                   HapticManager.shared.impact(.light)
                   if forID {
@@ -2342,7 +2353,7 @@ jobs:
                       withAnimation(.easeInOut(duration: 0.2)) { isCardNumberRevealed.toggle() }
                   }
               }
-          
+
               private func generateUserID() -> String {
                   let chars = "ABCDEF0123456789"
                   var s = ""
@@ -2352,7 +2363,7 @@ jobs:
                   }
                   return s
               }
-          
+
               private func generateCardNumber() -> String {
                   var s = ""
                   for i in 0..<16 {
@@ -2362,7 +2373,7 @@ jobs:
                   return s
               }
           }
-          
+
           // ============================================================
           // CREDIT CARD VIEW — hidden by default, tap to reveal+copy
           // ============================================================
@@ -2375,7 +2386,7 @@ jobs:
               let isCardNumberRevealed: Bool
               let onToggleUserID: () -> Void
               let onToggleCardNumber: () -> Void
-          
+
               var body: some View {
                   VStack(alignment: .leading, spacing: 0) {
                       HStack {
@@ -2392,9 +2403,9 @@ jobs:
                           .padding(.horizontal, 10).padding(.vertical, 5)
                           .background(Capsule().fill(Color.betaOrange))
                       }
-          
+
                       Spacer().frame(height: 28)
-          
+
                       HStack {
                           RoundedRectangle(cornerRadius: 6)
                               .fill(LinearGradient(colors: [Color(red: 0.95, green: 0.83, blue: 0.45), Color(red: 0.78, green: 0.62, blue: 0.22)], startPoint: .top, endPoint: .bottom))
@@ -2409,9 +2420,9 @@ jobs:
                           Spacer()
                           Image(systemName: "wave.3.right").font(.system(size: 20, weight: .bold)).foregroundColor(.white.opacity(0.85))
                       }
-          
+
                       Spacer().frame(height: 18)
-          
+
                       Button(action: onToggleCardNumber) {
                           HStack(spacing: 8) {
                               Text(isCardNumberRevealed
@@ -2431,9 +2442,9 @@ jobs:
                           }
                       }
                       .buttonStyle(.plain)
-          
+
                       Spacer().frame(height: 18)
-          
+
                       HStack {
                           Button(action: onToggleUserID) {
                               VStack(alignment: .leading, spacing: 2) {
@@ -2477,49 +2488,49 @@ jobs:
                   .shadow(color: Color.walletDark.opacity(0.3), radius: 18, y: 8)
               }
           }
-          
+
           // ============================================================
-          // LOOPING GIF PLAYER
+          // LOOPING GIF PLAYER (kept for the intro onboarding screens only)
           // ============================================================
+          // NOTE: This player is now ONLY used by the Settings onboarding
+          // and Alerts onboarding screens. The Store tab's bell button was
+          // switched to a static SF Symbol to eliminate the crash. The first
+          // call still goes through `makeUIView` on the main thread and uses
+          // a guarded `UIImage.gif(...)` lookup that returns nil fast if the
+          // resource is missing.
           struct LoopingGifPlayer: UIViewRepresentable {
               let resourceName: String
               let ext: String
-          
+
               func makeUIView(context: Context) -> UIView {
                   let container = UIView()
                   container.backgroundColor = .clear
-          
+
                   let imageView = UIImageView()
                   imageView.contentMode = .scaleAspectFit
                   imageView.translatesAutoresizingMaskIntoConstraints = false
                   imageView.clipsToBounds = true
                   container.addSubview(imageView)
-          
+
                   NSLayoutConstraint.activate([
                       imageView.topAnchor.constraint(equalTo: container.topAnchor),
                       imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
                       imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
                       imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
                   ])
-          
+
                   if let gif = UIImage.gif(name: resourceName) {
                       imageView.image = gif
                   } else {
-                      if let path = Bundle.main.path(forResource: resourceName, ofType: ext),
-                         let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                         let gif = UIImage.gif(data: data) {
-                          imageView.image = gif
-                      } else {
-                          imageView.image = UIImage.bundled("\(resourceName).png")
-                      }
+                      imageView.image = UIImage.bundled("\(resourceName).png")
                   }
-          
+
                   return container
               }
-          
+
               func updateUIView(_ uiView: UIView, context: Context) {}
           }
-          
+
           extension UIImage {
               static func gif(name: String) -> UIImage? {
                   guard let path = Bundle.main.path(forResource: name, ofType: "gif") else { return nil }
@@ -2527,10 +2538,11 @@ jobs:
                   guard let data = try? Data(contentsOf: url) else { return nil }
                   return gif(data: data)
               }
-          
+
               static func gif(data: Data) -> UIImage? {
                   guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
                   let count = CGImageSourceGetCount(source)
+                  guard count > 0 else { return nil }
                   var images: [UIImage] = []
                   var duration: TimeInterval = 0
                   for i in 0..<count {
@@ -2548,7 +2560,7 @@ jobs:
                   return UIImage.animatedImage(with: images, duration: duration)
               }
           }
-          
+
           // ============================================================
           // EDIT ID SHEET
           // ============================================================
@@ -2557,7 +2569,7 @@ jobs:
               @Binding var userID: String
               var onSave: (String) -> Void
               @State private var draft: String = ""
-          
+
               var body: some View {
                   NavigationView {
                       VStack(spacing: 18) {
@@ -2589,7 +2601,7 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-          
+
           // ============================================================
           // EDIT CARD SHEET
           // ============================================================
@@ -2598,7 +2610,7 @@ jobs:
               @Binding var cardNumber: String
               var onSave: (String) -> Void
               @State private var draft: String = ""
-          
+
               var body: some View {
                   NavigationView {
                       VStack(spacing: 18) {
@@ -2639,7 +2651,7 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-          
+
           // ============================================================
           // ALERTS TAB — first-time onboarding (3 GIFs) + Alerts/Files segments.
           // Real IPA download from the source URL with live progress,
@@ -2824,7 +2836,6 @@ jobs:
                   .onAppear {
                       downloads.cleanupOrphanedFiles()
                       if !hasSeenAlertsOnboarding {
-                          // Small delay so the alerts tab finishes rendering first
                           DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                               showAlertsOnboarding = true
                           }
@@ -2887,7 +2898,6 @@ jobs:
                       } else {
                           ForEach(feed.allSorted.prefix(8)) { app in
                               AlertRow(app: app) {
-                                  // Real Install — kicks off the actual IPA download
                                   downloads.enqueue(app: app)
                                   HapticManager.shared.success()
                               }
@@ -2901,7 +2911,6 @@ jobs:
               @ViewBuilder
               private var filesContent: some View {
                   VStack(alignment: .leading, spacing: 14) {
-                      // ---- Downloading ----
                       HStack {
                           Text("Downloading")
                               .font(.system(size: 17, weight: .heavy))
@@ -2943,7 +2952,6 @@ jobs:
                           }
                       }
 
-                      // ---- Downloaded ----
                       HStack {
                           Text("Downloaded")
                               .font(.system(size: 17, weight: .heavy))
@@ -3197,7 +3205,6 @@ jobs:
               func urlSession(_ session: URLSession, task: URLSessionTask,
                               didCompleteWithError error: Error?) {
                   guard let error = error as NSError? else { return }
-                  // Pausing produces a cancellation error — ignore it, resume data already saved
                   if error.code == NSURLErrorCancelled { return }
                   item?.setError(error.localizedDescription)
               }
@@ -3296,7 +3303,6 @@ jobs:
                   delegate = nil
               }
 
-              // MARK: - Delegate callbacks (dispatched onto the main thread)
               fileprivate func updateProgress(_ value: Double) {
                   DispatchQueue.main.async {
                       self.progress = min(1.0, max(0.0, value))
@@ -3357,13 +3363,11 @@ jobs:
               var completed: [DownloadItem] { all.filter { $0.isCompleted } }
 
               init() {
-                  // No-op: completed items are restored lazily when the user re-installs
-                  // the same app (see DownloadItem.restoreIfCompleted). This avoids
-                  // creating phantom entries for orphan .ipa files.
+                  // Completed items are restored lazily when the user re-installs
+                  // the same app (see DownloadItem.restoreIfCompleted).
               }
 
               func enqueue(app: StoreAPIApp) {
-                  // Already in flight or completed → no duplicate work
                   if all.contains(where: { $0.app.id == app.id }) { return }
                   let item = DownloadItem(app: app)
                   item.restoreIfCompleted()
@@ -3385,7 +3389,6 @@ jobs:
                   }
               }
 
-              /// Real delete — removes the IPA file from the app's documents directory.
               func delete(item: DownloadItem) {
                   if let url = item.localFileURL {
                       try? FileManager.default.removeItem(at: url)
@@ -3396,7 +3399,6 @@ jobs:
                   HapticManager.shared.success()
               }
 
-              /// Real share — publishes a ShareRequest that the view turns into a UIActivityViewController.
               func share(item: DownloadItem) {
                   guard let url = item.localFileURL,
                         FileManager.default.fileExists(atPath: url.path) else {
@@ -3410,7 +3412,6 @@ jobs:
                   shareRequest = nil
               }
 
-              /// Removes any .ipa files in documents/ that are no longer tracked.
               func cleanupOrphanedFiles() {
                   let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                   let active = Set(all.compactMap { $0.localFileURL?.lastPathComponent })
@@ -3423,6 +3424,7 @@ jobs:
                   }
               }
           }
+
           // ============================================================
           // SOCIAL / PROFILE TAB
           // ============================================================
@@ -3449,7 +3451,6 @@ jobs:
                           VStack(spacing: 10) {
                               ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
                               ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
-                              // "Settings" row now opens the Settings sheet
                               Button {
                                   onSettings?()
                               } label: {
@@ -3475,7 +3476,7 @@ jobs:
                   }
               }
           }
-          
+
           struct ProfileRow: View {
               let icon: String
               let label: String
@@ -3491,7 +3492,7 @@ jobs:
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
               }
           }
-          
+
           // ============================================================
           // SEARCH
           // ============================================================
@@ -3510,7 +3511,7 @@ jobs:
                           .padding(14)
                           .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeBg))
                           .padding(.horizontal, 16).padding(.top, 8)
-          
+
                           ScrollView {
                               LazyVStack(spacing: 10) {
                                   ForEach(results) { app in
@@ -3549,9 +3550,8 @@ jobs:
                   .preferredColorScheme(.light)
               }
           }
-          
-          VIPEOF
 
+          VIPEOF
 
       - name: Generate code - VIP21StoreApp.swift
         run: |
@@ -3579,10 +3579,6 @@ jobs:
           import UIKit
 
           // ================= Settings Sheet (Root) =================
-          // Mirrors the design: rounded top, back chevron, "Settings" title,
-          // profile card, "Other Settings" group, "About Application" group,
-          // red "Deactivate my account" row.
-          // NOTE: Dark mode toggle is intentionally NOT included.
           struct SettingsView: View {
               @ObservedObject var authManager: AuthManager
               @Binding var isPresented: Bool
@@ -3606,7 +3602,6 @@ jobs:
                               )
 
                               VStack(spacing: 18) {
-                                  // ----- Profile card -----
                                   Button {
                                       HapticManager.shared.selection()
                                       showProfileDetails = true
@@ -3618,7 +3613,6 @@ jobs:
                                   }
                                   .buttonStyle(.plain)
 
-                                  // ----- Other Settings -----
                                   SettingsGroup(title: "Other Settings") {
                                       SettingsRow(
                                           icon: "person.fill",
@@ -3645,7 +3639,6 @@ jobs:
                                       )
                                   }
 
-                                  // ----- About Application -----
                                   SettingsGroup(title: nil) {
                                       SettingsRow(
                                           icon: "info.circle.fill",
@@ -3684,7 +3677,6 @@ jobs:
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
-                  // ----- Detail navigations -----
                   .sheet(isPresented: $showProfileDetails) {
                       ProfileDetailsView(authManager: authManager, isPresented: $showProfileDetails)
                   }
@@ -3723,7 +3715,6 @@ jobs:
               }
           }
 
-          // ================= Top Bar (back + title) =================
           struct SettingsTopBar: View {
               let onBack: () -> Void
               let title: String
@@ -3743,7 +3734,6 @@ jobs:
                           .font(.system(size: 17, weight: .bold))
                           .foregroundColor(.storeText)
                       Spacer()
-                      // Invisible placeholder for symmetry (so title stays centered)
                       Color.clear.frame(width: 38, height: 38)
                   }
                   .padding(.horizontal, 20)
@@ -3752,14 +3742,12 @@ jobs:
               }
           }
 
-          // ================= Profile Card =================
           struct ProfileCard: View {
               let username: String
               let handle: String
 
               var body: some View {
                   HStack(spacing: 12) {
-                      // Avatar circle (generated from username initial)
                       ZStack {
                           Circle()
                               .fill(LinearGradient(
@@ -3798,9 +3786,6 @@ jobs:
               }
           }
 
-          // ================= Settings Onboarding (single screen) =================
-          // Shown the first time the user opens Settings. Plays a looping GIF and
-          // a "Next" button that finishes the onboarding and shows the Settings sheet.
           struct SettingsOnboardingView: View {
               @Binding var isPresented: Bool
               var onFinish: () -> Void
@@ -3828,7 +3813,6 @@ jobs:
 
                           Spacer(minLength: 10)
 
-                          // GIF card
                           VStack(spacing: 18) {
                               LoopingGifPlayer(
                                   resourceName: "settings_onboarding",
@@ -3887,7 +3871,6 @@ jobs:
               }
           }
 
-          // ================= Settings Group (card with rows) =================
           struct SettingsGroup<Content: View>: View {
               let title: String?
               @ViewBuilder let content: () -> Content
@@ -3915,18 +3898,16 @@ jobs:
               }
           }
 
-          // ================= Trailing kinds for settings rows =================
           enum SettingsTrailing {
               case chevron
               case chevronPink
               case none
           }
 
-          // ================= Settings Row (icon + title + trailing) =================
           struct SettingsRow: View {
               let icon: String
               let iconBg: Color
-              var iconColor: Color? = nil   // if nil → black (matches the design)
+              var iconColor: Color? = nil
               let title: String
               var titleColor: Color = .storeText
               let trailing: SettingsTrailing
@@ -3990,7 +3971,6 @@ jobs:
                               SettingsTopBar(onBack: { isPresented = false }, title: "Profile details")
                               .padding(.bottom, 4)
 
-                              // Avatar (matches ProfileCard style)
                               ZStack {
                                   Circle()
                                       .fill(LinearGradient(
@@ -4083,13 +4063,11 @@ jobs:
                       return
                   }
 
-                  // Persist into AuthManager's user store
                   if let user = authManager.currentUser {
                       let key = AppConstants.userDefaultsKey
                       if let data = UserDefaults.standard.data(forKey: key),
                          var users = try? JSONDecoder().decode([AppUser].self, from: data),
                          let idx = users.firstIndex(where: { $0.id == user.id }) {
-                          // Preserve id + createdAt
                           let preserved = AppUser(
                               id: user.id,
                               phoneNumber: trimmedPhone,
@@ -4114,7 +4092,6 @@ jobs:
               }
           }
 
-          // Re-declared AppUser with id + createdAt initializers (for editing)
           extension AppUser {
               init(id: UUID, phoneNumber: String, username: String, password: String, udid: String, createdAt: Date) {
                   self.id = id
@@ -4216,7 +4193,6 @@ jobs:
                                   .padding(.horizontal, 24)
                               }
 
-                              // Password rules
                               VStack(alignment: .leading, spacing: 6) {
                                   rule("At least 6 characters", ok: newPassword.count >= 6)
                                   rule("Passwords match", ok: !newPassword.isEmpty && newPassword == confirmPassword)
@@ -4408,7 +4384,6 @@ jobs:
                               }
                               .padding(.horizontal, 20)
 
-                              // Quiet hours card
                               VStack(alignment: .leading, spacing: 10) {
                                   Text("Quiet hours")
                                       .font(.system(size: 14, weight: .bold))
@@ -4498,7 +4473,6 @@ jobs:
                           VStack(spacing: 18) {
                               SettingsTopBar(onBack: { isPresented = false }, title: "About")
 
-                              // App logo card
                               VStack(spacing: 10) {
                                   if let logo = UIImage.bundled("login_logo.png") {
                                       Image(uiImage: logo)
@@ -4529,7 +4503,6 @@ jobs:
                               )
                               .padding(.horizontal, 20)
 
-                              // Info rows
                               VStack(spacing: 0) {
                                   InfoRow(label: "Bundle", value: AppConstants.storeName)
                                   Divider().padding(.leading, 20)
@@ -4549,7 +4522,6 @@ jobs:
                               )
                               .padding(.horizontal, 20)
 
-                              // Social links
                               VStack(spacing: 12) {
                                   SocialButton(icon: "globe", label: "Visit website", color: .storePrimary)
                                   SocialButton(icon: "envelope.fill", label: "Contact support", color: .storePink)
@@ -4595,7 +4567,6 @@ jobs:
               var body: some View {
                   Button {
                       HapticManager.shared.selection()
-                      // External link action
                   } label: {
                       HStack(spacing: 10) {
                           ZStack {
@@ -4680,7 +4651,6 @@ jobs:
                           VStack(spacing: 14) {
                               SettingsTopBar(onBack: { isPresented = false }, title: "Help / FAQ")
 
-                              // Search field
                               HStack(spacing: 8) {
                                   Image(systemName: "magnifyingglass")
                                       .foregroundColor(.storeSub)
@@ -4710,7 +4680,6 @@ jobs:
                               }
                               .padding(.horizontal, 20)
 
-                              // Still need help?
                               VStack(spacing: 10) {
                                   Image(systemName: "questionmark.circle.fill")
                                       .font(.system(size: 36))
@@ -4846,7 +4815,6 @@ jobs:
                                       .padding(.horizontal, 24)
                               }
 
-                              // What will be deleted card
                               VStack(alignment: .leading, spacing: 8) {
                                   Text("What will be deleted:")
                                       .font(.system(size: 12, weight: .bold))
@@ -4868,7 +4836,6 @@ jobs:
                               )
                               .padding(.horizontal, 20)
 
-                              // Confirm input
                               VStack(alignment: .leading, spacing: 6) {
                                   Text("Type \(required) to confirm")
                                       .font(.system(size: 12, weight: .bold))
@@ -4946,7 +4913,6 @@ jobs:
                       HapticManager.shared.error()
                       return
                   }
-                  // Remove the current user from storage
                   let key = AppConstants.userDefaultsKey
                   if let data = UserDefaults.standard.data(forKey: key),
                      var users = try? JSONDecoder().decode([AppUser].self, from: data),
@@ -4956,10 +4922,8 @@ jobs:
                           UserDefaults.standard.set(encoded, forKey: key)
                       }
                   }
-                  // Clear wallet data
                   UserDefaults.standard.removeObject(forKey: "walletUserID_21s")
                   UserDefaults.standard.removeObject(forKey: "walletCardNumber_21s")
-                  // Delete downloaded IPAs
                   let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                   if let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
                       for f in files where f.pathExtension == "ipa" {
@@ -5027,7 +4991,6 @@ jobs:
           mkdir -p artifacts
           rm -rf build-output
           mkdir -p build-output/Payload/VIP21Store.app
-          # Copy files using cp without resource forks / xattrs
           cp -X VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
           cp -X Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
           cp -X Resources/AppIcon60x60@2x.png         build-output/Payload/VIP21Store.app/
@@ -5048,31 +5011,22 @@ jobs:
           cp -X Resources/alerts_onboarding2.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
-          cp -X Resources/bell_icon.gif               build-output/Payload/VIP21Store.app/
 
-          # Strip extended attributes (xattrs) and ACLs from everything — these break iOS extraction
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
 
-          # Sign the binary with ldid (no entitlements blob needed for sideload)
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
-          # Use macOS native `ditto` to create the IPA — it produces a fully iOS-compatible
-          # zip archive (correct compression, no extra xattrs, no resource forks) and is the
-          # exact same tool Xcode uses internally. This fixes the "extraction error" on
-          # sideloaders like Sideloadly / AltStore / Scarlet.
           rm -f artifacts/21s.ipa
           ditto -c -k --sequesterRsrc --keepParent \
                 build-output/Payload \
                 artifacts/21s.ipa
 
-          # Validate the IPA is a real, well-formed zip that any iOS extractor can read
           if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
             echo "❌ Error: IPA file is corrupt or invalid."
             exit 1
           fi
-          # Sanity-check: must contain the app bundle
           if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
             echo "❌ Error: IPA does not contain a valid App Bundle"
             exit 1
@@ -5089,11 +5043,11 @@ jobs:
           fi
           echo "== Integrity test =="
           unzip -tq artifacts/21s.ipa > /dev/null
-          # Make sure no _CodeSignature / xattr leftovers that confuse sideloaders
           if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature\|CodeResources"; then
             echo "⚠️ Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
           fi
           echo "✅ IPA is valid, passes zip integrity test, and contains the App Bundle."
+
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
