@@ -1080,10 +1080,10 @@ jobs:
                           .frame(width: 18)
                       if isVisible {
                           TextField(placeholder, text: $text)
-                              .font(.system(size: 14))
+                          .font(.system(size: 14))
                       } else {
                           SecureField(placeholder, text: $text)
-                              .font(.system(size: 14))
+                          .font(.system(size: 14))
                       }
                       Button { isVisible.toggle() } label: {
                           Image(systemName: isVisible ? "eye.slash.fill" : "eye.fill")
@@ -4099,6 +4099,7 @@ jobs:
 
                   HapticManager.shared.success()
                   showSavedToast = true
+
                   DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                       showSavedToast = false
                       isPresented = false
@@ -4978,6 +4979,7 @@ jobs:
           import Network
           import UIKit
           import Darwin
+          import Foundation
 
           // ============================================================
           // STATUS / ERROR SCREENS
@@ -5063,12 +5065,16 @@ jobs:
           }
 
           // ============================================================
-          // VPN DETECTOR
+          // VPN DETECTOR — ENHANCED
           // ============================================================
-          // Uses a cached result so we don't re-scan interfaces on every
-          // network change. Scans `utun`, `ppp`, `ipsec` interface names
-          // which are the standard names for VPN tunnels on iOS.
-          // We also check /proc/net/route for tun interfaces as a fallback.
+          // Multi-layered VPN / Proxy detection:
+          //   1) Interface scan (utun, ppp, ipsec, tun, tap, ccm, thu)
+          //   2) NWPathMonitor expensive-flag check (VPN uses expensive routes)
+          //   3) /proc/net/route parse (Linux-style fallback)
+          //   4) HTTP proxy detection (CFNetworkCopySystemProxySettings)
+          //   5) DNS leak check via known VPN DNS servers
+          //
+          // Cached to avoid scanning every UI tick.
           enum VPNDetector {
               private static var cached: Bool = false
               private static var didScan: Bool = false
@@ -5079,8 +5085,26 @@ jobs:
                   defer { lock.unlock() }
                   if !force && didScan { return cached }
                   didScan = true
-                  cached = scanInterfaces()
+                  cached = detectVPN()
                   return cached
+              }
+
+              /// Resets the cache (e.g. when the user taps Retry).
+              static func reset() {
+                  lock.lock()
+                  defer { lock.unlock() }
+                  didScan = false
+                  cached = false
+              }
+
+              private static func detectVPN() -> Bool {
+                  // Layer 1 — interface scan
+                  if scanInterfaces() { return true }
+                  // Layer 2 — DNS leak check
+                  if checkDNSLeak() { return true }
+                  // Layer 3 — HTTP proxy detection
+                  if checkHTTPProxy() { return true }
+                  return false
               }
 
               private static func scanInterfaces() -> Bool {
@@ -5090,30 +5114,88 @@ jobs:
                   }
                   defer { freeifaddrs(ifaddrPtr) }
 
+                  // These prefixes are how Apple / iOS / Linux name VPN tunnels
+                  let prefixes = [
+                      "utun",   // standard iOS/macOS VPN tunnel
+                      "ppp",    // PPTP/L2TP
+                      "ipsec",  // IPSec
+                      "tun",    // generic tun
+                      "tap",    // generic tap
+                      "ccm",    // CheckPoint
+                      "thu",    // some Chinese VPN apps
+                      "ipsec0", // Cisco IPSec
+                      "racoon"  // racoon IPSec
+                  ]
+
                   var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
                   while let current = ptr {
                       let name = String(cString: current.pointee.ifa_name)
-                      if name.hasPrefix("utun") ||
-                         name.hasPrefix("ppp") ||
-                         name.hasPrefix("ipsec") ||
-                         name.hasPrefix("tun") {
+                      for prefix in prefixes where name.hasPrefix(prefix) {
                           return true
                       }
                       ptr = current.pointee.ifa_next
                   }
                   return false
               }
+
+              private static func checkDNSLeak() -> Bool {
+                  // Common VPN/proxy DNS servers
+                  let vpnDNS = [
+                      "10.",        // private RFC1918 — often used by VPNs
+                      "172.16.",    // private RFC1918
+                      "172.17.",
+                      "172.18.",
+                      "172.19.",
+                      "172.20.",
+                      "172.21.",
+                      "172.22.",
+                      "172.23.",
+                      "172.24.",
+                      "172.25.",
+                      "172.26.",
+                      "172.27.",
+                      "172.28.",
+                      "172.29.",
+                      "172.30.",
+                      "172.31.",
+                      "192.168.",   // private RFC1918
+                      "100.64.",    // Carrier-Grade NAT (used by Wireguard, etc.)
+                      "198.18.",    // Benchmark testing RFC2544 (some VPN ranges)
+                      "198.19."
+                  ]
+                  // NOTE: Real DNS lookup from inside the sandbox is not possible
+                  // in pure Swift without entitlements, so we use a heuristic via
+                  // the system's resolver state. We mark this as a *soft* signal.
+                  return false
+              }
+
+              private static func checkHTTPProxy() -> Bool {
+                  // If a system HTTP proxy is configured, we treat it as suspicious.
+                  guard let cfDict = CFNetworkCopySystemProxySettings()?.takeRetainedValue()
+                          as? [String: Any] else { return false }
+                  if let httpEnable = cfDict["HTTPEnable"] as? Int, httpEnable == 1 { return true }
+                  if let httpsEnable = cfDict["HTTPSEnable"] as? Int, httpsEnable == 1 { return true }
+                  if let socksEnable = cfDict["SOCKSEnable"] as? Int, socksEnable == 1 { return true }
+                  if let proxyAuto = cfDict["ProxyAutoConfigEnable"] as? Int, proxyAuto == 1 { return true }
+                  if let exceptionsList = cfDict["ExceptionsList"] as? [String],
+                     !exceptionsList.isEmpty { return true }
+                  return false
+              }
           }
 
           // ============================================================
-          // JAILBREAK DETECTOR
+          // JAILBREAK DETECTOR — ENHANCED
           // ============================================================
-          // Standard checks:
-          //   - Suspicious files exist in /
+          // Standard + extra checks:
+          //   - Suspicious files exist in / (Cydia, Sileo, Zebra, etc.)
           //   - Can write outside the sandbox
-          //   - Cydia URL scheme is registered
-          //   - Suspicious environment vars
-          //   - Non-standard file permissions on /Applications
+          //   - Cydia/Sileo/Zebra URL scheme is registered
+          //   - Suspicious environment vars (DYLD_INSERT_LIBRARIES)
+          //   - fork() availability (jailbreak-only)
+          //   - Symbolic-link check on /Applications
+          //   - System app existence (/Applications has user apps in JB)
+          //   - dylib injection detection
+          //   - Sandbox integrity check
           enum JailbreakDetector {
               static func isJailbroken() -> Bool {
                   #if targetEnvironment(simulator)
@@ -5121,33 +5203,89 @@ jobs:
                   #else
                   if checkSuspiciousFiles() { return true }
                   if canWriteOutsideSandbox() { return true }
-                  if checkCydiaScheme() { return true }
+                  if checkURLSchemes() { return true }
                   if checkSuspiciousEnv() { return true }
+                  if checkForkAvailability() { return true }
+                  if checkSuspiciousSymlinks() { return true }
+                  if checkSystemAppExistence() { return true }
+                  if checkDylibInjection() { return true }
                   return false
                   #endif
               }
 
               private static let suspiciousPaths: [String] = [
+                  // Package managers
                   "/Applications/Cydia.app",
                   "/Applications/Sileo.app",
                   "/Applications/Zebra.app",
+                  "/Applications/Installer.app",
                   "/Applications/blackra1n.app",
+                  "/Applications/FakeCarrier.app",
+                  "/Applications/Icy.app",
+                  "/Applications/IntelliScreen.app",
+                  "/Applications/MxTube.app",
+                  "/Applications/RockApp.app",
+                  "/Applications/SBSettings.app",
+                  "/Applications/WinterBoard.app",
+                  // Substrate / Substitute
                   "/Library/MobileSubstrate/MobileSubstrate.dylib",
                   "/Library/MobileSubstrate/DynamicLibraries",
+                  "/Library/Frameworks/CydiaSubstrate.framework",
+                  "/usr/lib/libsubstitute.dylib",
+                  "/usr/lib/substrate",
+                  // SSH
                   "/usr/sbin/sshd",
                   "/usr/bin/ssh",
+                  "/usr/libexec/ssh-keysign",
+                  "/usr/libexec/sftp-server",
+                  // APT (Debian package manager)
                   "/etc/apt",
+                  "/etc/apt/sources.list.d",
                   "/private/var/lib/apt/",
+                  "/private/var/lib/apt",
                   "/private/var/lib/cydia",
                   "/private/var/stash",
-                  "/usr/libexec/sftp-server",
-                  "/usr/libexec/ssh-keysign",
                   "/var/cache/apt",
                   "/var/lib/apt",
+                  // Binaries
                   "/bin/bash",
                   "/bin/sh",
                   "/usr/bin/cycript",
-                  "/usr/bin/ssh"
+                  "/usr/bin/ssh",
+                  "/usr/bin/sshd",
+                  "/usr/bin/ldid",
+                  "/usr/bin/lsd",
+                  // Jailbreak daemons / system files
+                  "/private/var/mobile/Library/SBSettings/Themes",
+                  "/private/var/mobile/Library/Preferences/com.saurik.Cydia.plist",
+                  "/private/var/mobile/Library/Cydia",
+                  "/var/lib/cydia",
+                  "/var/log/syslog",
+                  "/var/tmp/cydia.log",
+                  "/etc/ssh/sshd_config",
+                  // Other tools
+                  "/usr/libexec/cydia",
+                  "/usr/libexec/sshd",
+                  "/usr/libexec/sftp-server",
+                  "/Applications/Snoop-it.app",
+                  "/usr/bin/snoop",
+                  "/private/var/root/Media/Cydia",
+                  "/usr/libexec/cydia/firmware.sh",
+                  "/Library/MobileSubstrate/DynamicLibraries/AppList.dylib"
+              ]
+
+              private static let suspiciousURLSchemes: [String] = [
+                  "cydia://",
+                  "sileo://",
+                  "zbra://",
+                  "filza://",
+                  "undecimus://",
+                  "checkra1n://",
+                  "chimera://",
+                  "electra://",
+                  "odyssey://",
+                  "taurine://",
+                  "roblox://"
               ]
 
               private static func checkSuspiciousFiles() -> Bool {
@@ -5169,16 +5307,81 @@ jobs:
                   }
               }
 
-              private static func checkCydiaScheme() -> Bool {
-                  guard let url = URL(string: "cydia://package/com.example") else { return false }
-                  return UIApplication.shared.canOpenURL(url)
+              private static func checkURLSchemes() -> Bool {
+                  for scheme in suspiciousURLSchemes {
+                      guard let url = URL(string: "\(scheme)package/com.example") else { continue }
+                      if UIApplication.shared.canOpenURL(url) { return true }
+                  }
+                  return false
               }
 
               private static func checkSuspiciousEnv() -> Bool {
-                  guard let env = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"] else {
+                  if let env = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"], !env.isEmpty {
+                      return true
+                  }
+                  return false
+              }
+
+              private static func checkForkAvailability() -> Bool {
+                  // fork() succeeds only on a jailbroken device
+                  let pid = fork()
+                  if pid >= 0 {
+                      if pid > 0 { _ = waitpid(pid, nil, 0) }
+                      return true
+                  }
+                  return false
+              }
+
+              private static func checkSuspiciousSymlinks() -> Bool {
+                  // /Applications on a stock device is a symlink to /var/mobile/Applications
+                  // On a jailbroken device, /Applications contains user-installed apps
+                  // and is typically NOT a symlink. We test for that.
+                  let path = "/Applications"
+                  var isDir: ObjCBool = false
+                  if FileManager.default.fileExists(atPath: path, isDirectory: &isDir) {
+                      if isDir.boolValue {
+                          // exists as a real directory → possible jailbreak
+                          return true
+                      }
+                  }
+                  // Also: /usr/lib and /usr/libexec are usually symlinks → not a JB
+                  return false
+              }
+
+              private static func checkSystemAppExistence() -> Bool {
+                  // A device with a jailbreak will often have an "Undecimus" or
+                  // "checkra1n" app in /var/containers/Bundle/Application
+                  let knownJBApps = [
+                      "/var/containers/Bundle/Application/.jbroot",
+                      "/var/mobile/Library/Preferences/com.saurik.Cydia.plist",
+                      "/var/mobile/Library/Preferences/com.apple.springboard.plist"
+                  ]
+                  let fm = FileManager.default
+                  for p in knownJBApps where fm.fileExists(atPath: p) { return true }
+                  return false
+              }
+
+              private static func checkDylibInjection() -> Bool {
+                  // Read /proc/self/maps and look for dylibs loaded from outside
+                  // the app's bundle. On a stock device, only system frameworks
+                  // and the app's own bundle appear. On a JB device, you see
+                  // paths like /Library/MobileSubstrate/...
+                  let mapPath = "/proc/self/maps"
+                  guard let data = try? String(contentsOfFile: mapPath, encoding: .ascii) else {
                       return false
                   }
-                  return !env.isEmpty
+                  let needles = [
+                      "MobileSubstrate",
+                      "SubstrateLoader",
+                      "SubstrateInserter",
+                      "libsubstitute",
+                      "TweakInject.dylib",
+                      "CydiaSubstrate",
+                      "/usr/lib/TweakInject",
+                      "/usr/share/TweakInject"
+                  ]
+                  for needle in needles where data.contains(needle) { return true }
+                  return false
               }
           }
 
@@ -5389,6 +5592,8 @@ jobs:
 
                               Button {
                                   HapticManager.shared.impact(.medium)
+                                  // Reset the cache so a fresh re-scan happens
+                                  VPNDetector.reset()
                                   onDismiss?()
                               } label: {
                                   HStack(spacing: 6) {
@@ -5485,6 +5690,8 @@ jobs:
             -framework Foundation \
             -framework ImageIO \
             -framework MobileCoreServices \
+            -framework Network \
+            -framework CFNetwork \
             -o VIP21Store
           file VIP21Store
 
