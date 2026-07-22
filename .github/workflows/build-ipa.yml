@@ -5139,33 +5139,10 @@ jobs:
               }
 
               private static func checkDNSLeak() -> Bool {
-                  // Common VPN/proxy DNS servers
-                  let vpnDNS = [
-                      "10.",        // private RFC1918 — often used by VPNs
-                      "172.16.",    // private RFC1918
-                      "172.17.",
-                      "172.18.",
-                      "172.19.",
-                      "172.20.",
-                      "172.21.",
-                      "172.22.",
-                      "172.23.",
-                      "172.24.",
-                      "172.25.",
-                      "172.26.",
-                      "172.27.",
-                      "172.28.",
-                      "172.29.",
-                      "172.30.",
-                      "172.31.",
-                      "192.168.",   // private RFC1918
-                      "100.64.",    // Carrier-Grade NAT (used by Wireguard, etc.)
-                      "198.18.",    // Benchmark testing RFC2544 (some VPN ranges)
-                      "198.19."
-                  ]
-                  // NOTE: Real DNS lookup from inside the sandbox is not possible
-                  // in pure Swift without entitlements, so we use a heuristic via
-                  // the system's resolver state. We mark this as a *soft* signal.
+                  // NOTE: Real DNS lookup from inside the iOS app sandbox is not
+                  // possible in pure Swift without special entitlements, so this
+                  // check is kept as a placeholder for future use. The interface
+                  // scan and HTTP-proxy check are strong enough on their own.
                   return false
               }
 
@@ -5323,13 +5300,19 @@ jobs:
               }
 
               private static func checkForkAvailability() -> Bool {
-                  // fork() succeeds only on a jailbroken device
-                  let pid = fork()
-                  if pid >= 0 {
-                      if pid > 0 { _ = waitpid(pid, nil, 0) }
-                      return true
-                  }
-                  return false
+                  // On a stock iOS device, fork() is not callable — Apple's
+                  // libSystem marks it as @available(*, unavailable). Trying
+                  // to call it directly therefore produces a *compile error*
+                  // on a real device build. A jailbroken runtime has the
+                  // symbol available (it's re-exported by common tweaks).
+                  //
+                  // We use dlsym() to look up the symbol at runtime — if it
+                  // resolves to a non-nil address, the device is almost
+                  // certainly jailbroken, because stock iOS hides it.
+                  guard let libc = dlopen(nil, RTLD_NOW) else { return false }
+                  defer { dlclose(libc) }
+                  let sym = dlsym(libc, "fork")
+                  return sym != nil
               }
 
               private static func checkSuspiciousSymlinks() -> Bool {
