@@ -54,6 +54,10 @@ jobs:
           curl -L -o Resources/alerts_onboarding3.gif "https://up6.cc/2026/07/17846720131242.gif"
           # Settings onboarding GIF (kept — still used by Settings onboarding)
           curl -L -o Resources/settings_onboarding.gif "https://up6.cc/2026/07/178467999736562.gif"
+          # NEW: No-Internet screen GIF
+          curl -L -o Resources/no_internet.gif "https://up6.cc/2026/07/178475589206661.gif"
+          # NEW: VPN / Jailbreak (mock) screen GIF
+          curl -L -o Resources/vpn_jailbreak.gif "https://up6.cc/2026/07/17847558920812.gif"
           file Resources/*.png Resources/*.gif
           ls -lh Resources
 
@@ -655,6 +659,454 @@ jobs:
           ]
           VIPEOF
 
+      - name: Generate code - NetworkMonitor.swift
+        run: |
+          cat > NetworkMonitor.swift << 'VIPEOF'
+          import SwiftUI
+          import Network
+          import Combine
+
+          // ==================== Network Connectivity Monitor ====================
+          // Watches the device's network state. Published `isConnected` is true
+          // whenever the device has a usable path that satisfies the configured
+          // constraint (typically Wi-Fi or cellular). Also detects a coarse
+          // "expensive / constrained" state which we use as a VPN signal.
+          @MainActor
+          final class NetworkMonitor: ObservableObject {
+              static let shared = NetworkMonitor()
+
+              @Published var isConnected: Bool = true
+              @Published var isExpensive: Bool = false   // typically true when on cellular / hotspot
+              @Published var isConstrained: Bool = false
+
+              private let monitor = NWPathMonitor()
+              private let queue = DispatchQueue(label: "com.21s.networkmonitor", qos: .utility)
+
+              private init() {
+                  monitor.pathUpdateHandler = { [weak self] path in
+                      let connected = path.status == .satisfied
+                      let expensive = path.isExpensive
+                      let constrained = path.isConstrained
+                      DispatchQueue.main.async {
+                          self?.isConnected = connected
+                          self?.isExpensive = expensive
+                          self?.isConstrained = constrained
+                      }
+                  }
+                  monitor.start(queue: queue)
+              }
+
+              deinit { monitor.cancel() }
+          }
+
+          // ==================== VPN / Jailbreak Mock Detector ====================
+          // This is a *playful* detector for the Store. It looks for:
+          //   1. Common VPN/tunnel interface names in the device's network
+          //      interfaces (utun*, ipsec*, tun*, ppp*).
+          //   2. The presence of the typical jailbreak indicator files at the
+          //      filesystem root (e.g. /Applications/Cydia.app).
+          //
+          // On real devices both checks are best-effort. The goal here is just
+          // to trigger the friendly "we noticed something fishy" screen with a
+          // bit of humor — the Store still works after the user dismisses it.
+          @MainActor
+          final class SecuritySentinel: ObservableObject {
+              static let shared = SecuritySentinel()
+
+              @Published var vpnActive: Bool = false
+              @Published var jailbreakDetected: Bool = false
+
+              private init() {
+                  refresh()
+              }
+
+              func refresh() {
+                  self.vpnActive = detectVPNInterfaces()
+                  self.jailbreakDetected = detectJailbreakArtifacts()
+              }
+
+              var shouldShowCautionScreen: Bool { vpnActive || jailbreakDetected }
+
+              var reasonText: String {
+                  if jailbreakDetected {
+                      return "We noticed your device is jailbroken. Some apps may not behave as expected — but we're still here for you. 😏"
+                  }
+                  if vpnActive {
+                      return "A VPN is active on your device. Some downloads may be slower or blocked. Looks like you're trying to hide something, huh? 😏"
+                  }
+                  return ""
+              }
+
+              // MARK: - VPN detection
+              private func detectVPNInterfaces() -> Bool {
+                  guard let snapshot = copyInterfaceList() as NSArray? as? [String] else { return false }
+                  for name in snapshot {
+                      let lower = name.lowercased()
+                      if lower.hasPrefix("utun")
+                          || lower.hasPrefix("ipsec")
+                          || lower.hasPrefix("tun")
+                          || lower.hasPrefix("ppp")
+                          || lower.contains("vpn") {
+                          return true
+                      }
+                  }
+                  return false
+              }
+
+              // MARK: - Jailbreak detection
+              private func detectJailbreakArtifacts() -> Bool {
+                  #if targetEnvironment(simulator)
+                  return false
+                  #else
+                  let fm = FileManager.default
+                  let suspiciousPaths = [
+                      "/Applications/Cydia.app",
+                      "/Applications/Sileo.app",
+                      "/Applications/Zebra.app",
+                      "/Library/MobileSubstrate/MobileSubstrate.dylib",
+                      "/bin/bash",
+                      "/usr/sbin/sshd",
+                      "/etc/apt",
+                      "/private/var/lib/apt/",
+                      "/private/var/stash"
+                  ]
+                  for p in suspiciousPaths where fm.fileExists(atPath: p) {
+                      return true
+                  }
+                  // Try to write outside the sandbox — fails on stock devices
+                  let path = "/private/jailbreak-test-\(UUID().uuidString).txt"
+                  do {
+                      try "test".write(toFile: path, atomically: true, encoding: .utf8)
+                      try? fm.removeItem(atPath: path)
+                      return true
+                  } catch {
+                      return false
+                  }
+                  #endif
+              }
+
+              // MARK: - Helpers
+              private func copyInterfaceList() -> CFArray? {
+                  let ifaddr = unsafeBitCast(getifaddrs(nil), to: UnsafeMutablePointer<ifaddrs>?.self)
+                  guard let firstAddr = ifaddr else { return nil }
+                  var names: [String] = []
+                  var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+                  while let p = ptr {
+                      let interface = p.pointee
+                      if let nameCStr = interface.ifa_name {
+                          let name = String(cString: nameCStr)
+                          if !name.isEmpty { names.append(name) }
+                      }
+                      ptr = interface.ifa_next
+                  }
+                  freeifaddrs(ifaddr)
+                  return names as CFArray
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - StatusScreens.swift
+        run: |
+          cat > StatusScreens.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+
+          // ==================== Shared layout helpers ====================
+          private struct StatusScreenBackground: View {
+              var body: some View {
+                  ZStack {
+                      LinearGradient(
+                          colors: [Color.storeBg, Color(red: 0.92, green: 0.94, blue: 1.00)],
+                          startPoint: .top, endPoint: .bottom
+                      )
+                      .ignoresSafeArea()
+
+                      // Decorative soft circles (matches the rest of the app)
+                      Circle()
+                          .fill(Color.storePrimary.opacity(0.08))
+                          .frame(width: 260, height: 260)
+                          .offset(x: -140, y: -340)
+                      Circle()
+                          .fill(Color.storePink.opacity(0.06))
+                          .frame(width: 220, height: 220)
+                          .offset(x: 150, y: 420)
+                  }
+              }
+          }
+
+          // ==================== No-Internet Screen ====================
+          // Big looping GIF of a "no Wi-Fi" illustration + a friendly headline,
+          // subtext, and a single "Try again" button. Also fires an optional
+          // auto-retry every 6 seconds while it's on screen.
+          struct NoInternetView: View {
+              var onRetry: () -> Void
+
+              @State private var pulse: Bool = false
+              @State private var autoRetryTick: Int = 0
+              private let autoRetryTimer = Timer.publish(every: 6.0, on: .main, in: .common).autoconnect()
+
+              var body: some View {
+                  ZStack {
+                      StatusScreenBackground()
+
+                      VStack(spacing: 22) {
+                          Spacer(minLength: 10)
+
+                          LoopingGifPlayer(resourceName: "no_internet", ext: "gif")
+                              .frame(width: 260, height: 260)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 24)
+                                      .fill(Color.white)
+                                      .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
+                              )
+                              .scaleEffect(pulse ? 1.03 : 0.98)
+                              .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: pulse)
+
+                          VStack(spacing: 10) {
+                              Text("No Internet Connection")
+                                  .font(.system(size: 24, weight: .heavy))
+                                  .foregroundColor(.storeText)
+                                  .multilineTextAlignment(.center)
+
+                              Text("We can't reach 21s right now. Check your Wi-Fi or mobile data and try again.")
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal, 36)
+                                  .lineSpacing(3)
+                          }
+
+                          Spacer()
+
+                          Button {
+                              HapticManager.shared.impact(.medium)
+                              onRetry()
+                          } label: {
+                              HStack(spacing: 8) {
+                                  Image(systemName: "arrow.clockwise")
+                                      .font(.system(size: 14, weight: .bold))
+                                  Text("Try again")
+                                      .font(.system(size: 16, weight: .bold))
+                              }
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .frame(height: 54)
+                              .background(Capsule().fill(Color.storePrimary))
+                              .shadow(color: Color.storePrimary.opacity(0.35), radius: 12, y: 6)
+                          }
+                          .padding(.horizontal, 28)
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .onAppear { pulse = true }
+                  .onReceive(autoRetryTimer) { _ in
+                      autoRetryTick += 1
+                      onRetry()
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          // ==================== VPN / Jailbreak Mock Screen ====================
+          // Shown when the SecuritySentinel reports VPN or jailbreak. The GIF is
+          // intentionally playful, the headline teases the user, and a single
+          // "I know what I'm doing" button dismisses the screen and lets them
+          // continue. The Store still works after the dismissal.
+          struct SecurityCautionView: View {
+              var reason: String
+              var onDismiss: () -> Void
+              @State private var wobble: Bool = false
+
+              var body: some View {
+                  ZStack {
+                      StatusScreenBackground()
+
+                      VStack(spacing: 20) {
+                          Spacer(minLength: 10)
+
+                          LoopingGifPlayer(resourceName: "vpn_jailbreak", ext: "gif")
+                              .frame(width: 240, height: 240)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 24)
+                                      .fill(Color.white)
+                                      .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
+                              )
+                              .rotationEffect(.degrees(wobble ? -2 : 2))
+                              .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: wobble)
+
+                          VStack(spacing: 10) {
+                              Text("Hmm… interesting setup 🕵️")
+                                  .font(.system(size: 22, weight: .heavy))
+                                  .foregroundColor(.storeText)
+                                  .multilineTextAlignment(.center)
+
+                              Text(reason)
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal, 32)
+                                  .lineSpacing(3)
+                          }
+
+                          HStack(spacing: 8) {
+                              Image(systemName: "exclamationmark.shield.fill")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                              Text("Detected")
+                                  .font(.system(size: 11, weight: .black))
+                                  .foregroundColor(.white)
+                                  .tracking(1.4)
+                          }
+                          .padding(.horizontal, 12).padding(.vertical, 6)
+                          .background(Capsule().fill(Color.storePink))
+
+                          Spacer()
+
+                          Button {
+                              HapticManager.shared.impact(.medium)
+                              onDismiss()
+                          } label: {
+                              HStack(spacing: 8) {
+                                  Image(systemName: "hand.thumbsup.fill")
+                                      .font(.system(size: 14, weight: .bold))
+                                  Text("I know what I'm doing")
+                                      .font(.system(size: 16, weight: .bold))
+                              }
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .frame(height: 54)
+                              .background(Capsule().fill(Color.storePrimary))
+                              .shadow(color: Color.storePrimary.opacity(0.35), radius: 12, y: 6)
+                          }
+                          .padding(.horizontal, 28)
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .onAppear { wobble = true }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          // ==================== Image + Next + Skip Onboarding Screen ====================
+          // The classic "one big illustration, Next button below, Skip in the
+          // top-right" onboarding. Used everywhere a quick intro is needed
+          // before a feature unlocks. Tap Next to advance, Skip to dismiss
+          // the whole flow, and the parent controls what happens after.
+          struct ImageNextSkipScreen: View {
+              let imageName: String        // bundled resource (PNG or GIF)
+              let title: String
+              let subtitle: String
+              var isGif: Bool = false
+              var onNext: () -> Void
+              var onSkip: () -> Void
+
+              @State private var appeared: Bool = false
+
+              var body: some View {
+                  ZStack {
+                      StatusScreenBackground()
+
+                      VStack(spacing: 0) {
+                          // Top bar: just the Skip button
+                          HStack {
+                              Spacer()
+                              Button {
+                                  HapticManager.shared.selection()
+                                  onSkip()
+                              } label: {
+                                  Text("Skip")
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                                      .padding(.horizontal, 14).padding(.vertical, 8)
+                                      .background(Capsule().fill(Color.white.opacity(0.7)))
+                              }
+                          }
+                          .padding(.horizontal, 20)
+                          .padding(.top, 8)
+
+                          Spacer(minLength: 6)
+
+                          // Big illustration
+                          Group {
+                              if isGif {
+                                  LoopingGifPlayer(resourceName: imageName, ext: "gif")
+                              } else if let img = UIImage.bundled("\(imageName).png") {
+                                  Image(uiImage: img)
+                                      .resizable()
+                                      .aspectRatio(contentMode: .fit)
+                              } else if let img = UIImage.bundled(imageName) {
+                                  Image(uiImage: img)
+                                      .resizable()
+                                      .aspectRatio(contentMode: .fit)
+                              } else {
+                                  RoundedRectangle(cornerRadius: 20)
+                                      .fill(Color.storeDivider)
+                                      .overlay(
+                                          Image(systemName: "photo")
+                                              .font(.system(size: 60))
+                                              .foregroundColor(.storeSub)
+                                      )
+                              }
+                          }
+                          .frame(width: 280, height: 280)
+                          .background(
+                              RoundedRectangle(cornerRadius: 24)
+                                  .fill(Color.white)
+                                  .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
+                          )
+                          .padding(.horizontal, 28)
+                          .scaleEffect(appeared ? 1.0 : 0.9)
+                          .opacity(appeared ? 1.0 : 0.0)
+
+                          // Title + subtitle
+                          VStack(spacing: 10) {
+                              Text(title)
+                                  .font(.system(size: 24, weight: .bold))
+                                  .foregroundColor(.storeText)
+                                  .multilineTextAlignment(.center)
+                              Text(subtitle)
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                                  .lineSpacing(3)
+                                  .padding(.horizontal, 36)
+                          }
+                          .padding(.top, 24)
+                          .opacity(appeared ? 1.0 : 0.0)
+
+                          Spacer()
+
+                          // Next button
+                          Button {
+                              HapticManager.shared.impact(.medium)
+                              onNext()
+                          } label: {
+                              HStack(spacing: 8) {
+                                  Text("Next")
+                                      .font(.system(size: 16, weight: .bold))
+                                  Image(systemName: "chevron.right")
+                                      .font(.system(size: 14, weight: .bold))
+                              }
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .frame(height: 54)
+                              .background(Capsule().fill(Color.storePrimary))
+                              .shadow(color: Color.storePrimary.opacity(0.35), radius: 12, y: 6)
+                          }
+                          .padding(.horizontal, 28)
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .onAppear {
+                      withAnimation(.easeOut(duration: 0.35)) {
+                          appeared = true
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+          VIPEOF
+
       - name: Generate code - OnboardingView.swift
         run: |
           cat > OnboardingView.swift << 'VIPEOF'
@@ -1154,8 +1606,45 @@ jobs:
 
           struct ContentView: View {
               @ObservedObject var authManager: AuthManager
+              @StateObject private var network = NetworkMonitor.shared
+              @StateObject private var sentinel = SecuritySentinel.shared
+              @State private var dismissedCaution: Bool = false
+
               var body: some View {
-                  StoreRootView(authManager: authManager)
+                  ZStack {
+                      if !network.isConnected {
+                          // No internet → full-screen
+                          NoInternetView {
+                              HapticManager.shared.impact(.light)
+                              // NetworkMonitor pushes its own updates, but we can
+                              // nudge it by re-evaluating on the next runloop tick.
+                              DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {}
+                          }
+                          .transition(.opacity)
+                      } else {
+                          StoreRootView(authManager: authManager)
+                              .transition(.opacity)
+
+                          if sentinel.shouldShowCautionScreen && !dismissedCaution {
+                              SecurityCautionView(
+                                  reason: sentinel.reasonText,
+                                  onDismiss: {
+                                      dismissedCaution = true
+                                      HapticManager.shared.selection()
+                                  }
+                              )
+                              .transition(.opacity)
+                          }
+                      }
+                  }
+                  .animation(.easeInOut(duration: 0.25), value: network.isConnected)
+                  .animation(.easeInOut(duration: 0.25), value: sentinel.shouldShowCautionScreen)
+                  .onChange(of: network.isConnected) { _ in
+                      if network.isConnected {
+                          // Refresh VPN/jailbreak signal when we come back online
+                          sentinel.refresh()
+                      }
+                  }
               }
           }
           VIPEOF
@@ -2493,11 +2982,11 @@ jobs:
           // LOOPING GIF PLAYER (kept for the intro onboarding screens only)
           // ============================================================
           // NOTE: This player is now ONLY used by the Settings onboarding
-          // and Alerts onboarding screens. The Store tab's bell button was
-          // switched to a static SF Symbol to eliminate the crash. The first
-          // call still goes through `makeUIView` on the main thread and uses
-          // a guarded `UIImage.gif(...)` lookup that returns nil fast if the
-          // resource is missing.
+          // and Alerts onboarding screens, and the new NoInternet / Security
+          // / Image-Next-Skip screens. The first call still goes through
+          // `makeUIView` on the main thread and uses a guarded
+          // `UIImage.gif(...)` lookup that returns nil fast if the resource
+          // is missing.
           struct LoopingGifPlayer: UIViewRepresentable {
               let resourceName: String
               let ext: String
@@ -4967,6 +5456,8 @@ jobs:
             Models.swift \
             AuthManager.swift \
             Countries.swift \
+            NetworkMonitor.swift \
+            StatusScreens.swift \
             OnboardingView.swift \
             AuthViews.swift \
             StoreView.swift \
@@ -4982,6 +5473,7 @@ jobs:
             -framework Foundation \
             -framework ImageIO \
             -framework MobileCoreServices \
+            -framework Network \
             -o VIP21Store
           file VIP21Store
 
@@ -5011,6 +5503,8 @@ jobs:
           cp -X Resources/alerts_onboarding2.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
+          cp -X Resources/no_internet.gif             build-output/Payload/VIP21Store.app/
+          cp -X Resources/vpn_jailbreak.gif           build-output/Payload/VIP21Store.app/
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
