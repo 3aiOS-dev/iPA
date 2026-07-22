@@ -8,8 +8,6 @@ on:
 env:
   NEW_BUNDLE_ID: "com.vip21.store.pro"
   NEW_APP_NAME:  "21s"
-  API_BASE_URL:  "https://project--da9d0b7b-4e7d-4a3e-ae32-ae7a854f2587.lovable.app"
-  # API_KEY is provided via GitHub Actions secret MOBILE_API_KEY
 
 jobs:
   build:
@@ -316,74 +314,11 @@ jobs:
           VIPEOF
 
       - name: Generate code - AuthManager.swift
-        env:
-          API_BASE_URL: ${{ env.API_BASE_URL }}
-          API_KEY: ${{ secrets.MOBILE_API_KEY }}
         run: |
-          # إذا لم يكن المفتاح موجوداً، نستخدم قيمة افتراضية ونحذر
-          if [ -z "$API_KEY" ]; then
-            echo "⚠️ MOBILE_API_KEY secret not set. Using default key 'default_key' for build. Replace in production."
-            API_KEY="default_key"
-          fi
-          cat > AuthManager.swift << VIPEOF
+          cat > AuthManager.swift << 'VIPEOF'
           import SwiftUI
           import Foundation
           import Combine
-
-          enum AppAPI {
-              static let baseURL = "__API_BASE_URL__"
-              static let apiKey  = "__API_KEY__"
-          }
-
-          struct APIUser: Codable {
-              let id: String
-              let phone_number: String
-              let username: String
-              let balance: Double?
-          }
-
-          struct APIAuthResponse: Codable {
-              let user: APIUser
-              let token: String
-          }
-
-          struct APIError: Codable { let error: String }
-
-          enum APIClient {
-              static func request<T: Decodable>(_ path: String,
-                                                method: String = "GET",
-                                                body: [String: Any]? = nil,
-                                                as type: T.Type,
-                                                completion: @escaping (Result<T, Error>) -> Void) {
-                  guard let url = URL(string: AppAPI.baseURL + path) else {
-                      completion(.failure(NSError(domain: "api", code: -1))); return
-                  }
-                  var req = URLRequest(url: url)
-                  req.httpMethod = method
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.setValue(AppAPI.apiKey, forHTTPHeaderField: "x-api-key")
-                  if let body = body {
-                      req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                  }
-                  URLSession.shared.dataTask(with: req) { data, resp, err in
-                      if let err = err { completion(.failure(err)); return }
-                      guard let data = data else {
-                          completion(.failure(NSError(domain: "api", code: -2))); return
-                      }
-                      if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                          let msg = (try? JSONDecoder().decode(APIError.self, from: data))?.error
-                              ?? "HTTP \(http.statusCode)"
-                          completion(.failure(NSError(domain: "api", code: http.statusCode,
-                                                      userInfo: [NSLocalizedDescriptionKey: msg])))
-                          return
-                      }
-                      do {
-                          let value = try JSONDecoder().decode(T.self, from: data)
-                          completion(.success(value))
-                      } catch { completion(.failure(error)) }
-                  }.resume()
-              }
-          }
 
           @MainActor
           final class AuthManager: ObservableObject {
@@ -391,129 +326,150 @@ jobs:
               @Published var isAuthenticated: Bool = false
               @Published var isLoading: Bool = false
               @Published var errorMessage: String?
-              @Published var authToken: String?
 
               private let userDefaultsKey = AppConstants.userDefaultsKey
-              private let tokenKey = "auth_token_21s"
 
               init() { loadUser() }
 
-              func signUp(phoneNumber: String, username: String, password: String,
-                          confirmPassword: String, udid: String) -> Bool {
-                  isLoading = true; errorMessage = nil
+              func signUp(phoneNumber: String, username: String, password: String, confirmPassword: String, udid: String) -> Bool {
+                  isLoading = true
+                  errorMessage = nil
+
                   let trimmedPhone = phoneNumber.trimmingCharacters(in: .whitespaces)
-                  guard !trimmedPhone.isEmpty, trimmedPhone.hasPrefix("+") else {
-                      errorMessage = "Phone number must include country code"; isLoading = false; return false
+                  if trimmedPhone.isEmpty {
+                      errorMessage = "Phone number is required"; isLoading = false; return false
                   }
-                  guard username.count >= 3 else {
-                      errorMessage = "Username must be at least 3 characters"; isLoading = false; return false
+                  if !trimmedPhone.hasPrefix("+") {
+                      errorMessage = "Phone number must include country code (e.g., +971501234567)"
+                      isLoading = false; return false
                   }
-                  guard password.count >= 6 else {
-                      errorMessage = "Password must be at least 6 characters"; isLoading = false; return false
-                  }
-                  guard password == confirmPassword else {
-                      errorMessage = "Passwords do not match"; isLoading = false; return false
-                  }
-                  guard udid.count >= 20 else {
-                      errorMessage = "Please enter a valid device UDID"; isLoading = false; return false
+                  let digitsOnly = trimmedPhone.dropFirst().filter { $0.isNumber }
+                  if digitsOnly.count < 7 {
+                      errorMessage = "Please enter a valid phone number (at least 7 digits after country code)"
+                      isLoading = false; return false
                   }
 
-                  APIClient.request("/api/public/mobile/register",
-                                    method: "POST",
-                                    body: ["phone_number": trimmedPhone,
-                                           "username": username,
-                                           "password": password,
-                                           "udid": udid],
-                                    as: APIAuthResponse.self) { [weak self] result in
-                      DispatchQueue.main.async {
-                          guard let self = self else { return }
-                          self.isLoading = false
-                          switch result {
-                          case .success(let resp):
-                              let user = AppUser(phoneNumber: resp.user.phone_number,
-                                                 username: resp.user.username,
-                                                 password: "",
-                                                 udid: udid)
-                              self.persist(user: user, token: resp.token)
-                              HapticManager.shared.success()
-                          case .failure(let err):
-                              self.errorMessage = err.localizedDescription
-                          }
-                      }
+                  if username.trimmingCharacters(in: .whitespaces).isEmpty {
+                      errorMessage = "Username is required"; isLoading = false; return false
                   }
+                  if username.count < 3 {
+                      errorMessage = "Username must be at least 3 characters"; isLoading = false; return false
+                  }
+                  if password.count < 6 {
+                      errorMessage = "Password must be at least 6 characters"; isLoading = false; return false
+                  }
+                  if password != confirmPassword {
+                      errorMessage = "Passwords do not match"; isLoading = false; return false
+                  }
+                  if udid.trimmingCharacters(in: .whitespaces).isEmpty {
+                      errorMessage = "Device UDID is required"; isLoading = false; return false
+                  }
+                  if udid.count < 20 {
+                      errorMessage = "Please enter a valid device UDID (at least 20 characters)"; isLoading = false; return false
+                  }
+
+                  let existingUsers = loadAllUsers()
+                  if existingUsers.contains(where: { $0.phoneNumber == trimmedPhone }) {
+                      errorMessage = "This phone number is already registered"; isLoading = false; return false
+                  }
+                  if existingUsers.contains(where: { $0.username.lowercased() == username.lowercased() }) {
+                      errorMessage = "This username is already taken"; isLoading = false; return false
+                  }
+                  if existingUsers.contains(where: { $0.udid == udid }) {
+                      errorMessage = "This UDID is already registered to another account"; isLoading = false; return false
+                  }
+
+                  let newUser = AppUser(phoneNumber: trimmedPhone, username: username, password: password, udid: udid)
+                  var users = loadAllUsers()
+                  users.append(newUser)
+                  saveAllUsers(users)
+
+                  currentUser = newUser
+                  isAuthenticated = true
+                  isLoading = false
+                  HapticManager.shared.success()
+                  UserDefaults.standard.set(newUser.id.uuidString, forKey: "currentUserID")
+                  UserDefaults.standard.set(false, forKey: AppConstants.hasSeenOnboardingKey)
+                  UserDefaults.standard.set(false, forKey: "hasSeenWalletOnboarding21s")
                   return true
               }
 
               func login(phoneNumber: String, password: String) -> Bool {
-                  isLoading = true; errorMessage = nil
+                  isLoading = true
+                  errorMessage = nil
+
                   let trimmedPhone = phoneNumber.trimmingCharacters(in: .whitespaces)
-                  guard !trimmedPhone.isEmpty, !password.isEmpty else {
-                      errorMessage = "Phone and password required"; isLoading = false; return false
+                  if trimmedPhone.isEmpty {
+                      errorMessage = "Phone number is required"; isLoading = false; return false
                   }
-                  APIClient.request("/api/public/mobile/login",
-                                    method: "POST",
-                                    body: ["phone_number": trimmedPhone, "password": password],
-                                    as: APIAuthResponse.self) { [weak self] result in
-                      DispatchQueue.main.async {
-                          guard let self = self else { return }
-                          self.isLoading = false
-                          switch result {
-                          case .success(let resp):
-                              let user = AppUser(phoneNumber: resp.user.phone_number,
-                                                 username: resp.user.username,
-                                                 password: "",
-                                                 udid: "")
-                              self.persist(user: user, token: resp.token)
-                              HapticManager.shared.success()
-                          case .failure(let err):
-                              self.errorMessage = err.localizedDescription
-                          }
-                      }
+                  if password.trimmingCharacters(in: .whitespaces).isEmpty {
+                      errorMessage = "Password is required"; isLoading = false; return false
                   }
+
+                  let users = loadAllUsers()
+                  guard let user = users.first(where: { $0.phoneNumber == trimmedPhone && $0.password == password }) else {
+                      errorMessage = "Invalid phone number or password"; isLoading = false; return false
+                  }
+
+                  currentUser = user
+                  isAuthenticated = true
+                  isLoading = false
+                  HapticManager.shared.success()
+                  UserDefaults.standard.set(user.id.uuidString, forKey: "currentUserID")
+                  UserDefaults.standard.set(false, forKey: AppConstants.hasSeenOnboardingKey)
+                  UserDefaults.standard.set(false, forKey: "hasSeenWalletOnboarding21s")
                   return true
               }
 
               func logout() {
                   currentUser = nil
                   isAuthenticated = false
-                  authToken = nil
                   UserDefaults.standard.removeObject(forKey: "currentUserID")
-                  UserDefaults.standard.removeObject(forKey: tokenKey)
-              }
-
-              private func persist(user: AppUser, token: String) {
-                  self.currentUser = user
-                  self.isAuthenticated = true
-                  self.authToken = token
-                  if let data = try? JSONEncoder().encode([user]) {
-                      UserDefaults.standard.set(data, forKey: userDefaultsKey)
-                  }
-                  UserDefaults.standard.set(user.id.uuidString, forKey: "currentUserID")
-                  UserDefaults.standard.set(token, forKey: tokenKey)
-                  UserDefaults.standard.set(false, forKey: AppConstants.hasSeenOnboardingKey)
-                  UserDefaults.standard.set(false, forKey: "hasSeenWalletOnboarding21s")
               }
 
               private func loadUser() {
                   guard let savedID = UserDefaults.standard.string(forKey: "currentUserID"),
                         let id = UUID(uuidString: savedID) else { return }
-                  if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-                     let users = try? JSONDecoder().decode([AppUser].self, from: data),
-                     let user = users.first(where: { $0.id == id }) {
-                      self.currentUser = user
-                      self.isAuthenticated = true
-                      self.authToken = UserDefaults.standard.string(forKey: tokenKey)
+                  let users = loadAllUsers()
+                  if let user = users.first(where: { $0.id == id }) {
+                      currentUser = user
+                      isAuthenticated = true
+                  }
+              }
+
+              private func loadAllUsers() -> [AppUser] {
+                  guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+                        let users = try? JSONDecoder().decode([AppUser].self, from: data) else { return [] }
+                  return users
+              }
+
+              private func saveAllUsers(_ users: [AppUser]) {
+                  if let data = try? JSONEncoder().encode(users) {
+                      UserDefaults.standard.set(data, forKey: userDefaultsKey)
                   }
               }
 
               func getUDIDInfo() -> String {
-                  return "Enter your device UDID. This is required to link your account to your device."
+                  return """
+                  ⚠️ Important: Device UDID Information
+
+                  Your UDID is a unique identifier for your iOS device.
+                  This is required to ensure your account is linked to your specific device.
+
+                  To find your UDID:
+                  1. Connect your iPhone to a computer
+                  2. Open Finder (macOS Catalina+) or iTunes (Windows)
+                  3. Select your device
+                  4. Click on the serial number until you see the UDID
+                  5. Copy the UDID string
+
+                  Or use a third-party app like "UDID Calculator" from the App Store.
+
+                  ⚠️ Make sure you enter the correct UDID. This cannot be changed later.
+                  """
               }
           }
           VIPEOF
-          # Inject API base URL and key from GitHub secrets
-          sed -i '' "s|__API_BASE_URL__|${API_BASE_URL}|g" AuthManager.swift
-          sed -i '' "s|__API_KEY__|${API_KEY}|g" AuthManager.swift
 
       - name: Generate code - Countries.swift
         run: |
