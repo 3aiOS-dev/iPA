@@ -52,6 +52,9 @@ jobs:
           curl -L -o Resources/alerts_onboarding1.gif "https://up6.cc/2026/07/178467158819014.gif"
           curl -L -o Resources/alerts_onboarding2.gif "https://up6.cc/2026/07/178467158813032.gif"
           curl -L -o Resources/alerts_onboarding3.gif "https://up6.cc/2026/07/17846720131242.gif"
+          # Settings onboarding GIF + Bell icon GIF
+          curl -L -o Resources/settings_onboarding.gif "https://up6.cc/2026/07/178467999736562.gif"
+          curl -L -o Resources/bell_icon.gif          "https://up6.cc/2026/07/178467999733731.gif"
           file Resources/*.png Resources/*.gif
           ls -lh Resources
 
@@ -1372,6 +1375,8 @@ jobs:
               @State private var showWalletOnboarding = false
               @State private var showSettings = false
               @AppStorage("hasSeenWalletOnboarding21s") private var hasSeenWalletOnboarding: Bool = false
+              @AppStorage("hasSeenSettingsOnboarding21s") private var hasSeenSettingsOnboarding: Bool = false
+              @State private var showSettingsOnboarding: Bool = false
           
               var body: some View {
                   ZStack(alignment: .bottom) {
@@ -1380,16 +1385,24 @@ jobs:
                       // Fast tab switch: each tab is a persistent view hidden via opacity,
                       // so the content is already built and tapping a tab is instant.
                       ZStack {
-                          StoreHomeView(feed: feed, onMenu: { showSettings = true })
+                          StoreHomeView(feed: feed,
+                                       onMenu: { openSettings() },
+                                       onBell: { showSearch = true })
                               .opacity(tab == 0 ? 1 : 0)
                               .allowsHitTesting(tab == 0)
-                          WalletView()
+                          WalletView(onMenu: { openSettings() },
+                                     onBell: { showSearch = true })
                               .opacity(tab == 1 ? 1 : 0)
                               .allowsHitTesting(tab == 1)
-                          AlertsView(feed: feed)
+                          AlertsView(feed: feed,
+                                      onMenu: { openSettings() },
+                                      onBell: { showSearch = true })
                               .opacity(tab == 2 ? 1 : 0)
                               .allowsHitTesting(tab == 2)
-                          SocialView(authManager: authManager)
+                          SocialView(authManager: authManager,
+                                     onMenu: { openSettings() },
+                                     onBell: { showSearch = true },
+                                     onSettings: { openSettings() })
                               .opacity(tab == 3 ? 1 : 0)
                               .allowsHitTesting(tab == 3)
                       }
@@ -1401,6 +1414,14 @@ jobs:
                   .sheet(isPresented: $showSettings) {
                       SettingsView(authManager: authManager, isPresented: $showSettings)
                   }
+                  .fullScreenCover(isPresented: $showSettingsOnboarding) {
+                      SettingsOnboardingView(isPresented: $showSettingsOnboarding,
+                                             onFinish: {
+                                                 hasSeenSettingsOnboarding = true
+                                                 showSettingsOnboarding = false
+                                                 showSettings = true
+                                             })
+                  }
                   .fullScreenCover(isPresented: $showWalletOnboarding) {
                       WalletOnboardingView(isPresented: $showWalletOnboarding)
                   }
@@ -1410,6 +1431,15 @@ jobs:
                       }
                   }
                   .preferredColorScheme(.light)
+              }
+          
+              private func openSettings() {
+                  HapticManager.shared.selection()
+                  if hasSeenSettingsOnboarding {
+                      showSettings = true
+                  } else {
+                      showSettingsOnboarding = true
+                  }
               }
           }
           
@@ -1470,6 +1500,7 @@ jobs:
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
+              var onBell: (() -> Void)? = nil
 
               var body: some View {
                   NavigationStack {
@@ -1480,7 +1511,8 @@ jobs:
                                               HapticManager.shared.impact(.light)
                                               Task { await feed.refresh() }
                                           },
-                                          onMenu: { onMenu?() })
+                                          onMenu: { onMenu?() },
+                                          onBell: { onBell?() })
 
                               DiscountBanner()
                               StoreStatusBar(feed: feed)
@@ -1617,6 +1649,7 @@ jobs:
               let title: String
               var onRefresh: (() -> Void)? = nil
               var onMenu: (() -> Void)? = nil
+              var onBell: (() -> Void)? = nil
               var body: some View {
                   HStack {
                       Button {
@@ -1645,11 +1678,34 @@ jobs:
                                       .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
                               }
                           }
-                          IconChip(icon: "bell.fill", badge: true)
+                          // Animated bell icon (GIF) — top-right of every tab
+                          Button {
+                              if let onBell { onBell() } else { HapticManager.shared.impact(.light) }
+                          } label: {
+                              BellGifChip()
+                          }
+                          .buttonStyle(.plain)
                       }
                   }
                   .padding(.horizontal, 20)
                   .padding(.top, 8)
+              }
+          }
+
+          // ================= Animated Bell (GIF) Chip =================
+          // Top-right bell icon for every tab — uses the bundled bell_icon.gif
+          struct BellGifChip: View {
+              var body: some View {
+                  ZStack(alignment: .topTrailing) {
+                      // Same circular background as the old IconChip
+                      Circle()
+                          .fill(Color.storeCard)
+                          .frame(width: 40, height: 40)
+                          .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
+                      LoopingGifPlayer(resourceName: "bell_icon", ext: "gif")
+                          .frame(width: 30, height: 30)
+                          .clipShape(Circle())
+                  }
               }
           }
           
@@ -2158,6 +2214,8 @@ jobs:
           // WALLET TAB
           // ============================================================
           struct WalletView: View {
+              var onMenu: (() -> Void)? = nil
+              var onBell: (() -> Void)? = nil
               @AppStorage("walletUserID_21s") private var storedWalletUserID: String = ""
               @AppStorage("walletCardNumber_21s") private var storedCardNumber: String = ""
               @State private var showIDSheet = false
@@ -2183,7 +2241,9 @@ jobs:
               var body: some View {
                   ScrollView {
                       VStack(spacing: 20) {
-                          StoreHeader(title: "Wallet")
+                          StoreHeader(title: "Wallet",
+                                      onMenu: { onMenu?() },
+                                      onBell: { onBell?() })
           
                           HStack {
                               HStack(spacing: 6) {
@@ -2706,6 +2766,8 @@ jobs:
 
           struct AlertsView: View {
               @ObservedObject var feed: StoreFeed
+              var onMenu: (() -> Void)? = nil
+              var onBell: (() -> Void)? = nil
               @StateObject private var downloads = DownloadsManager.shared
               @State private var segment: AlertSegment = .alerts
               @AppStorage("hasSeenAlertsOnboarding21s") private var hasSeenAlertsOnboarding: Bool = false
@@ -2734,7 +2796,9 @@ jobs:
 
               var body: some View {
                   VStack(spacing: 0) {
-                      StoreHeader(title: "Alerts")
+                      StoreHeader(title: "Alerts",
+                                  onMenu: { onMenu?() },
+                                  onBell: { onBell?() })
 
                       // Segment control: Alerts / Files
                       HStack(spacing: 0) {
@@ -3364,10 +3428,16 @@ jobs:
           // ============================================================
           struct SocialView: View {
               @ObservedObject var authManager: AuthManager
+              var onMenu: (() -> Void)? = nil
+              var onBell: (() -> Void)? = nil
+              var onSettings: (() -> Void)? = nil
+
               var body: some View {
                   ScrollView {
                       VStack(spacing: 20) {
-                          StoreHeader(title: "Profile")
+                          StoreHeader(title: "Profile",
+                                      onMenu: { onMenu?() },
+                                      onBell: { onBell?() })
                           VStack(spacing: 12) {
                               ZStack {
                                   Circle().fill(Color.storePrimary.opacity(0.15)).frame(width: 90, height: 90)
@@ -3379,7 +3449,13 @@ jobs:
                           VStack(spacing: 10) {
                               ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
                               ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
-                              ProfileRow(icon: "gearshape.fill", label: "Settings", color: .storeCyan)
+                              // "Settings" row now opens the Settings sheet
+                              Button {
+                                  onSettings?()
+                              } label: {
+                                  ProfileRow(icon: "gearshape.fill", label: "Settings", color: .storeCyan)
+                              }
+                              .buttonStyle(.plain)
                               Button {
                                   HapticManager.shared.impact(.light)
                                   authManager.logout()
@@ -3546,7 +3622,7 @@ jobs:
                                   SettingsGroup(title: "Other Settings") {
                                       SettingsRow(
                                           icon: "person.fill",
-                                          iconBg: Color.storePrimary,
+                                          iconBg: Color.storeDivider,
                                           title: "Profile details",
                                           trailing: .chevron,
                                           action: { showProfileDetails = true }
@@ -3554,7 +3630,7 @@ jobs:
                                       Divider().padding(.leading, 64)
                                       SettingsRow(
                                           icon: "lock.fill",
-                                          iconBg: Color(red: 0.95, green: 0.55, blue: 0.20),
+                                          iconBg: Color.storeDivider,
                                           title: "Password",
                                           trailing: .chevron,
                                           action: { showChangePassword = true }
@@ -3562,7 +3638,7 @@ jobs:
                                       Divider().padding(.leading, 64)
                                       SettingsRow(
                                           icon: "bell.fill",
-                                          iconBg: Color(red: 0.30, green: 0.80, blue: 0.90),
+                                          iconBg: Color.storeDivider,
                                           title: "Notifications",
                                           trailing: .chevron,
                                           action: { showNotifications = true }
@@ -3573,7 +3649,7 @@ jobs:
                                   SettingsGroup(title: nil) {
                                       SettingsRow(
                                           icon: "info.circle.fill",
-                                          iconBg: Color.storePrimary,
+                                          iconBg: Color.storeDivider,
                                           title: "About Application",
                                           trailing: .chevron,
                                           action: { showAbout = true }
@@ -3581,7 +3657,7 @@ jobs:
                                       Divider().padding(.leading, 64)
                                       SettingsRow(
                                           icon: "bubble.left.and.bubble.right.fill",
-                                          iconBg: Color(red: 0.55, green: 0.45, blue: 0.95),
+                                          iconBg: Color.storeDivider,
                                           title: "Help / FAQ",
                                           trailing: .chevron,
                                           action: { showHelp = true }
@@ -3589,7 +3665,8 @@ jobs:
                                       Divider().padding(.leading, 64)
                                       SettingsRow(
                                           icon: "trash.fill",
-                                          iconBg: Color.storePink,
+                                          iconBg: Color.storePink.opacity(0.18),
+                                          iconColor: Color.storePink,
                                           title: "Deactivate my account",
                                           titleColor: Color.storePink,
                                           trailing: .chevronPink,
@@ -3721,6 +3798,95 @@ jobs:
               }
           }
 
+          // ================= Settings Onboarding (single screen) =================
+          // Shown the first time the user opens Settings. Plays a looping GIF and
+          // a "Next" button that finishes the onboarding and shows the Settings sheet.
+          struct SettingsOnboardingView: View {
+              @Binding var isPresented: Bool
+              var onFinish: () -> Void
+              @State private var animateIn = false
+
+              var body: some View {
+                  ZStack {
+                      Color.storeBg.edgesIgnoringSafeArea(.all)
+
+                      VStack(spacing: 0) {
+                          HStack {
+                              Spacer()
+                              Button {
+                                  HapticManager.shared.selection()
+                                  onFinish()
+                              } label: {
+                                  Text("Skip")
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                                      .padding(.horizontal, 12).padding(.vertical, 8)
+                              }
+                          }
+                          .padding(.horizontal, 16)
+                          .padding(.top, 8)
+
+                          Spacer(minLength: 10)
+
+                          // GIF card
+                          VStack(spacing: 18) {
+                              LoopingGifPlayer(
+                                  resourceName: "settings_onboarding",
+                                  ext: "gif"
+                              )
+                              .frame(width: 240, height: 240)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 24)
+                                      .fill(Color.storeCard)
+                                      .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+                              )
+                              .scaleEffect(animateIn ? 1.0 : 0.85)
+                              .opacity(animateIn ? 1.0 : 0.0)
+
+                              Text("Customize Your 21s")
+                                  .font(.system(size: 24, weight: .bold))
+                                  .foregroundColor(.storeText)
+                                  .multilineTextAlignment(.center)
+                                  .opacity(animateIn ? 1.0 : 0.0)
+
+                              Text("Manage your profile, change your password, control notifications, and more — all from one place.")
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal, 36)
+                                  .opacity(animateIn ? 1.0 : 0.0)
+                          }
+
+                          Spacer()
+
+                          Button {
+                              HapticManager.shared.impact(.medium)
+                              onFinish()
+                          } label: {
+                              HStack {
+                                  Text("Next")
+                                      .font(.system(size: 16, weight: .semibold))
+                                  Image(systemName: "chevron.right")
+                                      .font(.system(size: 14, weight: .medium))
+                              }
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .frame(height: 54)
+                              .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .padding(.horizontal, 28)
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .onAppear {
+                      withAnimation(.easeOut(duration: 0.4)) {
+                          animateIn = true
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
           // ================= Settings Group (card with rows) =================
           struct SettingsGroup<Content: View>: View {
               let title: String?
@@ -3762,6 +3928,7 @@ jobs:
               let iconBg: Color
               let title: String
               var titleColor: Color = .storeText
+              var iconColor: Color? = nil   // if nil → black (matches the design)
               let trailing: SettingsTrailing
               let action: () -> Void
 
@@ -3773,11 +3940,11 @@ jobs:
                       HStack(spacing: 12) {
                           ZStack {
                               Circle()
-                                  .fill(iconBg.opacity(0.18))
+                                  .fill(iconBg)
                                   .frame(width: 36, height: 36)
                               Image(systemName: icon)
                                   .font(.system(size: 14, weight: .bold))
-                                  .foregroundColor(iconBg)
+                                  .foregroundColor(iconColor ?? .black)
                           }
 
                           Text(title)
@@ -4886,6 +5053,8 @@ jobs:
           cp -X Resources/alerts_onboarding1.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/alerts_onboarding2.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
+          cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
+          cp -X Resources/bell_icon.gif               build-output/Payload/VIP21Store.app/
 
           # Strip extended attributes (xattrs) and ACLs from everything — these break iOS extraction
           xattr -cr build-output
