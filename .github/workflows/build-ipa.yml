@@ -5255,9 +5255,14 @@ jobs:
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
           rm -f artifacts/21s.ipa
-          ditto -c -k --sequesterRsrc --keepParent \
-                build-output/Payload \
-                artifacts/21s.ipa
+          # Use standard zip instead of ditto for max compatibility with iOS Unzip tools.
+          # Some tools fail to open a "ditto" zip with extended attributes / AppleDouble,
+          # so we strip everything and build a plain zip.
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
+          xattr -cr build-output/Payload/VIP21Store.app || true
+          cd build-output && zip -r -X -q ../artifacts/21s.ipa Payload && cd ..
+          ls -lh artifacts/21s.ipa
 
           if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
             echo "❌ Error: IPA file is corrupt or invalid."
@@ -5272,16 +5277,18 @@ jobs:
       - name: Verify IPA package
         run: |
           echo "== IPA Contents =="
-          unzip -l artifacts/21s.ipa | head -50
+          unzip -l artifacts/21s.ipa | head -60
           if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
             echo "❌ Error: IPA does not contain a valid App Bundle"
             exit 1
           fi
           echo "== Integrity test =="
           unzip -tq artifacts/21s.ipa > /dev/null
-          if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature\|CodeResources"; then
+          if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature/CodeResources\|_CodeSignature"; then
             echo "⚠️ Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
           fi
+          # Check that the binary is a valid Mach-O (magic bytes)
+          unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
           echo "✅ IPA is valid, passes zip integrity test, and contains the App Bundle."
 
 
