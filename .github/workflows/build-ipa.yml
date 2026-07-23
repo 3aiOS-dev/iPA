@@ -6606,3 +6606,2183 @@ jobs:
         with:
           name: 21s-Login-Wallet-IPA
           path: artifacts/21s.ipa
+
+      # =========================================================
+      # EXTRA FEATURE MODULES — 21s Pro Add-Ons
+      # =========================================================
+      - name: Generate code - 21s_Recommendations.swift
+        run: |
+          cat > 21s_Recommendations.swift << 'VIPEOF'
+          import SwiftUI
+
+          // ============================================================
+          // 21s Recommendations Engine
+          // ------------------------------------------------------------
+          // - Tracks user views/downloads
+          // - Returns "For You" + "Similar Apps" lists
+          // - "Apps Close to Your Interests" section
+          // ============================================================
+          struct UserInterest: Codable, Equatable {
+              var categoryWeights: [String: Double]
+              var appWeights: [Int: Double]
+              var viewHistory: [Int]
+              var downloadHistory: [Int]
+          }
+
+          @MainActor
+          final class RecommendationStore: ObservableObject {
+              @Published private(set) var profile: UserInterest
+              private let key = "21s.user.interest.profile"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     let decoded = try? JSONDecoder().decode(UserInterest.self, from: data) {
+                      profile = decoded
+                  } else {
+                      profile = UserInterest(
+                          categoryWeights: [:], appWeights: [:], viewHistory: [], downloadHistory: []
+                      )
+                  }
+              }
+
+              func recordView(_ app: StoreAPIApp) {
+                  let cat = app.category ?? "Other"
+                  profile.categoryWeights[cat, default: 0] += 1
+                  profile.appWeights[app.id, default: 0] += 0.5
+                  if !profile.viewHistory.contains(app.id) {
+                      profile.viewHistory.append(app.id)
+                      if profile.viewHistory.count > 200 {
+                          profile.viewHistory.removeFirst(profile.viewHistory.count - 200)
+                      }
+                  }
+                  persist()
+              }
+
+              func recordDownload(_ app: StoreAPIApp) {
+                  let cat = app.category ?? "Other"
+                  profile.categoryWeights[cat, default: 0] += 3
+                  profile.appWeights[app.id, default: 0] += 2
+                  if !profile.downloadHistory.contains(app.id) {
+                      profile.downloadHistory.append(app.id)
+                      if profile.downloadHistory.count > 200 {
+                          profile.downloadHistory.removeFirst(profile.downloadHistory.count - 200)
+                      }
+                  }
+                  persist()
+              }
+
+              func recommendations(from apps: [StoreAPIApp], limit: Int = 8) -> [StoreAPIApp] {
+                  let scored = apps.map { app -> (StoreAPIApp, Double) in
+                      let cat = app.category ?? "Other"
+                      let catScore = profile.categoryWeights[cat] ?? 0
+                      let appScore = profile.appWeights[app.id] ?? 0
+                      return (app, catScore * 1.5 + appScore)
+                  }
+                  return scored
+                      .filter { $0.1 > 0 }
+                      .sorted { $0.1 > $1.1 }
+                      .prefix(limit)
+                      .map { $0.0 }
+              }
+
+              func similarApps(to target: StoreAPIApp, in apps: [StoreAPIApp], limit: Int = 6) -> [StoreAPIApp] {
+                  let targetCat = target.category ?? "Other"
+                  let sameCategory = apps.filter { $0.id != target.id && ($0.category ?? "") == targetCat }
+                  if sameCategory.count >= limit { return Array(sameCategory.prefix(limit)) }
+                  let targetBundlePrefix = (target.bundleId ?? "").split(separator: ".").first.map(String.init) ?? ""
+                  let sameBundle = apps.filter { app in
+                      guard app.id != target.id else { return false }
+                      guard let bid = app.bundleId, !bid.isEmpty, !targetBundlePrefix.isEmpty else { return false }
+                      return bid.hasPrefix(targetBundlePrefix)
+                  }
+                  var seen = Set<Int>([target.id])
+                  var result: [StoreAPIApp] = []
+                  for a in sameCategory + sameBundle where !seen.contains(a.id) {
+                      seen.insert(a.id)
+                      result.append(a)
+                      if result.count >= limit { break }
+                  }
+                  if result.count < limit {
+                      for a in apps where !seen.contains(a.id) {
+                          seen.insert(a.id)
+                          result.append(a)
+                          if result.count >= limit { break }
+                      }
+                  }
+                  return result
+              }
+
+              func appsCloseToInterests(from apps: [StoreAPIApp], limit: Int = 10) -> [StoreAPIApp] {
+                  guard !profile.categoryWeights.isEmpty else { return [] }
+                  return recommendations(from: apps, limit: limit)
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(profile) {
+                      UserDefaults.standard.set(data, forKey: key)
+                  }
+              }
+          }
+
+          struct RecommendationsSection: View {
+              let apps: [StoreAPIApp]
+              @ObservedObject var store: RecommendationStore
+              var onTap: (StoreAPIApp) -> Void
+
+              var body: some View {
+                  let recs = store.appsCloseToInterests(from: apps)
+                  if recs.isEmpty { EmptyView() }
+                  else {
+                      VStack(alignment: .leading, spacing: 8) {
+                          HStack {
+                              Image(systemName: "sparkles")
+                                  .foregroundColor(.walletOrange)
+                              Text("Apps Close to Your Interests")
+                                  .font(.system(size: 14, weight: .heavy))
+                                  .foregroundColor(.storeText)
+                              Spacer()
+                          }
+                          .padding(.horizontal, 20)
+
+                          ScrollView(.horizontal, showsIndicators: false) {
+                              HStack(spacing: 10) {
+                                  ForEach(recs) { app in
+                                      Button { onTap(app) } label: {
+                                          VStack(alignment: .leading, spacing: 4) {
+                                              RemoteIcon(url: app.icon, size: 80, cornerRadius: 14)
+                                                  .frame(width: 80, height: 80)
+                                              Text(app.name)
+                                                  .font(.system(size: 11, weight: .semibold))
+                                                  .foregroundColor(.storeText)
+                                                  .lineLimit(1)
+                                              Text(app.category ?? "App")
+                                                  .font(.system(size: 9))
+                                                  .foregroundColor(.storeSub)
+                                                  .lineLimit(1)
+                                          }
+                                          .frame(width: 80)
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                  }
+              }
+          }
+
+          struct SimilarAppsSection: View {
+              let app: StoreAPIApp
+              let allApps: [StoreAPIApp]
+              @ObservedObject var store: RecommendationStore
+              var onTap: (StoreAPIApp) -> Void
+
+              var body: some View {
+                  let similar = store.similarApps(to: app, in: allApps, limit: 6)
+                  if !similar.isEmpty {
+                      VStack(alignment: .leading, spacing: 8) {
+                          HStack {
+                              Image(systemName: "rectangle.stack.badge.plus")
+                                  .foregroundColor(.storePrimary)
+                              Text("Similar Apps")
+                                  .font(.system(size: 14, weight: .heavy))
+                                  .foregroundColor(.storeText)
+                              Spacer()
+                          }
+                          .padding(.horizontal, 20)
+
+                          ScrollView(.horizontal, showsIndicators: false) {
+                              HStack(spacing: 10) {
+                                  ForEach(similar) { app in
+                                      Button { onTap(app) } label: {
+                                          VStack(alignment: .leading, spacing: 4) {
+                                              RemoteIcon(url: app.icon, size: 80, cornerRadius: 14)
+                                                  .frame(width: 80, height: 80)
+                                              Text(app.name)
+                                                  .font(.system(size: 11, weight: .semibold))
+                                                  .foregroundColor(.storeText)
+                                                  .lineLimit(1)
+                                              Text(app.category ?? "App")
+                                                  .font(.system(size: 9))
+                                                  .foregroundColor(.storeSub)
+                                                  .lineLimit(1)
+                                          }
+                                          .frame(width: 80)
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                  }
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_Wallet.swift
+        run: |
+          cat > 21s_Wallet.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+
+          // ============================================================
+          // 21s Multi-Currency Wallet
+          // ------------------------------------------------------------
+          // - Top-up (simulated)
+          // - Multi-currency balance
+          // - Transaction log
+          // - Top-up notifications
+          // - CSV export
+          // ============================================================
+          enum WalletCurrency: String, Codable, CaseIterable, Identifiable {
+              case USD, IQD, AED, EUR, SAR, EGP
+              var id: String { rawValue }
+              var symbol: String {
+                  switch self {
+                  case .USD: return "$"
+                  case .IQD: return "د.ع"
+                  case .AED: return "د.إ"
+                  case .EUR: return "€"
+                  case .SAR: return "ر.س"
+                  case .EGP: return "ج.م"
+                  }
+              }
+              var name: String { rawValue }
+          }
+
+          enum WalletTxKind: String, Codable, CaseIterable {
+              case topup, purchase, refund, transfer, cashback
+              var displayName: String {
+                  switch self {
+                  case .topup: return "Top-up"
+                  case .purchase: return "Purchase"
+                  case .refund: return "Refund"
+                  case .transfer: return "Transfer"
+                  case .cashback: return "Cashback"
+                  }
+              }
+              var icon: String {
+                  switch self {
+                  case .topup: return "arrow.down.circle.fill"
+                  case .purchase: return "cart.fill"
+                  case .refund: return "arrow.uturn.backward"
+                  case .transfer: return "arrow.left.arrow.right"
+                  case .cashback: return "gift.fill"
+                  }
+              }
+          }
+
+          struct WalletTx: Codable, Identifiable {
+              let id: UUID
+              let kind: WalletTxKind
+              let amount: Double
+              let currency: WalletCurrency
+              let note: String
+              let timestamp: Date
+              init(kind: WalletTxKind, amount: Double, currency: WalletCurrency, note: String) {
+                  self.id = UUID()
+                  self.kind = kind
+                  self.amount = amount
+                  self.currency = currency
+                  self.note = note
+                  self.timestamp = Date()
+              }
+          }
+
+          @MainActor
+          final class WalletStore: ObservableObject {
+              @Published private(set) var balances: [WalletCurrency: Double]
+              @Published private(set) var transactions: [WalletTx]
+
+              private let balanceKey = "21s.wallet.balances"
+              private let txKey = "21s.wallet.transactions"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: balanceKey),
+                     let decoded = try? JSONDecoder().decode([WalletCurrency: Double].self, from: data) {
+                      balances = decoded
+                  } else {
+                      balances = [:]
+                  }
+                  if let data = UserDefaults.standard.data(forKey: txKey),
+                     let decoded = try? JSONDecoder().decode([WalletTx].self, from: data) {
+                      transactions = decoded
+                  } else {
+                      transactions = []
+                  }
+              }
+
+              func balance(_ c: WalletCurrency) -> Double { balances[c] ?? 0 }
+              func totalUSD() -> Double { balances[.USD] ?? 0 }
+
+              func topUp(amount: Double, currency: WalletCurrency) {
+                  balances[currency, default: 0] += amount
+                  let tx = WalletTx(kind: .topup, amount: amount, currency: currency, note: "Wallet top-up")
+                  transactions.insert(tx, at: 0)
+                  persist()
+                  // Fire notification: top-up success
+                  NotificationManager.shared.notifyWalletTopup(amount: amount, currency: currency.rawValue)
+                  HapticManager.shared.success()
+              }
+
+              func charge(amount: Double, currency: WalletCurrency, note: String) -> Bool {
+                  let cur = balances[currency] ?? 0
+                  guard cur >= amount else {
+                      HapticManager.shared.error()
+                      return false
+                  }
+                  balances[currency] = cur - amount
+                  let tx = WalletTx(kind: .purchase, amount: -amount, currency: currency, note: note)
+                  transactions.insert(tx, at: 0)
+                  persist()
+                  return true
+              }
+
+              func refund(amount: Double, currency: WalletCurrency, note: String) {
+                  balances[currency, default: 0] += amount
+                  let tx = WalletTx(kind: .refund, amount: amount, currency: currency, note: note)
+                  transactions.insert(tx, at: 0)
+                  persist()
+                  NotificationManager.shared.notifyWalletRefund(amount: amount, currency: currency.rawValue, appName: note)
+              }
+
+              func clearAll() {
+                  balances = [:]
+                  transactions = []
+                  persist()
+              }
+
+              func exportCSV() -> String {
+                  var csv = "date,kind,amount,currency,note\n"
+                  let df = ISO8601DateFormatter()
+                  for tx in transactions {
+                      let row = "\(df.string(from: tx.timestamp)),\(tx.kind.rawValue),\(tx.amount),\(tx.currency.rawValue),\(tx.note.replacingOccurrences(of: ",", with: " "))"
+                      csv += row + "\n"
+                  }
+                  return csv
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(balances) {
+                      UserDefaults.standard.set(data, forKey: balanceKey)
+                  }
+                  if let data = try? JSONEncoder().encode(transactions) {
+                      UserDefaults.standard.set(data, forKey: txKey)
+                  }
+              }
+          }
+
+          struct ProWalletView: View {
+              @EnvironmentObject var wallet: WalletStore
+              @State private var showTopup = false
+              @State private var showHistory = false
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      HStack {
+                          Image(systemName: "creditcard.fill")
+                              .foregroundColor(.walletGreen)
+                          Text("Wallet")
+                              .font(.system(size: 16, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Spacer()
+                          Button { showHistory = true } label: {
+                              Image(systemName: "list.bullet.rectangle")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.storePrimary)
+                          }
+                      }
+                      .padding(.horizontal, 20)
+
+                      // Balance card
+                      ZStack(alignment: .topTrailing) {
+                          RoundedRectangle(cornerRadius: 18)
+                              .fill(LinearGradient(
+                                  colors: [Color(red: 0.10, green: 0.20, blue: 0.15), Color(red: 0.04, green: 0.10, blue: 0.08)],
+                                  startPoint: .topLeading, endPoint: .bottomTrailing))
+                              .frame(height: 120)
+                          Circle().fill(Color.white.opacity(0.05)).frame(width: 90, height: 90).offset(x: 110, y: -20)
+
+                          HStack {
+                              VStack(alignment: .leading, spacing: 4) {
+                                  Text("Balance")
+                                      .font(.system(size: 11, weight: .bold))
+                                      .foregroundColor(.white.opacity(0.7))
+                                  Text("$\(String(format: "%.2f", wallet.totalUSD()))")
+                                      .font(.system(size: 30, weight: .heavy))
+                                      .foregroundColor(.white)
+                              }
+                              Spacer()
+                              Button {
+                                  HapticManager.shared.impact(.light)
+                                  showTopup = true
+                              } label: {
+                                  HStack(spacing: 4) {
+                                      Image(systemName: "plus.circle.fill")
+                                      Text("Top up").font(.system(size: 12, weight: .bold))
+                                  }
+                                  .foregroundColor(.black)
+                                  .padding(.horizontal, 12).padding(.vertical, 8)
+                                  .background(Capsule().fill(Color.storeYellow))
+                              }
+                          }
+                          .padding(16)
+                      }
+                      .padding(.horizontal, 20)
+                  }
+                  .sheet(isPresented: $showTopup) { TopupSheet(wallet: wallet) }
+                  .sheet(isPresented: $showHistory) { WalletHistorySheet(wallet: wallet) }
+              }
+          }
+
+          struct TopupSheet: View {
+              @ObservedObject var wallet: WalletStore
+              @Environment(\.dismiss) private var dismiss
+              @State private var amountText = "10.00"
+              @State private var currency: WalletCurrency = .USD
+              @State private var error: String? = nil
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 18) {
+                              HStack(spacing: 6) {
+                                  Image(systemName: "creditcard.fill").foregroundColor(.walletGreen)
+                                  Text("Top up your wallet")
+                                      .font(.system(size: 18, weight: .bold))
+                                      .foregroundColor(.storeText)
+                              }
+                              .padding(.top, 8)
+
+                              VStack(spacing: 14) {
+                                  HStack {
+                                      Image(systemName: "dollarsign.circle.fill").foregroundColor(.storeSub)
+                                      TextField("Amount", text: $amountText)
+                                          .keyboardType(.decimalPad)
+                                          .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                                  }
+                                  .padding(14)
+                                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+
+                                  Picker("Currency", selection: $currency) {
+                                      ForEach(WalletCurrency.allCases) { c in
+                                          Text("\(c.rawValue) (\(c.symbol))").tag(c)
+                                      }
+                                  }
+                                  .pickerStyle(.segmented)
+
+                                  HStack(spacing: 8) {
+                                      ForEach([5.0, 10.0, 25.0, 50.0, 100.0], id: \.self) { v in
+                                          Button { amountText = String(format: "%.2f", v) } label: {
+                                              Text("$\(Int(v))")
+                                                  .font(.system(size: 12, weight: .bold))
+                                                  .foregroundColor(.storePrimary)
+                                                  .padding(.horizontal, 10).padding(.vertical, 6)
+                                                  .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                                      }
+                                      }
+                                  }
+
+                                  if let err = error {
+                                      Text(err).font(.system(size: 12)).foregroundColor(.xcodeRed)
+                                  }
+                              }
+                              .padding(.horizontal, 20)
+
+                              Button {
+                                  let v = Double(amountText.replacingOccurrences(of: ",", with: ".")) ?? 0
+                                  if v <= 0 { error = "Enter a valid amount"; return }
+                                  wallet.topUp(amount: v, currency: currency)
+                                  dismiss()
+                              } label: {
+                                  Text("Add to wallet")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity).frame(height: 50)
+                                      .background(Capsule().fill(Color.walletGreen))
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("Close") { dismiss() }.foregroundColor(.storePrimary)
+                          }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct WalletHistorySheet: View {
+              @ObservedObject var wallet: WalletStore
+              @Environment(\.dismiss) private var dismiss
+              @State private var filter: WalletCurrency? = nil
+
+              var filteredTx: [WalletTx] {
+                  guard let f = filter else { return wallet.transactions }
+                  return wallet.transactions.filter { $0.currency == f }
+              }
+
+              var body: some View {
+                  NavigationView {
+                      VStack(spacing: 0) {
+                          HStack {
+                              Text("Transactions").font(.system(size: 16, weight: .heavy)).foregroundColor(.storeText)
+                              Spacer()
+                              Button { exportCSV() } label: {
+                                  Image(systemName: "square.and.arrow.up.fill")
+                                      .foregroundColor(.storePrimary)
+                              }
+                          }
+                          .padding(.horizontal, 20).padding(.top, 10)
+
+                          Picker("Currency filter", selection: $filter) {
+                              Text("All").tag(WalletCurrency?.none)
+                              ForEach(WalletCurrency.allCases) { c in
+                                  Text(c.rawValue).tag(WalletCurrency?.some(c))
+                              }
+                          }
+                          .pickerStyle(.segmented)
+                          .padding(.horizontal, 20).padding(.vertical, 8)
+
+                          if filteredTx.isEmpty {
+                              VStack(spacing: 8) {
+                                  Image(systemName: "tray.fill").font(.system(size: 36)).foregroundColor(.storeSub)
+                                  Text("No transactions yet").font(.system(size: 13)).foregroundColor(.storeSub)
+                              }
+                              .frame(maxWidth: .infinity, maxHeight: .infinity)
+                          } else {
+                              ScrollView {
+                                  VStack(spacing: 8) {
+                                      ForEach(filteredTx) { tx in
+                                          HStack(spacing: 12) {
+                                              Image(systemName: tx.kind.icon)
+                                                  .foregroundColor(tx.amount >= 0 ? .walletGreen : .storePink)
+                                                  .frame(width: 36, height: 36)
+                                                  .background(Circle().fill((tx.amount >= 0 ? Color.walletGreen : Color.storePink).opacity(0.15)))
+                                              VStack(alignment: .leading, spacing: 2) {
+                                                  Text(tx.kind.displayName)
+                                                      .font(.system(size: 13, weight: .bold))
+                                                      .foregroundColor(.storeText)
+                                                  Text(tx.note).font(.system(size: 11)).foregroundColor(.storeSub)
+                                                  Text(tx.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                                      .font(.system(size: 9)).foregroundColor(.storeSub)
+                                              }
+                                              Spacer()
+                                              Text((tx.amount >= 0 ? "+" : "") + String(format: "%.2f", tx.amount) + " \(tx.currency.symbol)")
+                                                  .font(.system(size: 13, weight: .bold))
+                                                  .foregroundColor(tx.amount >= 0 ? .walletGreen : .storePink)
+                                          }
+                                          .padding(12)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("Close") { dismiss() }.foregroundColor(.storePrimary)
+                          }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+
+              private func exportCSV() {
+                  let csv = wallet.exportCSV()
+                  let dir = FileManager.default.temporaryDirectory
+                  let url = dir.appendingPathComponent("21s-wallet-\(Int(Date().timeIntervalSince1970)).csv")
+                  try? csv.write(to: url, atomically: true, encoding: .utf8)
+                  let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                  UIApplication.shared.connectedScenes
+                      .compactMap { $0 as? UIWindowScene }
+                      .first?.rootViewController?
+                      .present(av, animated: true)
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_Coupons.swift
+        run: |
+          cat > 21s_Coupons.swift << 'VIPEOF'
+          import SwiftUI
+
+          // ============================================================
+          // 21s Coupons & Discounts
+          // ------------------------------------------------------------
+          // - Auto-applied at checkout
+          // - Per-app / per-category / global coupons
+          // - Source-aware (referral / promo / gift / system)
+          // - Discount notifications
+          // ============================================================
+          enum CouponSource: String, Codable, CaseIterable {
+              case promo, gift, system, referral
+              var displayName: String { rawValue.capitalized }
+          }
+
+          struct Coupon: Codable, Identifiable, Hashable {
+              let id: UUID
+              let code: String
+              let percentOff: Int   // 5..100
+              let source: CouponSource
+              let scope: Scope
+              let appId: Int?
+              let category: String?
+              let createdAt: Date
+              let validUntil: Date
+
+              enum Scope: String, Codable { case global, app, category }
+
+              init(code: String, percentOff: Int, source: CouponSource = .promo,
+                   scope: Scope = .global, appId: Int? = nil, category: String? = nil,
+                   validForDays: Int = 30) {
+                  self.id = UUID()
+                  self.code = code.uppercased()
+                  self.percentOff = min(100, max(1, percentOff))
+                  self.source = source
+                  self.scope = scope
+                  self.appId = appId
+                  self.category = category
+                  self.createdAt = Date()
+                  self.validUntil = Calendar.current.date(byAdding: .day, value: validForDays, to: Date()) ?? Date()
+              }
+
+              var isValid: Bool { validUntil > Date() }
+              var displayName: String { "\(percentOff)% OFF" }
+
+              func applies(to app: StoreAPIApp) -> Bool {
+                  guard isValid else { return false }
+                  switch scope {
+                  case .global: return true
+                  case .app: return appId == app.id
+                  case .category: return app.category == category
+                  }
+              }
+          }
+
+          @MainActor
+          final class CouponsStore: ObservableObject {
+              @Published private(set) var coupons: [Coupon]
+              private let key = "21s.coupons"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     let decoded = try? JSONDecoder().decode([Coupon].self, from: data) {
+                      coupons = decoded
+                  } else {
+                      coupons = [
+                          Coupon(code: "WELCOME21", percentOff: 10, source: .system, validForDays: 60),
+                          Coupon(code: "VIPFRIEND", percentOff: 25, source: .gift, validForDays: 30),
+                          Coupon(code: "REFER100", percentOff: 100, source: .referral, validForDays: 14)
+                      ]
+                  }
+              }
+
+              func add(_ c: Coupon) {
+                  coupons.append(c)
+                  persist()
+                  NotificationManager.shared.notifyCouponAvailable(code: c.code, percent: c.percentOff)
+              }
+
+              func remove(_ c: Coupon) {
+                  coupons.removeAll { $0.id == c.id }
+                  persist()
+              }
+
+              func activeCoupons(for app: StoreAPIApp) -> [Coupon] {
+                  coupons.filter { $0.applies(to: app) }
+              }
+
+              func bestCoupon(for app: StoreAPIApp) -> Coupon? {
+                  activeCoupons(for: app).max(by: { $0.percentOff < $1.percentOff })
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(coupons) {
+                      UserDefaults.standard.set(data, forKey: key)
+                  }
+              }
+          }
+
+          struct CouponsListView: View {
+              @ObservedObject var store: CouponsStore
+              @Environment(\.dismiss) private var dismiss
+              @State private var newCode = ""
+              @State private var newPercent = 10
+              @State private var newSource: CouponSource = .promo
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 14) {
+                              // Add new
+                              VStack(spacing: 10) {
+                                  Text("Create coupon").font(.system(size: 14, weight: .heavy)).foregroundColor(.storeText).frame(maxWidth: .infinity, alignment: .leading)
+                                  HStack {
+                                      Image(systemName: "tag.fill").foregroundColor(.storeSub)
+                                      TextField("CODE", text: $newCode)
+                                          .textInputAutocapitalization(.characters)
+                                          .autocorrectionDisabled()
+                                  }
+                                  .padding(12)
+                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.storeDivider, lineWidth: 1)))
+
+                                  Stepper("Percent off: \(newPercent)%", value: $newPercent, in: 1...100)
+                                  Picker("Source", selection: $newSource) {
+                                      ForEach(CouponSource.allCases, id: \.self) { s in
+                                          Text(s.displayName).tag(s)
+                                      }
+                                  }
+                                  .pickerStyle(.segmented)
+
+                                  Button {
+                                      let trimmed = newCode.trimmingCharacters(in: .whitespaces)
+                                      guard !trimmed.isEmpty else { return }
+                                      store.add(Coupon(code: trimmed, percentOff: newPercent, source: newSource))
+                                      newCode = ""
+                                      HapticManager.shared.success()
+                                  } label: {
+                                      Text("Add coupon")
+                                          .font(.system(size: 14, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .frame(maxWidth: .infinity).frame(height: 44)
+                                          .background(Capsule().fill(Color.walletOrange))
+                                  }
+                                  .disabled(newCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                              }
+                              .padding(14)
+                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 1)))
+                              .padding(.horizontal, 20)
+
+                              // List
+                              VStack(alignment: .leading, spacing: 8) {
+                                  Text("Active coupons").font(.system(size: 14, weight: .heavy)).foregroundColor(.storeText).padding(.horizontal, 24)
+
+                                  if store.coupons.isEmpty {
+                                      Text("No coupons yet").font(.system(size: 12)).foregroundColor(.storeSub).padding(.horizontal, 24)
+                                  } else {
+                                      VStack(spacing: 8) {
+                                          ForEach(store.coupons) { c in
+                                              HStack(spacing: 12) {
+                                                  Image(systemName: "tag.fill")
+                                                      .foregroundColor(.walletOrange)
+                                                      .frame(width: 36, height: 36)
+                                                      .background(Circle().fill(Color.walletOrange.opacity(0.15)))
+                                                  VStack(alignment: .leading, spacing: 2) {
+                                                      Text(c.code).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
+                                                      Text("\(c.displayName) · \(c.source.displayName)").font(.system(size: 11)).foregroundColor(.storeSub)
+                                                      Text("Valid until \(c.validUntil.formatted(date: .abbreviated, time: .omitted))")
+                                                          .font(.system(size: 10)).foregroundColor(.storeSub)
+                                                  }
+                                                  Spacer()
+                                                  Button { store.remove(c) } label: {
+                                                      Image(systemName: "trash.fill").foregroundColor(.storePink)
+                                                  }
+                                              }
+                                              .padding(12)
+                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                                          }
+                                      }
+                                      .padding(.horizontal, 20)
+                                  }
+                              }
+                          }
+                          .padding(.top, 10)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Coupons").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_GiftCards.swift
+        run: |
+          cat > 21s_GiftCards.swift << 'VIPEOF'
+          import SwiftUI
+
+          // ============================================================
+          // 21s Gift Cards
+          // ------------------------------------------------------------
+          // - Generate 16-char codes
+          // - Send to a recipient (username)
+          // - Redeem with the code
+          // ============================================================
+          struct GiftCard: Codable, Identifiable, Hashable {
+              let id: UUID
+              let code: String
+              let amount: Double
+              let currency: WalletCurrency
+              let fromUser: String
+              let toUser: String
+              let createdAt: Date
+              var redeemedAt: Date?
+
+              init(amount: Double, currency: WalletCurrency, fromUser: String, toUser: String) {
+                  self.id = UUID()
+                  self.code = Self.generateCode()
+                  self.amount = amount
+                  self.currency = currency
+                  self.fromUser = fromUser
+                  self.toUser = toUser
+                  self.createdAt = Date()
+                  self.redeemedAt = nil
+              }
+
+              var isRedeemed: Bool { redeemedAt != nil }
+
+              // Memberwise mutator for redemption
+              func markingRedeemed(at date: Date = Date()) -> GiftCard {
+                  var copy = self
+                  copy.redeemedAt = date
+                  return copy
+              }
+
+              static func generateCode() -> String {
+                  let chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+                  return String((0..<16).map { _ in chars.randomElement()! })
+              }
+          }
+
+          @MainActor
+          final class GiftCardsStore: ObservableObject {
+              @Published private(set) var cards: [GiftCard]
+              private let key = "21s.giftcards"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     let decoded = try? JSONDecoder().decode([GiftCard].self, from: data) {
+                      cards = decoded
+                  } else {
+                      cards = []
+                  }
+              }
+
+              func create(amount: Double, currency: WalletCurrency, from: String, to: String) -> GiftCard {
+                  let card = GiftCard(amount: amount, currency: currency, fromUser: from, toUser: to)
+                  cards.insert(card, at: 0)
+                  persist()
+                  return card
+              }
+
+              func redeem(code: String) -> GiftCard? {
+                  guard let idx = cards.firstIndex(where: { $0.code == code && $0.redeemedAt == nil }) else { return nil }
+                  let updated = cards[idx].markingRedeemed()
+                  cards[idx] = updated
+                  persist()
+                  return updated
+              }
+
+              func redeemAndCredit(code: String, into wallet: WalletStore) -> Bool {
+                  guard let card = redeem(code: code) else { return false }
+                  wallet.topUp(amount: card.amount, currency: card.currency)
+                  return true
+              }
+
+              func delete(_ card: GiftCard) {
+                  cards.removeAll { $0.id == card.id }
+                  persist()
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(cards) {
+                      UserDefaults.standard.set(data, forKey: key)
+                  }
+              }
+          }
+
+          struct GiftCardsListView: View {
+              @ObservedObject var store: GiftCardsStore
+              @ObservedObject var wallet: WalletStore
+              @EnvironmentObject var authManager: AuthManager
+              @Environment(\.dismiss) private var dismiss
+              @State private var showCreate = false
+              @State private var showRedeem = false
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 14) {
+                              HStack(spacing: 10) {
+                                  Button { showCreate = true } label: {
+                                      actionCard(icon: "gift.fill", title: "Create", color: .walletOrange)
+                                  }
+                                  .buttonStyle(.plain)
+                                  Button { showRedeem = true } label: {
+                                      actionCard(icon: "ticket.fill", title: "Redeem", color: .storePrimary)
+                                  }
+                                  .buttonStyle(.plain)
+                              }
+                              .padding(.horizontal, 20)
+
+                              if store.cards.isEmpty {
+                                  VStack(spacing: 8) {
+                                      Image(systemName: "gift").font(.system(size: 36)).foregroundColor(.storeSub)
+                                      Text("No gift cards yet").font(.system(size: 13)).foregroundColor(.storeSub)
+                                  }
+                                  .padding(.vertical, 40)
+                              } else {
+                                  VStack(spacing: 10) {
+                                      ForEach(store.cards) { card in
+                                          giftCardRow(card)
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Gift Cards").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                      .sheet(isPresented: $showCreate) {
+                          CreateGiftCardSheet(store: store, currentUser: authManager.currentUser?.username ?? "me")
+                      }
+                      .sheet(isPresented: $showRedeem) {
+                          RedeemGiftCardSheet(store: store, wallet: wallet)
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+
+              @ViewBuilder
+              private func actionCard(icon: String, title: String, color: Color) -> some View {
+                  VStack(spacing: 6) {
+                      Image(systemName: icon).font(.system(size: 24)).foregroundColor(color)
+                      Text(title).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
+                  }
+                  .frame(maxWidth: .infinity).frame(height: 80)
+                  .background(RoundedRectangle(cornerRadius: 14).fill(color.opacity(0.10)).overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.3), lineWidth: 1)))
+              }
+
+              @ViewBuilder
+              private func giftCardRow(_ card: GiftCard) -> some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      HStack {
+                          Text(String(format: "%.2f", card.amount))
+                              .font(.system(size: 22, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Text(card.currency.symbol)
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.storeSub)
+                          Spacer()
+                          if card.isRedeemed {
+                              Text("REDEEMED")
+                                  .font(.system(size: 10, weight: .black))
+                                  .padding(.horizontal, 8).padding(.vertical, 4)
+                                  .background(Capsule().fill(Color.walletGreen))
+                                  .foregroundColor(.white)
+                          } else {
+                              Text("ACTIVE")
+                                  .font(.system(size: 10, weight: .black))
+                                  .padding(.horizontal, 8).padding(.vertical, 4)
+                                  .background(Capsule().fill(Color.walletOrange))
+                                  .foregroundColor(.white)
+                          }
+                      }
+                      HStack {
+                          Text("Code:").font(.system(size: 10, weight: .bold)).foregroundColor(.storeSub)
+                          Text(card.code)
+                              .font(.system(size: 12, weight: .bold, design: .monospaced))
+                              .foregroundColor(.storeText)
+                          Spacer()
+                          Button {
+                              UIPasteboard.general.string = card.code
+                              HapticManager.shared.success()
+                          } label: {
+                              Image(systemName: "doc.on.doc.fill").font(.system(size: 13)).foregroundColor(.storePrimary)
+                          }
+                      }
+                      HStack {
+                          Text("From: \(card.fromUser)").font(.system(size: 10)).foregroundColor(.storeSub)
+                          Spacer()
+                          Text("To: \(card.toUser)").font(.system(size: 10)).foregroundColor(.storeSub)
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+              }
+          }
+
+          struct CreateGiftCardSheet: View {
+              @ObservedObject var store: GiftCardsStore
+              let currentUser: String
+              @Environment(\.dismiss) private var dismiss
+              @State private var amountText = "10"
+              @State private var currency: WalletCurrency = .USD
+              @State private var recipient = ""
+              @State private var error: String? = nil
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 14) {
+                              Image(systemName: "gift.fill").font(.system(size: 50)).foregroundColor(.walletOrange).padding(.top, 10)
+                              Text("Send a gift card").font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+
+                              VStack(spacing: 12) {
+                                  HStack {
+                                      Image(systemName: "dollarsign.circle.fill").foregroundColor(.storeSub)
+                                      TextField("Amount", text: $amountText).keyboardType(.decimalPad)
+                                  }
+                                  .padding(12)
+                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.storeDivider, lineWidth: 1)))
+
+                                  Picker("Currency", selection: $currency) {
+                                      ForEach(WalletCurrency.allCases) { c in Text(c.rawValue).tag(c) }
+                                  }
+                                  .pickerStyle(.segmented)
+
+                                  HStack {
+                                      Image(systemName: "person.fill").foregroundColor(.storeSub)
+                                      TextField("Recipient username", text: $recipient)
+                                          .autocapitalization(.none).autocorrectionDisabled()
+                                  }
+                                  .padding(12)
+                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.storeDivider, lineWidth: 1)))
+
+                                  if let e = error { Text(e).font(.system(size: 12)).foregroundColor(.xcodeRed) }
+                              }
+                              .padding(.horizontal, 20)
+
+                              Button {
+                                  let v = Double(amountText) ?? 0
+                                  if v <= 0 { error = "Invalid amount"; return }
+                                  if recipient.trimmingCharacters(in: .whitespaces).isEmpty { error = "Recipient required"; return }
+                                  _ = store.create(amount: v, currency: currency, from: currentUser, to: recipient)
+                                  HapticManager.shared.success()
+                                  dismiss()
+                              } label: {
+                                  Text("Generate gift card")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity).frame(height: 50)
+                                      .background(Capsule().fill(Color.walletOrange))
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() }.foregroundColor(.storePrimary) } }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct RedeemGiftCardSheet: View {
+              @ObservedObject var store: GiftCardsStore
+              @ObservedObject var wallet: WalletStore
+              @Environment(\.dismiss) private var dismiss
+              @State private var code: String = ""
+              @State private var error: String? = nil
+              @State private var success: String? = nil
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 14) {
+                              Image(systemName: "ticket.fill").font(.system(size: 50)).foregroundColor(.storePrimary).padding(.top, 10)
+                              Text("Redeem gift card").font(.system(size: 18, weight: .bold)).foregroundColor(.storeText)
+                              Text("Enter the 16-character code to add credit to your wallet.").font(.system(size: 12)).foregroundColor(.storeSub).multilineTextAlignment(.center).padding(.horizontal, 30)
+
+                              HStack {
+                                  Image(systemName: "ticket.fill").foregroundColor(.storeSub)
+                                  TextField("XXXXXXXXXXXXXXXX", text: $code)
+                                      .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                      .textInputAutocapitalization(.characters)
+                                      .autocorrectionDisabled()
+                              }
+                              .padding(12)
+                              .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.storeDivider, lineWidth: 1)))
+                              .padding(.horizontal, 20)
+
+                              if let e = error { Text(e).font(.system(size: 12)).foregroundColor(.xcodeRed) }
+                              if let s = success { Text(s).font(.system(size: 12, weight: .bold)).foregroundColor(.walletGreen) }
+
+                              Button {
+                                  let trimmed = code.trimmingCharacters(in: .whitespaces).uppercased()
+                                  if store.redeemAndCredit(code: trimmed, into: wallet) {
+                                      success = "Added to your wallet!"
+                                      error = nil
+                                      HapticManager.shared.success()
+                                      DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { dismiss() }
+                                  } else {
+                                      error = "Invalid or already-redeemed code"
+                                      HapticManager.shared.error()
+                                  }
+                              } label: {
+                                  Text("Redeem")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity).frame(height: 50)
+                                      .background(Capsule().fill(Color.storePrimary))
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() }.foregroundColor(.storePrimary) } }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_Refunds.swift
+        run: |
+          cat > 21s_Refunds.swift << 'VIPEOF'
+          import SwiftUI
+
+          // ============================================================
+          // 21s Refunds System
+          // ------------------------------------------------------------
+          // - Submit refund requests per app
+          // - Track status (pending / approved / rejected)
+          // - Auto-credit wallet on approval
+          // ============================================================
+          enum RefundStatus: String, Codable, CaseIterable {
+              case pending, approved, rejected
+              var displayName: String { rawValue.capitalized }
+              var color: Color {
+                  switch self {
+                  case .pending: return .walletOrange
+                  case .approved: return .walletGreen
+                  case .rejected: return .storePink
+                  }
+              }
+          }
+
+          struct RefundRequest: Codable, Identifiable, Hashable {
+              let id: UUID
+              let appId: Int
+              let appName: String
+              let amount: Double
+              let currency: WalletCurrency
+              let reason: String
+              let createdAt: Date
+              var status: RefundStatus
+
+              init(appId: Int, appName: String, amount: Double, currency: WalletCurrency, reason: String) {
+                  self.id = UUID()
+                  self.appId = appId
+                  self.appName = appName
+                  self.amount = amount
+                  self.currency = currency
+                  self.reason = reason
+                  self.createdAt = Date()
+                  self.status = .pending
+              }
+
+              // Memberwise mutator for status updates
+              func updatingStatus(_ new: RefundStatus) -> RefundRequest {
+                  var copy = self
+                  copy.status = new
+                  return copy
+              }
+          }
+
+          @MainActor
+          final class RefundsStore: ObservableObject {
+              @Published private(set) var requests: [RefundRequest]
+              private let key = "21s.refunds"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     let decoded = try? JSONDecoder().decode([RefundRequest].self, from: data) {
+                      requests = decoded
+                  } else {
+                      requests = []
+                  }
+              }
+
+              func submit(appId: Int, appName: String, amount: Double, currency: WalletCurrency, reason: String) -> RefundRequest {
+                  let r = RefundRequest(appId: appId, appName: appName, amount: amount, currency: currency, reason: reason)
+                  requests.insert(r, at: 0)
+                  persist()
+                  return r
+              }
+
+              func approve(_ r: RefundRequest, wallet: WalletStore) {
+                  updateStatus(r.id, to: .approved)
+                  wallet.refund(amount: r.amount, currency: r.currency, note: "Refund for \(r.appName)")
+              }
+
+              func reject(_ r: RefundRequest) { updateStatus(r.id, to: .rejected) }
+
+              private func updateStatus(_ id: UUID, to s: RefundStatus) {
+                  if let idx = requests.firstIndex(where: { $0.id == id }) {
+                      requests[idx] = requests[idx].updatingStatus(s)
+                      persist()
+                  }
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(requests) {
+                      UserDefaults.standard.set(data, forKey: key)
+                  }
+              }
+          }
+
+          struct RefundsListView: View {
+              @ObservedObject var store: RefundsStore
+              @Environment(\.dismiss) private var dismiss
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(alignment: .leading, spacing: 8) {
+                              if store.requests.isEmpty {
+                                  VStack(spacing: 8) {
+                                      Image(systemName: "arrow.uturn.backward").font(.system(size: 36)).foregroundColor(.storeSub)
+                                      Text("No refund requests").font(.system(size: 13)).foregroundColor(.storeSub)
+                                  }
+                                  .frame(maxWidth: .infinity)
+                                  .padding(.vertical, 60)
+                              } else {
+                                  VStack(spacing: 10) {
+                                      ForEach(store.requests) { r in
+                                          VStack(alignment: .leading, spacing: 6) {
+                                              HStack {
+                                                  Text(r.appName).font(.system(size: 14, weight: .bold)).foregroundColor(.storeText)
+                                                  Spacer()
+                                                  Text(r.status.displayName)
+                                                      .font(.system(size: 10, weight: .black))
+                                                      .padding(.horizontal, 8).padding(.vertical, 4)
+                                                      .background(Capsule().fill(r.status.color))
+                                                      .foregroundColor(.white)
+                                              }
+                                              HStack {
+                                                  Text(String(format: "%.2f", r.amount) + " " + r.currency.rawValue)
+                                                      .font(.system(size: 12, weight: .semibold))
+                                                      .foregroundColor(.storePrimary)
+                                                  Spacer()
+                                                  Text(r.createdAt.formatted(date: .abbreviated, time: .omitted))
+                                                      .font(.system(size: 10))
+                                                      .foregroundColor(.storeSub)
+                                              }
+                                              Text(r.reason).font(.system(size: 12)).foregroundColor(.storeSub)
+                                          }
+                                          .padding(12)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                          .padding(.top, 10)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Refunds").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+
+          struct RefundRequestSheet: View {
+              let app: StoreAPIApp
+              @ObservedObject var refunds: RefundsStore
+              @ObservedObject var wallet: WalletStore
+              @Environment(\.dismiss) private var dismiss
+              @State private var reason = ""
+              @State private var amount: Double = 1.99
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 14) {
+                              HStack(spacing: 12) {
+                                  RemoteIcon(url: app.icon, size: 60, cornerRadius: 14)
+                                  VStack(alignment: .leading) {
+                                      Text(app.name).font(.system(size: 15, weight: .bold)).foregroundColor(.storeText)
+                                      Text("Request a refund").font(.system(size: 12)).foregroundColor(.storeSub)
+                                  }
+                                  Spacer()
+                              }
+                              .padding(12)
+                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                              .padding(.horizontal, 20)
+
+                              VStack(alignment: .leading, spacing: 8) {
+                                  Text("Refund amount").font(.system(size: 11, weight: .bold)).foregroundColor(.storeSub)
+                                  Stepper("$\(String(format: "%.2f", amount)) USD", value: $amount, in: 0.5...50, step: 0.5)
+                              }
+                              .padding(12)
+                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                              .padding(.horizontal, 20)
+
+                              VStack(alignment: .leading, spacing: 6) {
+                                  Text("Reason").font(.system(size: 11, weight: .bold)).foregroundColor(.storeSub)
+                                  TextField("Tell us why...", text: $reason, axis: .vertical)
+                                      .lineLimit(3...5)
+                                      .padding(10)
+                                      .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.storeDivider, lineWidth: 1)))
+                              }
+                              .padding(.horizontal, 20)
+
+                              Button {
+                                  let r = refunds.submit(appId: app.id, appName: app.name, amount: amount, currency: .USD, reason: reason)
+                                  _ = r
+                                  HapticManager.shared.success()
+                                  dismiss()
+                              } label: {
+                                  Text("Submit refund request")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity).frame(height: 50)
+                                      .background(Capsule().fill(Color.storePink))
+                              }
+                              .padding(.horizontal, 20)
+                              .disabled(reason.trimmingCharacters(in: .whitespaces).isEmpty)
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() }.foregroundColor(.storePrimary) } }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_DownloadQueue.swift
+        run: |
+          cat > 21s_DownloadQueue.swift << 'VIPEOF'
+          import SwiftUI
+          import UIKit
+
+          // ============================================================
+          // 21s Download Queue (with resume support)
+          // ------------------------------------------------------------
+          // - Pause / Resume downloads
+          // - Notify on completion
+          // - Notify on failure
+          // ============================================================
+          struct DownloadJob: Identifiable, Equatable {
+              let id: UUID
+              let app: StoreAPIApp
+              var progress: Double
+              var isPaused: Bool
+              var isCompleted: Bool
+              var errorMessage: String?
+              var localURL: URL?
+              var resumeData: Data?
+              var totalBytes: Int64
+              var receivedBytes: Int64
+
+              init(app: StoreAPIApp) {
+                  self.id = UUID()
+                  self.app = app
+                  self.progress = 0
+                  self.isPaused = true
+                  self.isCompleted = false
+                  self.errorMessage = nil
+                  self.localURL = nil
+                  self.resumeData = nil
+                  self.totalBytes = 0
+                  self.receivedBytes = 0
+              }
+          }
+
+          @MainActor
+          final class DownloadQueue: ObservableObject {
+              static let shared = DownloadQueue()
+              @Published private(set) var jobs: [DownloadJob] = []
+              private var tasks: [UUID: URLSessionDownloadTask] = [:]
+              private var sessions: [UUID: URLSession] = [:]
+              private var delegates: [UUID: QueueDownloadDelegate] = [:]
+
+              func enqueue(_ app: StoreAPIApp) {
+                  guard !jobs.contains(where: { $0.app.id == app.id }) else { return }
+                  let job = DownloadJob(app: app)
+                  jobs.insert(job, at: 0)
+                  start(job)
+              }
+
+              func togglePause(_ job: DownloadJob) {
+                  guard let idx = jobs.firstIndex(where: { $0.id == job.id }) else { return }
+                  if jobs[idx].isCompleted { return }
+                  if jobs[idx].isPaused {
+                      jobs[idx].isPaused = false
+                      start(jobs[idx])
+                  } else {
+                      // Cancel with resume data
+                      if let task = tasks[job.id] {
+                          task.cancel(byProducingResumeData: { [weak self] data in
+                              guard let self else { return }
+                              if let idx = self.jobs.firstIndex(where: { $0.id == job.id }) {
+                                  self.jobs[idx].isPaused = true
+                                  self.jobs[idx].resumeData = data
+                              }
+                          })
+                      }
+                      tasks[job.id] = nil
+                      sessions[job.id]?.invalidateAndCancel()
+                      sessions[job.id] = nil
+                  }
+              }
+
+              func delete(_ job: DownloadJob) {
+                  if let url = job.localURL {
+                      try? FileManager.default.removeItem(at: url)
+                  }
+                  tasks[job.id]?.cancel()
+                  sessions[job.id]?.invalidateAndCancel()
+                  tasks[job.id] = nil
+                  sessions[job.id] = nil
+                  delegates[job.id] = nil
+                  jobs.removeAll { $0.id == job.id }
+              }
+
+              func clearCompleted() {
+                  jobs.removeAll { $0.isCompleted }
+              }
+
+              private func start(_ job: DownloadJob) {
+                  guard let urlStr = job.app.ipaUrl ?? job.app.archiveUrl ?? job.app.githubUrl,
+                        let url = URL(string: urlStr) else {
+                      if let idx = jobs.firstIndex(where: { $0.id == job.id }) {
+                          jobs[idx].errorMessage = "No download URL"
+                      }
+                      return
+                  }
+                  let config = URLSessionConfiguration.default
+                  config.timeoutIntervalForRequest = 30
+                  config.timeoutIntervalForResource = 60 * 30
+                  let del = QueueDownloadDelegate(queue: self, jobId: job.id)
+                  let s = URLSession(configuration: config, delegate: del, delegateQueue: nil)
+                  let task: URLSessionDownloadTask
+                  if let resumeData = jobs[jobs.firstIndex(where: { $0.id == job.id })!].resumeData {
+                      task = s.downloadTask(withResumeData: resumeData)
+                  } else {
+                      task = s.downloadTask(with: url)
+                  }
+                  tasks[job.id] = task
+                  sessions[job.id] = s
+                  delegates[job.id] = del
+                  task.resume()
+                  // Notify: started
+                  NotificationManager.shared.notifyDownloadStarted(appName: job.app.name, appId: job.app.id)
+              }
+
+              fileprivate func updateProgress(jobId: UUID, progress: Double, received: Int64, total: Int64) {
+                  guard let idx = jobs.firstIndex(where: { $0.id == jobId }) else { return }
+                  jobs[idx].progress = progress
+                  jobs[idx].receivedBytes = received
+                  jobs[idx].totalBytes = total
+              }
+
+              fileprivate func complete(jobId: UUID, url: URL) {
+                  guard let idx = jobs.firstIndex(where: { $0.id == jobId }) else { return }
+                  jobs[idx].isCompleted = true
+                  jobs[idx].isPaused = false
+                  jobs[idx].progress = 1
+                  jobs[idx].localURL = url
+                  HapticManager.shared.success()
+                  NotificationManager.shared.notifyInstallSuccess(appName: jobs[idx].app.name, appId: jobs[idx].app.id)
+                  cleanup(jobId: jobId)
+              }
+
+              fileprivate func fail(jobId: UUID, message: String) {
+                  guard let idx = jobs.firstIndex(where: { $0.id == jobId }) else { return }
+                  jobs[idx].errorMessage = message
+                  jobs[idx].isPaused = true
+                  HapticManager.shared.error()
+                  NotificationManager.shared.notifyInstallFailed(appName: jobs[idx].app.name, appId: jobs[idx].app.id, reason: message)
+                  cleanup(jobId: jobId)
+              }
+
+              private func cleanup(jobId: UUID) {
+                  sessions[jobId]?.finishTasksAndInvalidate()
+                  sessions[jobId] = nil
+                  delegates[jobId] = nil
+                  tasks[jobId] = nil
+              }
+          }
+
+          final class QueueDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+              weak var queue: DownloadQueue?
+              let jobId: UUID
+              init(queue: DownloadQueue, jobId: UUID) { self.queue = queue; self.jobId = jobId }
+
+              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                              didWriteData bytesWritten: Int64,
+                              totalBytesWritten: Int64,
+                              totalBytesExpectedToWrite: Int64) {
+                  guard totalBytesExpectedToWrite > 0 else { return }
+                  let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+                  Task { @MainActor in
+                      self.queue?.updateProgress(jobId: self.jobId, progress: progress, received: totalBytesWritten, total: totalBytesExpectedToWrite)
+                  }
+              }
+
+              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                              didFinishDownloadingTo location: URL) {
+                  let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                  let dest = docs.appendingPathComponent("21s_\(jobId.uuidString).ipa")
+                  try? FileManager.default.removeItem(at: dest)
+                  do {
+                      try FileManager.default.moveItem(at: location, to: dest)
+                      Task { @MainActor in self.queue?.complete(jobId: self.jobId, url: dest) }
+                  } catch {
+                      Task { @MainActor in self.queue?.fail(jobId: self.jobId, message: "Save error: \(error.localizedDescription)") }
+                  }
+              }
+
+              func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                  guard let error = error as NSError? else { return }
+                  if error.code == NSURLErrorCancelled { return }
+                  Task { @MainActor in self.queue?.fail(jobId: self.jobId, message: error.localizedDescription) }
+              }
+          }
+
+          struct DownloadQueueView: View {
+              @ObservedObject var queue = DownloadQueue.shared
+              @Environment(\.dismiss) private var dismiss
+              @State private var filter: Filter = .all
+
+              enum Filter: String, CaseIterable { case all, downloading, completed }
+
+              var filteredJobs: [DownloadJob] {
+                  switch filter {
+                  case .all: return queue.jobs
+                  case .downloading: return queue.jobs.filter { !$0.isCompleted }
+                  case .completed: return queue.jobs.filter { $0.isCompleted }
+                  }
+              }
+
+              var body: some View {
+                  NavigationView {
+                      VStack(spacing: 0) {
+                          Picker("Filter", selection: $filter) {
+                              ForEach(Filter.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                          }
+                          .pickerStyle(.segmented)
+                          .padding(.horizontal, 20).padding(.top, 10)
+
+                          if filteredJobs.isEmpty {
+                              VStack(spacing: 10) {
+                                  Image(systemName: "tray.fill").font(.system(size: 40)).foregroundColor(.storeSub)
+                                  Text("No downloads").font(.system(size: 14, weight: .bold)).foregroundColor(.storeText)
+                                  Text("Tap Install on any app to start downloading.").font(.system(size: 12)).foregroundColor(.storeSub)
+                              }
+                              .frame(maxWidth: .infinity, maxHeight: .infinity)
+                          } else {
+                              ScrollView {
+                                  VStack(spacing: 10) {
+                                      ForEach(filteredJobs) { job in
+                                          jobRow(job)
+                                      }
+                                  }
+                                  .padding(.horizontal, 20).padding(.top, 12)
+                              }
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Downloads").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+
+              @ViewBuilder
+              private func jobRow(_ job: DownloadJob) -> some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      HStack(spacing: 12) {
+                          RemoteIcon(url: job.app.icon, size: 50, cornerRadius: 12)
+                          VStack(alignment: .leading, spacing: 2) {
+                              Text(job.app.name).font(.system(size: 14, weight: .bold)).foregroundColor(.storeText).lineLimit(1)
+                              if job.isCompleted {
+                                  Text("Completed").font(.system(size: 11, weight: .bold)).foregroundColor(.walletGreen)
+                              } else if let err = job.errorMessage {
+                                  Text("Error: \(err)").font(.system(size: 11)).foregroundColor(.storePink).lineLimit(2)
+                              } else {
+                                  Text("\(Int(job.progress * 100))%").font(.system(size: 11, weight: .bold)).foregroundColor(.storePrimary)
+                              }
+                          }
+                          Spacer()
+                          if !job.isCompleted {
+                              Button { queue.togglePause(job) } label: {
+                                  Image(systemName: job.isPaused ? "play.fill" : "pause.fill")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storePrimary)
+                                      .frame(width: 36, height: 36)
+                                      .background(Circle().fill(Color.storePrimary.opacity(0.12)))
+                              }
+                          }
+                          Button { queue.delete(job) } label: {
+                              Image(systemName: "trash.fill")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.storePink)
+                                  .frame(width: 36, height: 36)
+                                  .background(Circle().fill(Color.storePink.opacity(0.12)))
+                          }
+                      }
+                      if !job.isCompleted {
+                          ProgressView(value: job.progress).tint(.storePrimary)
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_NotificationCenter.swift
+        run: |
+          cat > 21s_NotificationCenter.swift << 'VIPEOF'
+          import SwiftUI
+          @preconcurrency import UserNotifications
+
+          // ============================================================
+          // 21s Notification Center + Preferences
+          // ------------------------------------------------------------
+          // - Per-category notification log
+          // - Per-category enable / disable (mute)
+          // - Notification log UI
+          // - Notification preferences UI
+          // ============================================================
+          struct NotifLogEntry: Codable, Identifiable, Hashable {
+              let id: UUID
+              let category: String
+              let title: String
+              let body: String
+              let timestamp: Date
+              var isRead: Bool
+              init(category: String, title: String, body: String) {
+                  self.id = UUID()
+                  self.category = category
+                  self.title = title
+                  self.body = body
+                  self.timestamp = Date()
+                  self.isRead = false
+              }
+          }
+
+          struct NotifPrefs: Codable, Equatable {
+              var globalEnabled: Bool
+              var perCategory: [String: Bool]
+              var quietHoursStart: Int
+              var quietHoursEnd: Int
+              var sound: Bool
+              var vibration: Bool
+              var badges: Bool
+              var inAppBanners: Bool
+              var groupSimilar: Bool
+              var previewStyle: PreviewStyle
+
+              enum PreviewStyle: String, Codable, CaseIterable { case always, whenUnlocked, hidden
+                  var displayName: String {
+                      switch self {
+                      case .always: return "Always"
+                      case .whenUnlocked: return "When Unlocked"
+                      case .hidden: return "Hidden"
+                      }
+                  }
+              }
+
+              static let defaults = NotifPrefs(
+                  globalEnabled: true,
+                  perCategory: [
+                      "download.started": true,
+                      "download.completed": true,
+                      "download.failed": true,
+                      "install.success": true,
+                      "install.failed": true,
+                      "wallet.topup": true,
+                      "wallet.refund": true,
+                      "wallet.transfer": true,
+                      "coupon.available": true,
+                      "giftcard.received": true,
+                      "new.app": true,
+                      "price.drop": true,
+                      "subscription.expiring": true,
+                      "recommendation": true,
+                      "system": true,
+                      "security": true
+                  ],
+                  quietHoursStart: 23, quietHoursEnd: 7,
+                  sound: true, vibration: true, badges: true, inAppBanners: true, groupSimilar: true,
+                  previewStyle: .always
+              )
+          }
+
+          @MainActor
+          final class NotifStore: ObservableObject {
+              static let shared = NotifStore()
+              @Published private(set) var log: [NotifLogEntry] = []
+              @Published var prefs: NotifPrefs
+
+              private let logKey = "21s.notif.log"
+              private let prefsKey = "21s.notif.prefs"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: logKey),
+                     let decoded = try? JSONDecoder().decode([NotifLogEntry].self, from: data) {
+                      log = decoded
+                  } else {
+                      log = []
+                  }
+                  if let data = UserDefaults.standard.data(forKey: prefsKey),
+                     let decoded = try? JSONDecoder().decode(NotifPrefs.self, from: data) {
+                      prefs = decoded
+                  } else {
+                      prefs = .defaults
+                  }
+              }
+
+              func add(category: String, title: String, body: String) {
+                  let entry = NotifLogEntry(category: category, title: title, body: body)
+                  log.insert(entry, at: 0)
+                  if log.count > 500 { log.removeLast(log.count - 500) }
+                  persist()
+              }
+
+              func clearAll() { log.removeAll(); persist() }
+              func markAllRead() { log = log.map { var e = $0; e.isRead = true; return e }; persist() }
+              func unreadCount() -> Int { log.filter { !$0.isRead }.count }
+              func isCategoryEnabled(_ cat: String) -> Bool { prefs.perCategory[cat] ?? true }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(log) {
+                      UserDefaults.standard.set(data, forKey: logKey)
+                  }
+                  if let data = try? JSONEncoder().encode(prefs) {
+                      UserDefaults.standard.set(data, forKey: prefsKey)
+                  }
+              }
+          }
+
+          struct NotificationCenterView: View {
+              @ObservedObject var store = NotifStore.shared
+              @State private var filter: String? = nil
+              @State private var showPrefs = false
+              @Environment(\.dismiss) private var dismiss
+
+              var filtered: [NotifLogEntry] {
+                  guard let f = filter else { return store.log }
+                  return store.log.filter { $0.category == f }
+              }
+
+              var body: some View {
+                  NavigationView {
+                      VStack(spacing: 0) {
+                          HStack {
+                              Text("\(store.unreadCount()) unread").font(.system(size: 11, weight: .bold)).foregroundColor(.storeSub)
+                              Spacer()
+                              Button { store.markAllRead() } label: { Text("Mark all read").font(.system(size: 12, weight: .bold)).foregroundColor(.storePrimary) }
+                              Button { showPrefs = true } label: { Image(systemName: "slider.horizontal.3").foregroundColor(.storePrimary) }
+                          }
+                          .padding(.horizontal, 20).padding(.top, 8)
+
+                          ScrollView(.horizontal, showsIndicators: false) {
+                              HStack(spacing: 6) {
+                                  chip("All", isOn: filter == nil) { filter = nil }
+                                  ForEach(uniqueCategories(), id: \.self) { cat in
+                                      chip(cat, isOn: filter == cat) { filter = cat }
+                                  }
+                              }
+                              .padding(.horizontal, 20).padding(.vertical, 8)
+                          }
+
+                          if filtered.isEmpty {
+                              VStack(spacing: 8) {
+                                  Image(systemName: "bell.slash.fill").font(.system(size: 40)).foregroundColor(.storeSub)
+                                  Text("No notifications yet").font(.system(size: 13)).foregroundColor(.storeSub)
+                              }
+                              .frame(maxWidth: .infinity, maxHeight: .infinity)
+                          } else {
+                              ScrollView {
+                                  VStack(spacing: 8) {
+                                      ForEach(filtered) { entry in
+                                          HStack(alignment: .top, spacing: 12) {
+                                              Image(systemName: iconFor(entry.category))
+                                                  .foregroundColor(colorFor(entry.category))
+                                                  .frame(width: 36, height: 36)
+                                                  .background(Circle().fill(colorFor(entry.category).opacity(0.15)))
+                                              VStack(alignment: .leading, spacing: 3) {
+                                                  Text(entry.title).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
+                                                  Text(entry.body).font(.system(size: 11)).foregroundColor(.storeSub)
+                                                  HStack(spacing: 6) {
+                                                      Text(entry.category).font(.system(size: 9, weight: .bold))
+                                                          .padding(.horizontal, 6).padding(.vertical, 2)
+                                                          .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                                                          .foregroundColor(.storePrimary)
+                                                      Text(entry.timestamp.formatted(.relative(presentation: .numeric)))
+                                                          .font(.system(size: 9)).foregroundColor(.storeSub)
+                                                  }
+                                              }
+                                              Spacer()
+                                              if !entry.isRead {
+                                                  Circle().fill(Color.storePrimary).frame(width: 7, height: 7)
+                                              }
+                                          }
+                                          .padding(12)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Alerts").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                      .sheet(isPresented: $showPrefs) { NotifPrefsView() }
+                  }
+                  .preferredColorScheme(.light)
+              }
+
+              @ViewBuilder
+              private func chip(_ name: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+                  Button(action: action) {
+                      Text(name)
+                          .font(.system(size: 11, weight: .bold))
+                          .foregroundColor(isOn ? .white : .storeText)
+                          .padding(.horizontal, 10).padding(.vertical, 6)
+                          .background(Capsule().fill(isOn ? Color.storePrimary : Color.storeCard))
+                  }
+                  .buttonStyle(.plain)
+              }
+
+              private func uniqueCategories() -> [String] {
+                  Array(Set(store.log.map { $0.category })).sorted()
+              }
+
+              private func iconFor(_ c: String) -> String {
+                  switch c {
+                  case "download.started", "download.completed", "download.failed": return "arrow.down.circle.fill"
+                  case "install.success", "install.failed": return "square.and.arrow.down.fill"
+                  case "wallet.topup", "wallet.refund", "wallet.transfer": return "creditcard.fill"
+                  case "coupon.available": return "tag.fill"
+                  case "giftcard.received": return "gift.fill"
+                  case "new.app": return "sparkles"
+                  case "price.drop": return "arrow.down.right.circle.fill"
+                  case "subscription.expiring": return "clock.badge.exclamationmark"
+                  case "recommendation": return "heart.fill"
+                  case "security": return "lock.shield.fill"
+                  default: return "bell.fill"
+                  }
+              }
+              private func colorFor(_ c: String) -> Color {
+                  switch c {
+                  case "download.started", "download.completed": return .storePrimary
+                  case "download.failed", "install.failed": return .storePink
+                  case "install.success": return .walletGreen
+                  case "wallet.topup", "wallet.refund": return .walletGreen
+                  case "wallet.transfer": return .storeCyan
+                  case "coupon.available": return .walletOrange
+                  case "giftcard.received": return .walletOrange
+                  case "new.app": return .storePrimary
+                  case "price.drop": return .walletGreen
+                  case "subscription.expiring": return .walletOrange
+                  case "recommendation": return .storePink
+                  case "security": return .storePrimary
+                  default: return .storeSub
+                  }
+              }
+          }
+
+          struct NotifPrefsView: View {
+              @ObservedObject var store = NotifStore.shared
+              @Environment(\.dismiss) private var dismiss
+
+              var body: some View {
+                  NavigationView {
+                      Form {
+                          Section {
+                              Toggle("Enable all notifications", isOn: $store.prefs.globalEnabled)
+                              Toggle("Sound", isOn: $store.prefs.sound)
+                              Toggle("Vibration", isOn: $store.prefs.vibration)
+                              Toggle("Badges", isOn: $store.prefs.badges)
+                              Toggle("In-app banners", isOn: $store.prefs.inAppBanners)
+                              Toggle("Group similar alerts", isOn: $store.prefs.groupSimilar)
+                              Picker("Preview", selection: $store.prefs.previewStyle) {
+                                  ForEach(NotifPrefs.PreviewStyle.allCases, id: \.self) { s in
+                                      Text(s.displayName).tag(s)
+                                  }
+                              }
+                          }
+                          Section("Quiet hours") {
+                              Stepper("From: \(store.prefs.quietHoursStart):00", value: $store.prefs.quietHoursStart, in: 0...23)
+                              Stepper("Until: \(store.prefs.quietHoursEnd):00", value: $store.prefs.quietHoursEnd, in: 0...23)
+                          }
+                          Section("Per-category") {
+                              ForEach(NotifPrefs.defaults.perCategory.keys.sorted(), id: \.self) { key in
+                                  Toggle(key, isOn: Binding(
+                                      get: { store.prefs.perCategory[key] ?? true },
+                                      set: { store.prefs.perCategory[key] = $0 }
+                                  ))
+                              }
+                          }
+                      }
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("Notification Settings").font(.system(size: 15, weight: .bold)) }
+                          ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.foregroundColor(.storePrimary) }
+                      }
+                  }
+                  .preferredColorScheme(.light)
+              }
+          }
+          VIPEOF
+
+      - name: Generate code - 21s_AppUpdate.swift
+        run: |
+          cat > 21s_AppUpdate.swift << 'VIPEOF'
+          import SwiftUI
+
+          // ============================================================
+          // 21s App Update + Version Check
+          // ============================================================
+          struct AppUpdateInfo: Codable, Identifiable {
+              let id: String
+              let appId: Int
+              let name: String
+              let installedVersion: String
+              let latestVersion: String
+              let changelog: String
+          }
+
+          @MainActor
+          final class AppUpdateStore: ObservableObject {
+              @Published private(set) var updates: [AppUpdateInfo] = []
+              private let key = "21s.app.updates"
+
+              init() {
+                  if let data = UserDefaults.standard.data(forKey: key),
+                     let decoded = try? JSONDecoder().decode([AppUpdateInfo].self, from: data) {
+                      updates = decoded
+                  }
+              }
+
+              func hasUpdate(installed: String, latest: String) -> Bool {
+                  installed.compare(latest, options: .numeric) == .orderedAscending
+              }
+
+              func addUpdate(_ u: AppUpdateInfo) {
+                  updates.removeAll { $0.appId == u.appId }
+                  updates.append(u)
+                  persist()
+              }
+
+              func removeUpdate(_ u: AppUpdateInfo) {
+                  updates.removeAll { $0.id == u.id }
+                  persist()
+              }
+
+              private func persist() {
+                  if let data = try? JSONEncoder().encode(updates) {
+                      UserDefaults.standard.set(data, forKey: key)
+                  }
+              }
+          }
+
+          struct AppUpdateSection: View {
+              @ObservedObject var store: AppUpdateStore
+              let apps: [StoreAPIApp]
+              var onUpdate: (StoreAPIApp) -> Void
+
+              var updates: [StoreAPIApp] {
+                  apps.filter { app in
+                      guard let installed = app.bundleVersion else { return false }
+                      return store.hasUpdate(installed: installed, latest: app.bundleVersion ?? installed)
+                  }
+              }
+
+              var body: some View {
+                  if !updates.isEmpty {
+                      VStack(alignment: .leading, spacing: 8) {
+                          HStack {
+                              Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                  .foregroundColor(.walletGreen)
+                              Text("Updates available")
+                                  .font(.system(size: 14, weight: .heavy))
+                                  .foregroundColor(.storeText)
+                              Spacer()
+                          }
+                          .padding(.horizontal, 20)
+
+                          VStack(spacing: 8) {
+                              ForEach(updates) { app in
+                                  HStack(spacing: 12) {
+                                      RemoteIcon(url: app.icon, size: 44, cornerRadius: 12)
+                                      VStack(alignment: .leading, spacing: 2) {
+                                          Text(app.name).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText).lineLimit(1)
+                                          Text("v\(app.bundleVersion ?? "?") available")
+                                              .font(.system(size: 11)).foregroundColor(.walletGreen)
+                                      }
+                                      Spacer()
+                                      Button { onUpdate(app) } label: {
+                                          Text("Update")
+                                              .font(.system(size: 11, weight: .bold))
+                                              .foregroundColor(.white)
+                                              .padding(.horizontal, 12).padding(.vertical, 6)
+                                              .background(Capsule().fill(Color.walletGreen))
+                                      }
+                                  }
+                                  .padding(10)
+                                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 1)))
+                              }
+                          }
+                          .padding(.horizontal, 20)
+                      }
+                  }
+              }
+          }
+          VIPEOF
+
+      # =========================================================
+      # COMPILE + IPA (all 28 swift files)
+      # =========================================================
+      - name: Compile Swift sources
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Using SDK: $SDK"
+          ls *.swift
+          xcrun -sdk iphoneos swiftc \
+            -parse-as-library \
+            Constants.swift \
+            HapticManager.swift \
+            Models.swift \
+            AuthManager.swift \
+            Countries.swift \
+            OnboardingView.swift \
+            AuthViews.swift \
+            StoreView.swift \
+            ContentView.swift \
+            VIP21StoreApp.swift \
+            Settings.swift \
+            StatusScreens.swift \
+            AppStories.swift \
+            CompatibilityScore.swift \
+            DeviceLicense.swift \
+            DeltaUpdater.swift \
+            TranslationCrowd.swift \
+            AppClips.swift \
+            21s_Recommendations.swift \
+            21s_Wallet.swift \
+            21s_Coupons.swift \
+            21s_GiftCards.swift \
+            21s_Refunds.swift \
+            21s_DownloadQueue.swift \
+            21s_NotificationCenter.swift \
+            21s_AppUpdate.swift \
+            -sdk "$SDK" \
+            -target arm64-apple-ios16.0 \
+            -O \
+            -module-name VIP21Store \
+            -framework SwiftUI \
+            -framework UIKit \
+            -framework Foundation \
+            -framework ImageIO \
+            -framework MobileCoreServices \
+            -framework Network \
+            -framework CFNetwork \
+            -framework UserNotifications \
+            -o VIP21Store
+          file VIP21Store
+
+      - name: Create IPA package
+        run: |
+          export COPYFILE_DISABLE=1
+          mkdir -p artifacts
+          rm -rf build-output
+          mkdir -p build-output/Payload/VIP21Store.app
+          cp -X VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
+          cp -X Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
+          cp -X Resources/AppIcon60x60@2x.png         build-output/Payload/VIP21Store.app/
+          cp -X Resources/AppIcon60x60@3x.png         build-output/Payload/VIP21Store.app/
+          cp -X Resources/AppIcon76x76@2x~ipad.png    build-output/Payload/VIP21Store.app/
+          cp -X Resources/AppIcon83.5x83.5@2x~ipad.png build-output/Payload/VIP21Store.app/
+          cp -X Resources/AppIcon1024x1024.png        build-output/Payload/VIP21Store.app/
+          cp -X Resources/login_logo.png              build-output/Payload/VIP21Store.app/
+          cp -X Resources/register_logo.png           build-output/Payload/VIP21Store.app/
+          cp -X Resources/onboarding1.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/onboarding2.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/onboarding3.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_onboarding1.png      build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_onboarding2.png      build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_onboarding3.png      build-output/Payload/VIP21Store.app/
+          cp -X Resources/balance_animation.gif       build-output/Payload/VIP21Store.app/
+          cp -X Resources/alerts_onboarding1.gif      build-output/Payload/VIP21Store.app/
+          cp -X Resources/alerts_onboarding2.gif      build-output/Payload/VIP21Store.app/
+          cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
+          cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
+          cp -X Resources/no_internet.gif             build-output/Payload/VIP21Store.app/
+          cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
+
+          xattr -cr build-output
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
+
+          ldid -S build-output/Payload/VIP21Store.app/VIP21Store
+
+          rm -f artifacts/21s.ipa
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
+          xattr -cr build-output/Payload/VIP21Store.app || true
+          cd build-output && zip -r -X -q ../artifacts/21s.ipa Payload && cd ..
+          ls -lh artifacts/21s.ipa
+
+          if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
+            echo "❌ Error: IPA file is corrupt or invalid."
+            exit 1
+          fi
+          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
+            echo "❌ Error: IPA does not contain a valid App Bundle"
+            exit 1
+          fi
+          echo "IPA: $(du -sh artifacts/21s.ipa)"
+
+      - name: Verify IPA package
+        run: |
+          echo "== IPA Contents =="
+          unzip -l artifacts/21s.ipa | head -80
+          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
+            echo "❌ Error: IPA does not contain a valid App Bundle"
+            exit 1
+          fi
+          echo "== Integrity test =="
+          unzip -tq artifacts/21s.ipa > /dev/null
+          if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature/CodeResources\|_CodeSignature"; then
+            echo "⚠️ Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
+          fi
+          unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
+          echo "✅ IPA is valid, passes zip integrity test, and contains the App Bundle."
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 21s-Store-Complete-IPA
+          path: artifacts/21s.ipa
+          if-no-files-found: error
+          retention-days: 30
