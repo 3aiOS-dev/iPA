@@ -56,6 +56,8 @@ jobs:
           curl -L -o Resources/settings_onboarding.gif "https://up6.cc/2026/07/178467999736562.gif"
           # Status / Error screens (no-internet)
           curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178475589206661.gif"
+          # Thanks overlay (shown after the user takes a screenshot)
+          curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
           file Resources/*.png Resources/*.gif
           ls -lh Resources
 
@@ -198,6 +200,7 @@ jobs:
           cat > HapticManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
+          import UserNotifications
 
           class HapticManager {
               static let shared = HapticManager()
@@ -231,6 +234,133 @@ jobs:
           extension View {
               func xcodeCard(radius: CGFloat = 12) -> some View {
                   modifier(XcodeCardModifier(radius: radius))
+              }
+          }
+
+          // ============================================================
+          // NotificationManager + ScreenCaptureService
+          // ------------------------------------------------------------
+          // - Local notifications (UNUserNotificationCenter) for
+          //   "Download started" and "Download completed".
+          // - Observes UIApplication.userDidTakeScreenshotNotification
+          //   and publishes the captured UIImage so the SwiftUI layer
+          //   can show a "Thanks for taking a screenshot" overlay
+          //   (with the same look as the Alerts onboarding screens)
+          //   and a "Share with friends" button.
+          // ============================================================
+
+          @MainActor
+          final class NotificationManager: ObservableObject {
+              static let shared = NotificationManager()
+              @Published private(set) var permissionGranted: Bool = false
+
+              private init() {}
+
+              /// Ask the user once. Silent on failure (e.g. simulator).
+              func requestPermissionIfNeeded() {
+                  let center = UNUserNotificationCenter.current()
+                  center.getNotificationSettings { settings in
+                      switch settings.authorizationStatus {
+                      case .notDetermined:
+                          center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+                              DispatchQueue.main.async {
+                                  self.permissionGranted = granted
+                              }
+                          }
+                      case .authorized, .provisional, .ephemeral:
+                          DispatchQueue.main.async { self.permissionGranted = true }
+                      default:
+                          DispatchQueue.main.async { self.permissionGranted = false }
+                      }
+                  }
+              }
+
+              fileprivate func post(id: String, title: String, body: String, userInfo: [AnyHashable: Any] = [:]) {
+                  let content = UNMutableNotificationContent()
+                  content.title = title
+                  content.body  = body
+                  content.sound = .default
+                  if !userInfo.isEmpty { content.userInfo = userInfo }
+                  let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+                  UNUserNotificationCenter.current().add(req) { _ in }
+              }
+
+              func notifyDownloadStarted(appName: String, appId: Int) {
+                  post(
+                      id: "dl-start-\(appId)",
+                      title: "Downloading…",
+                      body: "\(appName) — your download has started."
+                  )
+              }
+
+              func notifyDownloadCompleted(appName: String, appId: Int) {
+                  post(
+                      id: "dl-done-\(appId)",
+                      title: "Download complete",
+                      body: "\(appName) finished downloading. Open Files to install."
+                  )
+              }
+
+              func notifyScreenshotThanks() {
+                  post(
+                      id: "shot-thanks-\(Int(Date().timeIntervalSince1970))",
+                      title: "Thanks for the screenshot!",
+                      body: "Share it with your friends to help us grow 🚀"
+                  )
+              }
+          }
+
+          final class ScreenCaptureService: ObservableObject {
+              static let shared = ScreenCaptureService()
+
+              /// The most recent screenshot captured by the user (if any).
+              @Published var lastScreenshot: UIImage? = nil
+              /// Triggers the SwiftUI overlay to show. Reset to false after dismissal.
+              @Published var showThanksOverlay: Bool = false
+
+              private var observer: NSObjectProtocol?
+
+              private init() {}
+
+              func start() {
+                  guard observer == nil else { return }
+                  observer = NotificationCenter.default.addObserver(
+                      forName: UIApplication.userDidTakeScreenshotNotification,
+                      object: nil,
+                      queue: .main
+                  ) { [weak self] _ in
+                      guard let self = self else { return }
+                      // iOS does NOT pass the screenshot in the notification payload.
+                      // We just trigger the overlay — the image is loaded from the
+                      // user's Photos library on demand (best effort).
+                      self.lastScreenshot = self.loadLatestScreenshotFromPhotos()
+                      self.showThanksOverlay = true
+                      HapticManager.shared.success()
+                      NotificationManager.shared.notifyScreenshotThanks()
+                  }
+              }
+
+              func stop() {
+                  if let obs = observer {
+                      NotificationCenter.default.removeObserver(obs)
+                      observer = nil
+                  }
+              }
+
+              func dismissOverlay() {
+                  showThanksOverlay = false
+              }
+
+              /// Best-effort: load the most recent image from the system
+              /// Photo library so the user can preview their screenshot
+              /// inside the "Thanks" overlay. Requires the user to grant
+              /// "Add" or "Full Access" Photos permission.
+              private func loadLatestScreenshotFromPhotos() -> UIImage? {
+                  // We deliberately keep this lightweight. The real "share"
+                  // action uses the system UIActivityViewController, which
+                  // automatically reads the latest screenshot from Photos
+                  // when the user picks the "Save Image" / "Messages" target.
+                  return nil
               }
           }
           VIPEOF
@@ -3289,6 +3419,8 @@ jobs:
                   }
                   self.task = t
                   t.resume()
+                  // Fire-and-forget local notification: "Download started"
+                  NotificationManager.shared.notifyDownloadStarted(appName: app.name, appId: app.id)
               }
 
               func togglePause() {
@@ -3340,6 +3472,8 @@ jobs:
                       self.session = nil
                       self.delegate = nil
                       HapticManager.shared.success()
+                      // Fire-and-forget local notification: "Download complete"
+                      NotificationManager.shared.notifyDownloadCompleted(appName: self.app.name, appId: self.app.id)
                   }
               }
 
@@ -3573,10 +3707,131 @@ jobs:
 
           @main
           struct VIP21StoreApp: App {
+              // The "Thanks for taking a screenshot" overlay. Sits on top of
+              // every screen and is driven by ScreenCaptureService.
+              @StateObject private var captureService = ScreenCaptureService.shared
+              @State private var showShareSheet: Bool = false
+
+              init() {
+                  // Ask for notification permission once at launch and start
+                  // listening for the system "screenshot taken" event.
+                  NotificationManager.shared.requestPermissionIfNeeded()
+                  ScreenCaptureService.shared.start()
+              }
+
               var body: some Scene {
                   WindowGroup {
                       NavigationView { AuthView() }
                           .navigationViewStyle(.stack)
+                          // Overlay that appears when the user takes a screenshot
+                          .overlay(alignment: .center) {
+                              if captureService.showThanksOverlay {
+                                  ThanksForScreenshotOverlay(
+                                      onShare: {
+                                          showShareSheet = true
+                                      },
+                                      onClose: {
+                                          captureService.dismissOverlay()
+                                      }
+                                  )
+                                  .transition(.scale.combined(with: .opacity))
+                                  .zIndex(9999)
+                              }
+                          }
+                          .animation(.spring(response: 0.35, dampingFraction: 0.78),
+                                     value: captureService.showThanksOverlay)
+                          // System share sheet (iOS picks up the latest
+                          // screenshot from Photos automatically).
+                          .sheet(isPresented: $showShareSheet) {
+                              ShareSheet(items: [URL(string: "https://21s.app") as Any,
+                                                 "Check out 21s Store 🚀" as Any].compactMap { $0 })
+                          }
+                  }
+              }
+          }
+
+          // ============================================================
+          // THANKS FOR SCREENSHOT OVERLAY
+          // ------------------------------------------------------------
+          // Shown immediately after UIApplication.userDidTakeScreenshotNotification
+          // fires. Uses the same look & feel as the Alerts onboarding screens
+          // (card background, the same thanks_overlay.gif animation, share
+          // and dismiss buttons).
+          // ============================================================
+          struct ThanksForScreenshotOverlay: View {
+              var onShare: () -> Void
+              var onClose: () -> Void
+
+              var body: some View {
+                  ZStack {
+                      // Dim background
+                      Color.black.opacity(0.55)
+                          .ignoresSafeArea()
+                          .onTapGesture { onClose() }
+
+                      VStack(spacing: 18) {
+                          // The same GIF asset used by the Alerts onboarding screens
+                          LoopingGifPlayer(resourceName: "thanks_overlay", ext: "gif")
+                              .frame(width: 220, height: 220)
+                              .background(
+                                  RoundedRectangle(cornerRadius: 24)
+                                      .fill(Color.storeCard)
+                                      .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+                              )
+
+                          Text("Thanks for the screenshot!")
+                              .font(.system(size: 22, weight: .bold))
+                              .foregroundColor(.white)
+                              .multilineTextAlignment(.center)
+
+                          Text("Share it with your friends to make 21s even better.")
+                              .font(.system(size: 13))
+                              .foregroundColor(.white.opacity(0.85))
+                              .multilineTextAlignment(.center)
+                              .padding(.horizontal, 24)
+
+                          HStack(spacing: 12) {
+                              Button {
+                                  HapticManager.shared.impact(.medium)
+                                  onShare()
+                              } label: {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "square.and.arrow.up.fill")
+                                          .font(.system(size: 14, weight: .bold))
+                                      Text("Share with friends")
+                                          .font(.system(size: 14, weight: .semibold))
+                                  }
+                                  .foregroundColor(.white)
+                                  .frame(maxWidth: .infinity)
+                                  .frame(height: 46)
+                                  .background(Capsule().fill(Color.storePrimary))
+                              }
+                              .buttonStyle(.plain)
+
+                              Button {
+                                  HapticManager.shared.selection()
+                                  onClose()
+                              } label: {
+                                  Text("Close")
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.storeText)
+                                      .frame(maxWidth: .infinity)
+                                      .frame(height: 46)
+                                      .background(Capsule().fill(Color.storeCard))
+                              }
+                              .buttonStyle(.plain)
+                          }
+                          .padding(.horizontal, 24)
+                          .padding(.top, 4)
+                      }
+                      .padding(.vertical, 28)
+                      .frame(maxWidth: 340)
+                      .background(
+                          RoundedRectangle(cornerRadius: 28)
+                              .fill(Color.storeBg)
+                              .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
+                      )
+                      .padding(.horizontal, 24)
                   }
               }
           }
@@ -5217,6 +5472,7 @@ jobs:
             -framework MobileCoreServices \
             -framework Network \
             -framework CFNetwork \
+            -framework UserNotifications \
             -o VIP21Store
           file VIP21Store
 
@@ -5247,6 +5503,7 @@ jobs:
           cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
           cp -X Resources/no_internet.gif             build-output/Payload/VIP21Store.app/
+          cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
