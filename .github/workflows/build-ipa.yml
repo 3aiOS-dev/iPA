@@ -1414,14 +1414,14 @@ jobs:
                       StoreTabBar(tab: $tab, onSearch: { showSearch = true })
 
                       // =========================================================
-                      // STATUS OVERLAYS (no-internet / VPN / jailbreak) — top of stack
+                      // STATUS OVERLAYS (no-internet) — top of stack
                       // =========================================================
                       StatusOverlayHost()
                           .ignoresSafeArea(.keyboard)
                           .zIndex(9999)
                   }
                   .onAppear {
-                      // Kick off network monitor + jailbreak/VPN detection
+                      // Kick off network monitor for no-internet detection
                       StatusCenter.shared.start()
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
@@ -4970,7 +4970,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # STATUS / ERROR SCREENS — no-internet, VPN, jailbreak
+      # STATUS / ERROR SCREENS — no-internet
       # =========================================================
       - name: Generate code - StatusScreens.swift
         run: |
@@ -4978,16 +4978,14 @@ jobs:
           import SwiftUI
           import Network
           import UIKit
-          import Darwin
           import Foundation
 
           // ============================================================
           // STATUS / ERROR SCREENS
           // ------------------------------------------------------------
-          // Three full-screen overlays, shown in priority order:
+          // Currently shows:
           //   1) No internet (gif + message + Retry button)
-          //   2) VPN or Jailbreak detected (sarcastic / roasting screen)
-          //   3) Otherwise: app works normally
+          //   2) Otherwise: app works normally
           //
           // The detector is run on app launch and re-runs when the
           // network path changes. A singleton (StatusCenter) publishes
@@ -4998,7 +4996,6 @@ jobs:
           enum StatusKind: Equatable {
               case ok
               case noInternet
-              case vpnOrJailbreak
           }
 
           @MainActor
@@ -5012,13 +5009,7 @@ jobs:
               private let queue = DispatchQueue(label: "com.21s.status.monitor")
               private var didStart = false
 
-              // Cached jailbreak detection (heavy — only run once at launch)
-              private(set) var isJailbroken: Bool = false
-              private var lastVPNCheck: Date = .distantPast
-
-              private init() {
-                  self.isJailbroken = JailbreakDetector.isJailbroken()
-              }
+              private init() {}
 
               func start() {
                   guard !didStart else { return }
@@ -5039,7 +5030,7 @@ jobs:
               }
 
               private func evaluate(currentPath: NWPath) {
-                  // 1) Internet reachability — most important, show this first
+                  // Internet reachability — show this when offline
                   let online = (currentPath.status == .satisfied)
                   if !online {
                       if kind != .noInternet {
@@ -5049,322 +5040,8 @@ jobs:
                       return
                   }
 
-                  // 2) VPN or Jailbreak — only if we are online
-                  let vpn = VPNDetector.isVPNActive(force: false)
-                  if vpn || isJailbroken {
-                      if kind != .vpnOrJailbreak {
-                          HapticManager.shared.error()
-                      }
-                      kind = .vpnOrJailbreak
-                      return
-                  }
-
-                  // 3) All good
+                  // All good
                   kind = .ok
-              }
-          }
-
-          // ============================================================
-          // VPN DETECTOR — ENHANCED
-          // ============================================================
-          // Multi-layered VPN / Proxy detection:
-          //   1) Interface scan (utun, ppp, ipsec, tun, tap, ccm, thu)
-          //   2) NWPathMonitor expensive-flag check (VPN uses expensive routes)
-          //   3) /proc/net/route parse (Linux-style fallback)
-          //   4) HTTP proxy detection (CFNetworkCopySystemProxySettings)
-          //   5) DNS leak check via known VPN DNS servers
-          //
-          // Cached to avoid scanning every UI tick.
-          enum VPNDetector {
-              private static var cached: Bool = false
-              private static var didScan: Bool = false
-              private static let lock = NSLock()
-
-              static func isVPNActive(force: Bool = false) -> Bool {
-                  lock.lock()
-                  defer { lock.unlock() }
-                  if !force && didScan { return cached }
-                  didScan = true
-                  cached = detectVPN()
-                  return cached
-              }
-
-              /// Resets the cache (e.g. when the user taps Retry).
-              static func reset() {
-                  lock.lock()
-                  defer { lock.unlock() }
-                  didScan = false
-                  cached = false
-              }
-
-              private static func detectVPN() -> Bool {
-                  // Layer 1 — interface scan
-                  if scanInterfaces() { return true }
-                  // Layer 2 — DNS leak check
-                  if checkDNSLeak() { return true }
-                  // Layer 3 — HTTP proxy detection
-                  if checkHTTPProxy() { return true }
-                  return false
-              }
-
-              private static func scanInterfaces() -> Bool {
-                  var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
-                  guard getifaddrs(&ifaddrPtr) == 0, let firstAddr = ifaddrPtr else {
-                      return false
-                  }
-                  defer { freeifaddrs(ifaddrPtr) }
-
-                  // These prefixes are how Apple / iOS / Linux name VPN tunnels
-                  let prefixes = [
-                      "utun",   // standard iOS/macOS VPN tunnel
-                      "ppp",    // PPTP/L2TP
-                      "ipsec",  // IPSec
-                      "tun",    // generic tun
-                      "tap",    // generic tap
-                      "ccm",    // CheckPoint
-                      "thu",    // some Chinese VPN apps
-                      "ipsec0", // Cisco IPSec
-                      "racoon"  // racoon IPSec
-                  ]
-
-                  var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
-                  while let current = ptr {
-                      let name = String(cString: current.pointee.ifa_name)
-                      for prefix in prefixes where name.hasPrefix(prefix) {
-                          return true
-                      }
-                      ptr = current.pointee.ifa_next
-                  }
-                  return false
-              }
-
-              private static func checkDNSLeak() -> Bool {
-                  // NOTE: Real DNS lookup from inside the iOS app sandbox is not
-                  // possible in pure Swift without special entitlements, so this
-                  // check is kept as a placeholder for future use. The interface
-                  // scan and HTTP-proxy check are strong enough on their own.
-                  return false
-              }
-
-              private static func checkHTTPProxy() -> Bool {
-                  // If a system HTTP proxy is configured, we treat it as suspicious.
-                  guard let cfDict = CFNetworkCopySystemProxySettings()?.takeRetainedValue()
-                          as? [String: Any] else { return false }
-                  if let httpEnable = cfDict["HTTPEnable"] as? Int, httpEnable == 1 { return true }
-                  if let httpsEnable = cfDict["HTTPSEnable"] as? Int, httpsEnable == 1 { return true }
-                  if let socksEnable = cfDict["SOCKSEnable"] as? Int, socksEnable == 1 { return true }
-                  if let proxyAuto = cfDict["ProxyAutoConfigEnable"] as? Int, proxyAuto == 1 { return true }
-                  if let exceptionsList = cfDict["ExceptionsList"] as? [String],
-                     !exceptionsList.isEmpty { return true }
-                  return false
-              }
-          }
-
-          // ============================================================
-          // JAILBREAK DETECTOR — ENHANCED
-          // ============================================================
-          // Standard + extra checks:
-          //   - Suspicious files exist in / (Cydia, Sileo, Zebra, etc.)
-          //   - Can write outside the sandbox
-          //   - Cydia/Sileo/Zebra URL scheme is registered
-          //   - Suspicious environment vars (DYLD_INSERT_LIBRARIES)
-          //   - fork() availability (jailbreak-only)
-          //   - Symbolic-link check on /Applications
-          //   - System app existence (/Applications has user apps in JB)
-          //   - dylib injection detection
-          //   - Sandbox integrity check
-          enum JailbreakDetector {
-              static func isJailbroken() -> Bool {
-                  #if targetEnvironment(simulator)
-                  return false
-                  #else
-                  if checkSuspiciousFiles() { return true }
-                  if canWriteOutsideSandbox() { return true }
-                  if checkURLSchemes() { return true }
-                  if checkSuspiciousEnv() { return true }
-                  if checkForkAvailability() { return true }
-                  if checkSuspiciousSymlinks() { return true }
-                  if checkSystemAppExistence() { return true }
-                  if checkDylibInjection() { return true }
-                  return false
-                  #endif
-              }
-
-              private static let suspiciousPaths: [String] = [
-                  // Package managers
-                  "/Applications/Cydia.app",
-                  "/Applications/Sileo.app",
-                  "/Applications/Zebra.app",
-                  "/Applications/Installer.app",
-                  "/Applications/blackra1n.app",
-                  "/Applications/FakeCarrier.app",
-                  "/Applications/Icy.app",
-                  "/Applications/IntelliScreen.app",
-                  "/Applications/MxTube.app",
-                  "/Applications/RockApp.app",
-                  "/Applications/SBSettings.app",
-                  "/Applications/WinterBoard.app",
-                  // Substrate / Substitute
-                  "/Library/MobileSubstrate/MobileSubstrate.dylib",
-                  "/Library/MobileSubstrate/DynamicLibraries",
-                  "/Library/Frameworks/CydiaSubstrate.framework",
-                  "/usr/lib/libsubstitute.dylib",
-                  "/usr/lib/substrate",
-                  // SSH
-                  "/usr/sbin/sshd",
-                  "/usr/bin/ssh",
-                  "/usr/libexec/ssh-keysign",
-                  "/usr/libexec/sftp-server",
-                  // APT (Debian package manager)
-                  "/etc/apt",
-                  "/etc/apt/sources.list.d",
-                  "/private/var/lib/apt/",
-                  "/private/var/lib/apt",
-                  "/private/var/lib/cydia",
-                  "/private/var/stash",
-                  "/var/cache/apt",
-                  "/var/lib/apt",
-                  // Binaries
-                  "/bin/bash",
-                  "/bin/sh",
-                  "/usr/bin/cycript",
-                  "/usr/bin/ssh",
-                  "/usr/bin/sshd",
-                  "/usr/bin/ldid",
-                  "/usr/bin/lsd",
-                  // Jailbreak daemons / system files
-                  "/private/var/mobile/Library/SBSettings/Themes",
-                  "/private/var/mobile/Library/Preferences/com.saurik.Cydia.plist",
-                  "/private/var/mobile/Library/Cydia",
-                  "/var/lib/cydia",
-                  "/var/log/syslog",
-                  "/var/tmp/cydia.log",
-                  "/etc/ssh/sshd_config",
-                  // Other tools
-                  "/usr/libexec/cydia",
-                  "/usr/libexec/sshd",
-                  "/usr/libexec/sftp-server",
-                  "/Applications/Snoop-it.app",
-                  "/usr/bin/snoop",
-                  "/private/var/root/Media/Cydia",
-                  "/usr/libexec/cydia/firmware.sh",
-                  "/Library/MobileSubstrate/DynamicLibraries/AppList.dylib"
-              ]
-
-              private static let suspiciousURLSchemes: [String] = [
-                  "cydia://",
-                  "sileo://",
-                  "zbra://",
-                  "filza://",
-                  "undecimus://",
-                  "checkra1n://",
-                  "chimera://",
-                  "electra://",
-                  "odyssey://",
-                  "taurine://",
-                  "roblox://"
-              ]
-
-              private static func checkSuspiciousFiles() -> Bool {
-                  let fm = FileManager.default
-                  for p in suspiciousPaths {
-                      if fm.fileExists(atPath: p) { return true }
-                  }
-                  return false
-              }
-
-              private static func canWriteOutsideSandbox() -> Bool {
-                  let testPath = "/private/jb_write_test_\(UUID().uuidString).txt"
-                  do {
-                      try "test".write(toFile: testPath, atomically: true, encoding: .utf8)
-                      try? FileManager.default.removeItem(atPath: testPath)
-                      return true
-                  } catch {
-                      return false
-                  }
-              }
-
-              private static func checkURLSchemes() -> Bool {
-                  for scheme in suspiciousURLSchemes {
-                      guard let url = URL(string: "\(scheme)package/com.example") else { continue }
-                      if UIApplication.shared.canOpenURL(url) { return true }
-                  }
-                  return false
-              }
-
-              private static func checkSuspiciousEnv() -> Bool {
-                  if let env = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"], !env.isEmpty {
-                      return true
-                  }
-                  return false
-              }
-
-              private static func checkForkAvailability() -> Bool {
-                  // On a stock iOS device, fork() is not callable — Apple's
-                  // libSystem marks it as @available(*, unavailable). Trying
-                  // to call it directly therefore produces a *compile error*
-                  // on a real device build. A jailbroken runtime has the
-                  // symbol available (it's re-exported by common tweaks).
-                  //
-                  // We use dlsym() to look up the symbol at runtime — if it
-                  // resolves to a non-nil address, the device is almost
-                  // certainly jailbroken, because stock iOS hides it.
-                  guard let libc = dlopen(nil, RTLD_NOW) else { return false }
-                  defer { dlclose(libc) }
-                  let sym = dlsym(libc, "fork")
-                  return sym != nil
-              }
-
-              private static func checkSuspiciousSymlinks() -> Bool {
-                  // /Applications on a stock device is a symlink to /var/mobile/Applications
-                  // On a jailbroken device, /Applications contains user-installed apps
-                  // and is typically NOT a symlink. We test for that.
-                  let path = "/Applications"
-                  var isDir: ObjCBool = false
-                  if FileManager.default.fileExists(atPath: path, isDirectory: &isDir) {
-                      if isDir.boolValue {
-                          // exists as a real directory → possible jailbreak
-                          return true
-                      }
-                  }
-                  // Also: /usr/lib and /usr/libexec are usually symlinks → not a JB
-                  return false
-              }
-
-              private static func checkSystemAppExistence() -> Bool {
-                  // A device with a jailbreak will often have an "Undecimus" or
-                  // "checkra1n" app in /var/containers/Bundle/Application
-                  let knownJBApps = [
-                      "/var/containers/Bundle/Application/.jbroot",
-                      "/var/mobile/Library/Preferences/com.saurik.Cydia.plist",
-                      "/var/mobile/Library/Preferences/com.apple.springboard.plist"
-                  ]
-                  let fm = FileManager.default
-                  for p in knownJBApps where fm.fileExists(atPath: p) { return true }
-                  return false
-              }
-
-              private static func checkDylibInjection() -> Bool {
-                  // Read /proc/self/maps and look for dylibs loaded from outside
-                  // the app's bundle. On a stock device, only system frameworks
-                  // and the app's own bundle appear. On a JB device, you see
-                  // paths like /Library/MobileSubstrate/...
-                  let mapPath = "/proc/self/maps"
-                  guard let data = try? String(contentsOfFile: mapPath, encoding: .ascii) else {
-                      return false
-                  }
-                  let needles = [
-                      "MobileSubstrate",
-                      "SubstrateLoader",
-                      "SubstrateInserter",
-                      "libsubstitute",
-                      "TweakInject.dylib",
-                      "CydiaSubstrate",
-                      "/usr/lib/TweakInject",
-                      "/usr/share/TweakInject"
-                  ]
-                  for needle in needles where data.contains(needle) { return true }
-                  return false
               }
           }
 
@@ -5482,135 +5159,6 @@ jobs:
           }
 
           // ============================================================
-          // VPN / JAILBREAK SCREEN (sarcastic / roast)
-          // ============================================================
-          struct VPNJailbreakScreen: View {
-              var onDismiss: (() -> Void)? = nil
-              @State private var animateShake = false
-              @State private var animateBounce = false
-              @State private var rotating = false
-
-              var body: some View {
-                  ZStack {
-                      LinearGradient(
-                          colors: [
-                              Color(red: 0.15, green: 0.04, blue: 0.10),
-                              Color(red: 0.08, green: 0.02, blue: 0.05),
-                              Color(red: 0.02, green: 0.02, blue: 0.05)
-                          ],
-                          startPoint: .topLeading, endPoint: .bottomTrailing
-                      )
-                      .edgesIgnoringSafeArea(.all)
-
-                      // decorative laughing emoji confetti
-                      ForEach(0..<8, id: \.self) { i in
-                          Text(["😏", "😂", "🤣", "🙃", "😜", "🤡", "💀", "🫠"][i])
-                              .font(.system(size: 22))
-                              .offset(
-                                  x: CGFloat([-130, -90, -40, 30, 80, 120, -110, 100][i]),
-                                  y: CGFloat([-260, -200, -180, -200, -240, -180, 240, 220][i])
-                              )
-                              .opacity(0.55)
-                              .rotationEffect(.degrees(rotating ? Double(i*30) : 0))
-                              .animation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true), value: rotating)
-                      }
-
-                      VStack(spacing: 22) {
-                          GifOnlyView(resourceName: "vpn_jailbreak")
-                              .frame(width: 240, height: 240)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 28)
-                                      .fill(Color.white.opacity(0.04))
-                                      .overlay(
-                                          RoundedRectangle(cornerRadius: 28)
-                                              .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                                      )
-                              )
-                              .shadow(color: Color.storePink.opacity(0.35), radius: 24, y: 8)
-                              .scaleEffect(animateBounce ? 1.04 : 0.96)
-                              .animation(.spring(response: 0.5, dampingFraction: 0.55).repeatForever(autoreverses: true), value: animateBounce)
-
-                          VStack(spacing: 10) {
-                              HStack(spacing: 6) {
-                                  Text("Bro… really?")
-                                      .font(.system(size: 26, weight: .heavy))
-                                  Text("🤨")
-                                      .font(.system(size: 26))
-                              }
-                              .foregroundColor(.white)
-
-                              Text("We see you’re using a VPN\nor a jailbroken device.")
-                                  .font(.system(size: 15, weight: .semibold))
-                                  .foregroundColor(.white.opacity(0.85))
-                                  .multilineTextAlignment(.center)
-                                  .lineSpacing(3)
-
-                              Text("Turn it off and come back like a normal person. We promise it won’t bite. 🦷")
-                                  .font(.system(size: 13, weight: .medium))
-                                  .foregroundColor(.white.opacity(0.6))
-                                  .multilineTextAlignment(.center)
-                                  .lineSpacing(3)
-                                  .padding(.horizontal, 10)
-                          }
-                          .padding(.horizontal, 8)
-
-                          HStack(spacing: 10) {
-                              Button {
-                                  HapticManager.shared.error()
-                              } label: {
-                                  HStack(spacing: 6) {
-                                      Image(systemName: "wifi.exclamationmark")
-                                          .font(.system(size: 13, weight: .bold))
-                                      Text("Why?")
-                                          .font(.system(size: 14, weight: .bold))
-                                  }
-                                  .foregroundColor(.white)
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: 48)
-                                  .background(Capsule().fill(Color.white.opacity(0.08)))
-                                  .overlay(
-                                      Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                  )
-                              }
-
-                              Button {
-                                  HapticManager.shared.impact(.medium)
-                                  // Reset the cache so a fresh re-scan happens
-                                  VPNDetector.reset()
-                                  onDismiss?()
-                              } label: {
-                                  HStack(spacing: 6) {
-                                      Image(systemName: "arrow.uturn.backward")
-                                          .font(.system(size: 13, weight: .bold))
-                                      Text("Fine, Retry")
-                                          .font(.system(size: 14, weight: .bold))
-                                  }
-                                  .foregroundColor(.white)
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: 48)
-                                  .background(
-                                      Capsule().fill(
-                                          LinearGradient(colors: [Color.storePink, Color.purple],
-                                                         startPoint: .leading, endPoint: .trailing)
-                                      )
-                                  )
-                                  .shadow(color: Color.storePink.opacity(0.4), radius: 10, y: 5)
-                              }
-                          }
-                          .padding(.horizontal, 40)
-                          .padding(.top, 4)
-                      }
-                      .padding(.horizontal, 24)
-                  }
-                  .onAppear {
-                      animateBounce = true
-                      rotating = true
-                  }
-                  .preferredColorScheme(.dark)
-              }
-          }
-
-          // ============================================================
           // STATUS OVERLAY HOST
           // ------------------------------------------------------------
           // Drop this anywhere in your view tree (typically at the very
@@ -5631,18 +5179,13 @@ jobs:
                               center.refresh()
                           }
                           .transition(.opacity.combined(with: .scale(scale: 1.02)))
-                      case .vpnOrJailbreak:
-                          VPNJailbreakScreen(onDismiss: {
-                              HapticManager.shared.impact(.light)
-                              center.refresh()
-                          })
-                          .transition(.opacity.combined(with: .scale(scale: 1.02)))
                       }
                   }
                   .animation(.easeInOut(duration: 0.25), value: center.kind)
               }
           }
           STATUSEOF
+
 
       # =========================================================
       # BUILD
