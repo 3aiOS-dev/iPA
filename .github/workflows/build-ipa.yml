@@ -5715,12 +5715,13 @@ jobs:
 
                   // 3. Free storage check
                   if let sizeStr = app.ipaSize,
-                     let sizeMB = parseSizeMB(sizeStr) {
+                     let sizeMBDouble = parseSizeMB(sizeStr) {
+                      let sizeMB = Int(sizeMBDouble.rounded())
                       let freeMB = freeDiskSpaceMB()
                       if freeMB < sizeMB {
                           score -= 30
-                          reasons.append("Not enough free space (\(freeMB) MB free, need \(Int(sizeMB)) MB)")
-                      } else if freeMB < sizeMB * 1.5 {
+                          reasons.append("Not enough free space (\(freeMB) MB free, need \(sizeMB) MB)")
+                      } else if freeMB < Int((Double(sizeMB) * 1.5).rounded()) {
                           score -= 10
                           reasons.append("Low free space — consider cleaning up before installing")
                       } else {
@@ -5755,9 +5756,18 @@ jobs:
               /// Parses strings like "120 MB", "1.2 GB", "850KB" into MB (Double).
               static func parseSizeMB(_ s: String) -> Double? {
                   let trimmed = s.trimmingCharacters(in: .whitespaces).uppercased()
-                  let scanner = Scanner(string: trimmed)
-                  var value: Double = 0
-                  guard scanner.scanDouble(&value) else { return nil }
+                  // Extract the leading numeric portion (e.g. "1.2 GB" -> 1.2).
+                  // This avoids the deprecated `Scanner.scanDouble` API that
+                  // Xcode 26 warns about.
+                  var numberPart = ""
+                  var seenDot = false
+                  for ch in trimmed {
+                      if ch.isNumber { numberPart.append(ch) }
+                      else if ch == "." && !seenDot { numberPart.append(ch); seenDot = true }
+                      else { break }
+                  }
+                  guard !numberPart.isEmpty,
+                        let value = Double(numberPart) else { return nil }
                   if trimmed.contains("GB") { return value * 1024.0 }
                   if trimmed.contains("KB") { return value / 1024.0 }
                   return value // assume MB
