@@ -71,7 +71,8 @@ jobs:
           random.seed(42)
 
           def gradient(w, h, c1, c2, vertical=True):
-              img = Image.new("RGB", (w, h), c1)
+              # RGBA so we can paste it onto other RGBA layers with mask.
+              img = Image.new("RGBA", (w, h), c1 + (255,))
               d = ImageDraw.Draw(img)
               steps = h if vertical else w
               for i in range(steps):
@@ -79,15 +80,20 @@ jobs:
                   r = int(c1[0] + (c2[0] - c1[0]) * t)
                   g = int(c1[1] + (c2[1] - c1[1]) * t)
                   b = int(c1[2] + (c2[2] - c1[2]) * t)
-                  d.line([(0, i), (w, i)] if vertical else [(i, 0), (i, h)], fill=(r, g, b))
+                  d.line([(0, i), (w, i)] if vertical else [(i, 0), (i, h)], fill=(r, g, b, 255))
               return img
 
           def rounded_card(w, h, radius, fill, shadow=True):
+              # Always return an RGBA image of the requested (w, h) size so
+              # it can be pasted as both source AND mask onto an RGBA base.
               img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
               d = ImageDraw.Draw(img)
               if shadow:
+                  # Drop shadow on a slightly offset rectangle (clipped to canvas)
                   d.rounded_rectangle((4, 8, w - 4, h - 4), radius=radius, fill=(0, 0, 0, 60))
-              d.rounded_rectangle((0, 0, w - 8, h - 12), radius=radius, fill=fill)
+              # The card body fills the full canvas with a small inner margin.
+              body = (4, 4, w - 5, h - 5) if shadow else (0, 0, w - 1, h - 1)
+              d.rounded_rectangle(body, radius=radius, fill=fill)
               return img
 
           def find_font(size):
@@ -108,10 +114,17 @@ jobs:
                   w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
               except AttributeError:
                   w, h = d.textsize(txt, font=font)
+              # Pillow requires the fill tuple length to match the image mode.
+              # If we got an RGB image but an RGBA-style fill (4-tuple), trim it.
+              if isinstance(fill, tuple) and len(fill) == 4 and getattr(d, "_image", None) is not None:
+                  if d._image.mode == "RGB":
+                      fill = fill[:3]
               d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
 
           def draw_icon_circle(w, h, color, glyph, glyph_color=(255, 255, 255)):
+              # Return RGBA so it can be pasted as a masked layer onto the base.
               img = gradient(w, h, color, tuple(max(0, c - 40) for c in color))
+              # gradient() now returns RGBA; ImageDraw.Draw works on RGBA too.
               d = ImageDraw.Draw(img)
               f = find_font(int(h * 0.55))
               text_centered(d, glyph, w // 2, h // 2, f, glyph_color)
@@ -123,6 +136,7 @@ jobs:
                   bg.paste(img, mask=img.split()[-1])
                   img = bg
               img.save(path, "PNG", optimize=True)
+              return img
 
           # Advanced Wallet hero
           W, H = 900, 600
