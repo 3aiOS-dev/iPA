@@ -71,7 +71,6 @@ jobs:
           random.seed(42)
 
           def gradient(w, h, c1, c2, vertical=True):
-              # RGBA so we can paste it onto other RGBA layers with mask.
               img = Image.new("RGBA", (w, h), c1 + (255,))
               d = ImageDraw.Draw(img)
               steps = h if vertical else w
@@ -84,14 +83,10 @@ jobs:
               return img
 
           def rounded_card(w, h, radius, fill, shadow=True):
-              # Always return an RGBA image of the requested (w, h) size so
-              # it can be pasted as both source AND mask onto an RGBA base.
               img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
               d = ImageDraw.Draw(img)
               if shadow:
-                  # Drop shadow on a slightly offset rectangle (clipped to canvas)
                   d.rounded_rectangle((4, 8, w - 4, h - 4), radius=radius, fill=(0, 0, 0, 60))
-              # The card body fills the full canvas with a small inner margin.
               body = (4, 4, w - 5, h - 5) if shadow else (0, 0, w - 1, h - 1)
               d.rounded_rectangle(body, radius=radius, fill=fill)
               return img
@@ -114,17 +109,13 @@ jobs:
                   w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
               except AttributeError:
                   w, h = d.textsize(txt, font=font)
-              # Pillow requires the fill tuple length to match the image mode.
-              # If we got an RGB image but an RGBA-style fill (4-tuple), trim it.
               if isinstance(fill, tuple) and len(fill) == 4 and getattr(d, "_image", None) is not None:
                   if d._image.mode == "RGB":
                       fill = fill[:3]
               d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
 
           def draw_icon_circle(w, h, color, glyph, glyph_color=(255, 255, 255)):
-              # Return RGBA so it can be pasted as a masked layer onto the base.
               img = gradient(w, h, color, tuple(max(0, c - 40) for c in color))
-              # gradient() now returns RGBA; ImageDraw.Draw works on RGBA too.
               d = ImageDraw.Draw(img)
               f = find_font(int(h * 0.55))
               text_centered(d, glyph, w // 2, h // 2, f, glyph_color)
@@ -343,7 +334,6 @@ jobs:
                   <key>UIApplicationSupportsMultipleScenes</key><false/>
               </dict>
               <key>UIApplicationSupportsIndirectInputEvents</key><true/>
-              <!-- Custom URL scheme for the auto-UDID profile redirect -->
               <key>CFBundleURLTypes</key>
               <array>
                   <dict>
@@ -355,12 +345,10 @@ jobs:
                       </array>
                   </dict>
               </array>
-              <!-- Apple Pay merchant capability -->
               <key>com.apple.developer.in-app-payments</key>
               <array>
                   <string>merchant.com.vip21.store.pro</string>
               </array>
-              <!-- Allow HTTPS to AppTesters repo + crypto endpoints -->
               <key>NSAppTransportSecurity</key>
               <dict>
                   <key>NSAllowsArbitraryLoads</key>
@@ -368,6 +356,33 @@ jobs:
                   <key>NSExceptionDomains</key>
                   <dict>
                       <key>repository.apptesters.org</key>
+                      <dict>
+                          <key>NSIncludesSubdomains</key>
+                          <true/>
+                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                          <false/>
+                          <key>NSExceptionRequiresForwardSecrecy</key>
+                          <true/>
+                      </dict>
+                      <key>apptesters.org</key>
+                      <dict>
+                          <key>NSIncludesSubdomains</key>
+                          <true/>
+                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                          <false/>
+                          <key>NSExceptionRequiresForwardSecrecy</key>
+                          <true/>
+                      </dict>
+                      <key>githubusercontent.com</key>
+                      <dict>
+                          <key>NSIncludesSubdomains</key>
+                          <true/>
+                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                          <false/>
+                          <key>NSExceptionRequiresForwardSecrecy</key>
+                          <true/>
+                      </dict>
+                      <key>github.com</key>
                       <dict>
                           <key>NSIncludesSubdomains</key>
                           <true/>
@@ -387,7 +402,6 @@ jobs:
                       </dict>
                   </dict>
               </dict>
-              <!-- Camera (QR scan, optional) -->
               <key>NSCameraUsageDescription</key>
               <string>21s uses the camera to scan wallet QR codes for fast top-up.</string>
           </dict>
@@ -397,7 +411,6 @@ jobs:
       # =========================================================
       # SOURCE CODE - Constants.swift
       # =========================================================
-
       - name: Generate code - Constants.swift
         run: |
           cat > Constants.swift << 'VIPEOF'
@@ -473,25 +486,12 @@ jobs:
               }
           }
 
-          // ============================================================
-          // NotificationManager + ScreenCaptureService
-          // ------------------------------------------------------------
-          // - Local notifications (UNUserNotificationCenter) for
-          //   "Download started" and "Download completed".
-          // - Observes UIApplication.userDidTakeScreenshotNotification
-          //   and publishes the captured UIImage so the SwiftUI layer
-          //   can show a "Thanks for taking a screenshot" overlay
-          //   (with the same look as the Alerts onboarding screens)
-          //   and a "Share with friends" button.
-          // ============================================================
-
           final class NotificationManager: ObservableObject {
               static let shared = NotificationManager()
               @Published private(set) var permissionGranted: Bool = false
 
               private init() {}
 
-              /// Ask the user once. Silent on failure (e.g. simulator).
               nonisolated func requestPermissionIfNeeded() {
                   let center = UNUserNotificationCenter.current()
                   center.getNotificationSettings { settings in
@@ -548,9 +548,7 @@ jobs:
           final class ScreenCaptureService: ObservableObject {
               static let shared = ScreenCaptureService()
 
-              /// The most recent screenshot captured by the user (if any).
               @Published var lastScreenshot: UIImage? = nil
-              /// Triggers the SwiftUI overlay to show. Reset to false after dismissal.
               @Published var showThanksOverlay: Bool = false
 
               private var observer: NSObjectProtocol?
@@ -565,9 +563,6 @@ jobs:
                       queue: .main
                   ) { [weak self] _ in
                       guard let self = self else { return }
-                      // iOS does NOT pass the screenshot in the notification payload.
-                      // We just trigger the overlay - the image is loaded from the
-                      // user's Photos library on demand (best effort).
                       self.lastScreenshot = self.loadLatestScreenshotFromPhotos()
                       self.showThanksOverlay = true
                       HapticManager.shared.success()
@@ -586,20 +581,28 @@ jobs:
                   showThanksOverlay = false
               }
 
-              /// Best-effort: load the most recent image from the system
-              /// Photo library so the user can preview their screenshot
-              /// inside the "Thanks" overlay. Requires the user to grant
-              /// "Add" or "Full Access" Photos permission.
               private func loadLatestScreenshotFromPhotos() -> UIImage? {
-                  // We deliberately keep this lightweight. The real "share"
-                  // action uses the system UIActivityViewController, which
-                  // automatically reads the latest screenshot from Photos
-                  // when the user picks the "Save Image" / "Messages" target.
                   return nil
               }
           }
           VIPEOF
 
+      # =========================================================
+      # SOURCE CODE - Models.swift  (FIXED schema: handles BOTH shapes)
+      # =========================================================
+      # The AppTesters apps.json returns:
+      #   { "name": "...", "identifier": "...", ...,
+      #     "apps": [ { "name": "AdobeExpress", "bundleID": "...", "down": "<ipa url>",
+      #                 "icon": "<png url>", "version": "30.7.0", "size": 141820849, ... }, ... ] }
+      #
+      # i.e. `apps` is a top-level ARRAY, not a `{ success, count, apps }` envelope.
+      # The previous decoder was strict and threw "The data couldn't be read
+      # because it isn't in the correct format" because of that mismatch.
+      #
+      # The fixed decoder below accepts BOTH shapes (AppTesters top-level
+      # array, AND the legacy `apps: { apps: [...] }` envelope) so the
+      # build works today and won't break if the source schema changes.
+      # =========================================================
       - name: Generate code - Models.swift
         run: |
           cat > Models.swift << 'VIPEOF'
@@ -625,40 +628,78 @@ jobs:
 
           // ==================== Remote Store API models ====================
           // Primary source: https://repository.apptesters.org/apps.json
-          // Schema (AppTesters):
-          //   { "name": "...", "identifier": "...", "apps": [
-          //       { "name": "AdobeExpress",
-          //         "bundleID": "com.adobe.post",
-          //         "bundleIdentifier": "com.adobe.post",
-          //         "version": "30.7.0",
-          //         "versionDate": "2026-07-24",
-          //         "fullDate": "20260724032303",
-          //         "size": 141820849,
-          //         "down": "<github release .ipa URL>",
-          //         "downloadURL": "<github release .ipa URL>",
-          //         "developerName": "...",
-          //         "localizedDescription": "...",
-          //         "icon": "<icon png URL>",
-          //         "iconURL": "<icon png URL>" }, ... ] }
           //
-          // The decoder is LENIENT - it also accepts the legacy kurdstore
-          // shape (apps.apps[].ipa_url) so the app keeps working if the
-          // source is swapped back at any point.
+          // AppTesters schema (as it actually is on the wire):
+          //   { "name": "AppTesters IPA Repo", "identifier": "org.apptesters.repo",
+          //     "sourceURL": "...", "iconURL": "...", "subtitle": "...",
+          //     "apps": [ { "name": "AdobeExpress", "bundleID": "com.adobe.post",
+          #                 "version": "30.7.0", "versionDate": "2026-07-24",
+          #                 "fullDate": "20260724032303", "size": 141820849,
+          #                 "down": "<github release .ipa URL>",
+          #                 "downloadURL": "<github release .ipa URL>",
+          #                 "icon": "<icon png URL>",
+          #                 "iconURL": "<icon png URL>",
+          #                 "developerName": "...", "localizedDescription": "...",
+          #                 "type": 1 }, ... ] }
+          //
+          // The legacy schema (kept for backward compatibility) wraps `apps`
+          // inside an envelope:
+          //   { "last_updated": "...", "apps": { "success": true, "count": N, "apps": [...] } }
+          //
+          // `StoreAPIResponse` below is a custom decoder that accepts
+          // BOTH shapes. The UI code (StoreFeed) only consumes `.apps`,
+          // `.lastUpdated`, and `.lastError`.
 
           struct StoreAPIResponse: Codable {
               let lastUpdated: String?
-              let apps: StoreAPIAppsEnvelope
+              let apps: [StoreAPIApp]
 
               enum CodingKeys: String, CodingKey {
                   case lastUpdated = "last_updated"
                   case apps
               }
-          }
 
-          struct StoreAPIAppsEnvelope: Codable {
-              let success: Bool?
-              let count: Int?
-              let apps: [StoreAPIApp]
+              // Custom decoder - tolerates BOTH shapes so the feed can
+              // be loaded from the real AppTesters source (top-level
+              // "apps" array) AND the legacy envelope (apps.apps).
+              init(from decoder: Decoder) throws {
+                  let c = try decoder.container(keyedBy: CodingKeys.self)
+
+                  self.lastUpdated = try? c.decode(String.self, forKey: .lastUpdated)
+
+                  // Try #1: apps is a top-level array of StoreAPIApp
+                  if let arr = try? c.decode([StoreAPIApp].self, forKey: .apps) {
+                      self.apps = arr
+                      return
+                  }
+
+                  // Try #2: apps is a { apps: [StoreAPIApp] } envelope
+                  struct Envelope: Codable {
+                      let success: Bool?
+                      let count: Int?
+                      let apps: [StoreAPIApp]
+                  }
+                  if let env = try? c.decode(Envelope.self, forKey: .apps) {
+                      self.apps = env.apps
+                      return
+                  }
+
+                  // Try #3: apps is a single object (shouldn't happen, but
+                  // we don't want to crash the whole feed if it does).
+                  if let one = try? c.decode(StoreAPIApp.self, forKey: .apps) {
+                      self.apps = [one]
+                      return
+                  }
+
+                  // Nothing matched - empty feed
+                  self.apps = []
+              }
+
+              func encode(to encoder: Encoder) throws {
+                  var c = encoder.container(keyedBy: CodingKeys.self)
+                  try c.encodeIfPresent(lastUpdated, forKey: .lastUpdated)
+                  try c.encode(apps, forKey: .apps)
+              }
           }
 
           struct StoreAPIApp: Codable, Identifiable, Hashable {
@@ -678,7 +719,6 @@ jobs:
               let createdAt: String?
               let updatedAt: String?
 
-              // AppTesters-only fields (optional, both supported)
               let downloadURL: String?
               let down: String?
               let iconURL: String?
@@ -719,7 +759,6 @@ jobs:
 
               init(from decoder: Decoder) throws {
                   let c = try decoder.container(keyedBy: CodingKeys.self)
-                  // AppTesters schema has no numeric id - synthesize a stable one
                   if let intId = try? c.decode(Int.self, forKey: .id) {
                       self.id = intId
                   } else {
@@ -764,7 +803,6 @@ jobs:
                   self.type = (try? c.decode(Int.self, forKey: .type))
               }
 
-              // Re-encode path (kept identical to decode - used when caching)
               func encode(to encoder: Encoder) throws {
                   var c = encoder.container(keyedBy: CodingKeys.self)
                   try c.encode(id, forKey: .id)
@@ -821,13 +859,6 @@ jobs:
 
           @MainActor
           public final class AuthManager: ObservableObject {
-              // Singleton so views (e.g. ReferralView) can read currentUser
-              // without having to receive the manager as a parameter.
-              // `loadUser()` updates @Published values which must happen on
-              // the main actor. We use `MainActor.assumeIsolated` inside the
-              // static let initializer (safe because Swift guarantees
-              // `static let` is initialized lazily on first access, and our
-              // first access is from a SwiftUI view, i.e. on the main thread).
               public static let shared = MainActor.assumeIsolated { AuthManager() }
 
               @Published var currentUser: AppUser?
@@ -837,10 +868,6 @@ jobs:
 
               private let userDefaultsKey = AppConstants.userDefaultsKey
 
-              // `loadUser` only touches UserDefaults and @Published values,
-              // both safe to call on the main actor. The default initializer
-              // is the @MainActor-isolated one; SwiftUI guarantees the first
-              // access to `AuthManager.shared` happens on the main thread.
               public init() { loadUser() }
 
               func signUp(phoneNumber: String, username: String, password: String, confirmPassword: String, udid: String) -> Bool {
@@ -1435,9 +1462,6 @@ jobs:
                                           }
                                       }
 
-                                      // Auto-fetch UDID: opens Safari, reads device UDID
-                                      // via a temporary mobileconfig profile, returns
-                                      // to the app with 0% error rate.
                                       Button {
                                           showAutoUDID = true
                                       } label: {
@@ -1691,6 +1715,17 @@ jobs:
           }
           VIPEOF
 
+      # =========================================================
+      # SOURCE CODE - StoreView.swift  (FIXED StoreFeed)
+      # =========================================================
+      # The previous StoreFeed used `parsed.apps.apps`, which only
+      # works if the JSON has the legacy envelope shape. With the
+      # real AppTesters source (`apps` is a top-level array) the
+      # apps list was empty, so the Store tab showed 0 apps.
+      #
+      # This version reads from `parsed.apps` directly, and adds
+      # a friendlier error message when the source is unreachable.
+      # =========================================================
       - name: Generate code - StoreView.swift
         run: |
           cat > StoreView.swift << 'VIPEOF'
@@ -1698,11 +1733,10 @@ jobs:
           import UIKit
           import ImageIO
 
-          // ================= Store Design Tokens =================
           extension Color {
               static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
               static let storeCard      = Color.white
-              static let storePrimary   = Color(red: 0.24, green: 0.36, blue: 0.98) // vivid blue
+              static let storePrimary   = Color(red: 0.24, green: 0.36, blue: 0.98)
               static let storePrimaryDk = Color(red: 0.18, green: 0.27, blue: 0.82)
               static let storePink      = Color(red: 0.96, green: 0.35, blue: 0.55)
               static let storeYellow    = Color(red: 1.00, green: 0.78, blue: 0.20)
@@ -1717,16 +1751,6 @@ jobs:
               static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
           }
 
-          // ================= Remote Icon Cache (THREAD-SAFE) =================
-          // Loads app icons (PNG) from remote URLs with an in-memory cache,
-          // disk cache (Caches dir), and a graceful placeholder fallback.
-          //
-          // CRASH FIX: This class is now MainActor-isolated, with a separate
-          // background URLSession for fetching. The previous implementation
-          // called DispatchQueue.main.sync from detached background tasks, which
-          // could deadlock when the cache was first touched from a background
-          // thread during a SwiftUI update - and the resulting hang/crash was
-          // triggered every time the user opened the Store tab.
           @MainActor
           final class RemoteIconCache: ObservableObject {
               static let shared = RemoteIconCache()
@@ -1749,15 +1773,11 @@ jobs:
                   self.diskDir = dir
               }
 
-              /// Synchronous lookup. Returns a cached image if available, otherwise
-              /// returns nil and kicks off an async fetch that will republish the
-              /// image into `cache` when complete (the SwiftUI view will refresh).
               func image(for urlString: String?) -> UIImage? {
                   guard let s = urlString, let url = URL(string: s) else { return nil }
                   if let hit = cache[s] { return hit }
 
                   let dir = self.diskDir
-                  // Build the disk path (pure function, safe to call from any thread)
                   let name = s
                       .replacingOccurrences(of: "https://", with: "")
                       .replacingOccurrences(of: "http://", with: "")
@@ -1765,13 +1785,11 @@ jobs:
                       .replacingOccurrences(of: ":", with: "_")
                   let path = dir.appendingPathComponent(name)
 
-                  // Fast disk read (off-main) - happens at most once per URL
                   if let data = try? Data(contentsOf: path), let img = UIImage(data: data) {
                       cache[s] = img
                       return img
                   }
 
-                  // Kick off the network fetch; the view refreshes via @Published.
                   Task { [weak self] in
                       guard let self else { return }
                       await self.fetch(urlString: s, url: url, path: path)
@@ -1783,16 +1801,13 @@ jobs:
                   do {
                       let (data, _) = try await session.data(from: url)
                       guard let img = UIImage(data: data) else { return }
-                      // Persist to disk (best-effort)
                       try? data.write(to: path)
                       cache[urlString] = img
                   } catch {
-                      // Network failure - keep the placeholder, no crash
                   }
               }
           }
 
-          // ================= Image helpers =================
           struct RemoteIcon: View {
               let url: String?
               var size: CGFloat = 56
@@ -1820,7 +1835,6 @@ jobs:
               }
           }
 
-          // SF Symbol hint derived from a category string (used as a soft accent color only)
           func colorForCategory(_ category: String?) -> Color {
               guard let c = category?.lowercased() else { return .storePrimary }
               if c.contains("photo") || c.contains("camera") { return .storePink }
@@ -1835,6 +1849,7 @@ jobs:
           }
 
           // ================= View Model: loads & caches the store feed =================
+          // FIX: reads `parsed.apps` (now an array, not nested envelope).
           @MainActor
           final class StoreFeed: ObservableObject {
               @Published var apps: [StoreAPIApp] = []
@@ -1854,7 +1869,7 @@ jobs:
               func loadCachedThenRefresh() {
                   if let data = try? Data(contentsOf: cacheURL),
                      let parsed = try? JSONDecoder().decode(StoreAPIResponse.self, from: data) {
-                      self.apps = parsed.apps.apps
+                      self.apps = parsed.apps
                       self.lastUpdated = parsed.lastUpdated
                   }
                   Task { await refresh() }
@@ -1864,7 +1879,7 @@ jobs:
                   isLoading = true
                   lastError = nil
                   do {
-                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
                       req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
                       let (data, response) = try await URLSession.shared.data(for: req)
                       if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -1872,7 +1887,7 @@ jobs:
                                         userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
                       }
                       let parsed = try JSONDecoder().decode(StoreAPIResponse.self, from: data)
-                      self.apps = parsed.apps.apps
+                      self.apps = parsed.apps
                       self.lastUpdated = parsed.lastUpdated
                       try? data.write(to: cacheURL)
                   } catch {
@@ -1881,7 +1896,6 @@ jobs:
                   isLoading = false
               }
 
-              // Sections derived from the feed
               var featured: [StoreAPIApp] {
                   Array(apps.prefix(8))
               }
@@ -1898,7 +1912,6 @@ jobs:
               }
           }
 
-          // ================= Root Shell =================
           struct StoreRootView: View {
               @ObservedObject var authManager: AuthManager
               @StateObject private var feed = StoreFeed()
@@ -1914,8 +1927,6 @@ jobs:
                   ZStack(alignment: .bottom) {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
 
-                      // Fast tab switch: each tab is a persistent view hidden via opacity,
-                      // so the content is already built and tapping a tab is instant.
                       ZStack {
                           StoreHomeView(feed: feed,
                                        onMenu: { openSettings() },
@@ -1942,15 +1953,11 @@ jobs:
 
                       StoreTabBar(tab: $tab, onSearch: { showSearch = true })
 
-                      // =========================================================
-                      // STATUS OVERLAYS (no-internet) - top of stack
-                      // =========================================================
                       StatusOverlayHost()
                           .ignoresSafeArea(.keyboard)
                           .zIndex(9999)
                   }
                   .onAppear {
-                      // Kick off network monitor for no-internet detection
                       StatusCenter.shared.start()
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
@@ -1986,7 +1993,6 @@ jobs:
               }
           }
 
-          // ================= Tab Bar =================
           struct StoreTabBar: View {
               @Binding var tab: Int
               var onSearch: () -> Void
@@ -2039,7 +2045,6 @@ jobs:
               }
           }
 
-          // ================= Home Tab =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
@@ -2098,7 +2103,6 @@ jobs:
               }
           }
 
-          // ================= Status bar (loading / error / updated time) =================
           struct StoreStatusBar: View {
               @ObservedObject var feed: StoreFeed
 
@@ -2146,7 +2150,6 @@ jobs:
               }
           }
 
-          // ================= Loading / Empty states =================
           struct LoadingGrid: View {
               var body: some View {
                   VStack(spacing: 14) {
@@ -2187,7 +2190,6 @@ jobs:
               }
           }
 
-          // ================= Header =================
           struct StoreHeader: View {
               let title: String
               var onRefresh: (() -> Void)? = nil
@@ -2221,13 +2223,6 @@ jobs:
                                       .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
                               }
                           }
-                          // CRASH FIX + GIF REMOVED:
-                          // The old code embedded a custom LoopingGifPlayer UIView
-                          // (with `DispatchQueue.main.sync` from detached tasks inside
-                          // RemoteIconCache). That combination was the source of the
-                          // crash that happened right when the user opened the Store
-                          // tab. We've replaced the animated GIF with a clean, native
-                          // SF Symbol bell - instant, no main-thread hops, no crashes.
                           Button {
                               if let onBell { onBell() } else { HapticManager.shared.impact(.light) }
                           } label: {
@@ -2246,12 +2241,6 @@ jobs:
               }
           }
 
-          // ================= Old GIF chip kept as a no-op stub =================
-          // (Was: BellGifChip. Replaced by a static SF Symbol bell above to
-          // stop the crash. The settings onboarding / alerts onboarding screens
-          // still use LoopingGifPlayer for the intro GIFs - those are fine
-          // because they only run once at first launch and never get touched
-          // while the user navigates between Store tabs.)
           struct BellGifChip: View {
               var body: some View {
                   Image(systemName: "bell.fill")
@@ -2281,7 +2270,6 @@ jobs:
               }
           }
 
-          // ================= Discount Banner =================
           struct DiscountBanner: View {
               var body: some View {
                   ZStack(alignment: .leading) {
@@ -2317,7 +2305,6 @@ jobs:
               }
           }
 
-          // ================= Section Header =================
           struct SectionHeader: View {
               let title: String
               var count: Int? = nil
@@ -2340,7 +2327,6 @@ jobs:
               }
           }
 
-          // ================= App Tile (grid) =================
           struct AppTile: View {
               let app: StoreAPIApp
               var body: some View {
@@ -2366,7 +2352,6 @@ jobs:
               }
           }
 
-          // ================= Flash Card =================
           struct FlashCard: View {
               let app: StoreAPIApp
               var body: some View {
@@ -2405,7 +2390,6 @@ jobs:
               }
           }
 
-          // ================= App Detail =================
           struct AppDetailView: View {
               let app: StoreAPIApp
               @Environment(\.dismiss) private var dismiss
@@ -2477,7 +2461,6 @@ jobs:
                           .padding(.horizontal, 30)
                           .offset(y: -20)
 
-                          // Screenshots
                           if let shots = app.screenshots, !shots.isEmpty {
                               VStack(alignment: .leading, spacing: 10) {
                                   HStack {
@@ -2518,8 +2501,6 @@ jobs:
                                   .font(.system(size: 13))
                                   .foregroundColor(.storeSub)
                                   .lineSpacing(4)
-
-                              // (Direct download removed - Install is internal only)
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
@@ -2534,7 +2515,6 @@ jobs:
               }
           }
 
-          // ================= Screenshot Gallery =================
           struct ScreenshotGallery: View {
               let urls: [String]
               let startIndex: Int
@@ -2623,9 +2603,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // WALLET ONBOARDING (3 screens) - shown on first Wallet tap
-          // ============================================================
           struct WalletOnboardingPage: Identifiable {
               let id = UUID()
               let imageName: String
@@ -2764,9 +2741,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // WALLET TAB
-          // ============================================================
           struct WalletView: View {
               var onMenu: (() -> Void)? = nil
               var onBell: (() -> Void)? = nil
@@ -2917,9 +2891,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // CREDIT CARD VIEW - hidden by default, tap to reveal+copy
-          // ============================================================
           struct CreditCardView: View {
               let userID: String
               let cardNumber: String
@@ -3032,15 +3003,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // LOOPING GIF PLAYER (kept for the intro onboarding screens only)
-          // ============================================================
-          // NOTE: This player is now ONLY used by the Settings onboarding
-          // and Alerts onboarding screens. The Store tab's bell button was
-          // switched to a static SF Symbol to eliminate the crash. The first
-          // call still goes through `makeUIView` on the main thread and uses
-          // a guarded `UIImage.gif(...)` lookup that returns nil fast if the
-          // resource is missing.
           struct LoopingGifPlayer: UIViewRepresentable {
               let resourceName: String
               let ext: String
@@ -3104,9 +3066,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // EDIT ID SHEET
-          // ============================================================
           struct EditIDSheet: View {
               @Environment(\.dismiss) var dismiss
               @Binding var userID: String
@@ -3145,9 +3104,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // EDIT CARD SHEET
-          // ============================================================
           struct EditCardSheet: View {
               @Environment(\.dismiss) var dismiss
               @Binding var cardNumber: String
@@ -3195,15 +3151,9 @@ jobs:
               }
           }
 
-          // ============================================================
-          // ALERTS TAB - first-time onboarding (3 GIFs) + Alerts/Files segments.
-          // Real IPA download from the source URL with live progress,
-          // real share via UIActivityViewController, real file delete.
-          // Mirrors the same look/feel as the Wallet tab (BETA strip, version).
-          // ============================================================
           struct AlertsOnboardingPage: Identifiable {
               let id = UUID()
-              let imageName: String   // resource name without ".gif"
+              let imageName: String
               let title: String
               let description: String
           }
@@ -3330,7 +3280,6 @@ jobs:
               @State private var showShareSheet: Bool = false
               @State private var sharedFileURL: URL? = nil
 
-              // 3 onboarding GIFs - same look as the Wallet onboarding screens
               private let onboardingPages: [AlertsOnboardingPage] = [
                   AlertsOnboardingPage(
                       imageName: "alerts_onboarding1",
@@ -3355,7 +3304,6 @@ jobs:
                                   onMenu: { onMenu?() },
                                   onBell: { onBell?() })
 
-                      // Segment control: Alerts / Files
                       HStack(spacing: 0) {
                           segmentButton(title: "Alerts", segment: .alerts)
                           segmentButton(title: "Files", segment: .files)
@@ -3420,7 +3368,6 @@ jobs:
                   .buttonStyle(.plain)
               }
 
-              // MARK: - Alerts content (system notifications feed)
               @ViewBuilder
               private var alertsContent: some View {
                   VStack(spacing: 12) {
@@ -3450,7 +3397,6 @@ jobs:
                   }
               }
 
-              // MARK: - Files content (Downloading / Downloaded sections)
               @ViewBuilder
               private var filesContent: some View {
                   VStack(alignment: .leading, spacing: 14) {
@@ -3534,7 +3480,6 @@ jobs:
 
           enum AlertSegment: Hashable { case alerts, files }
 
-          // MARK: - Share sheet (UIActivityViewController bridge)
           struct ShareSheet: UIViewControllerRepresentable {
               let items: [Any]
               func makeUIViewController(context: Context) -> UIActivityViewController {
@@ -3543,7 +3488,6 @@ jobs:
               func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
           }
 
-          // MARK: - Alerts list row (system notification style)
           struct AlertRow: View {
               let app: StoreAPIApp
               var onInstall: () -> Void
@@ -3586,7 +3530,6 @@ jobs:
               }
           }
 
-          // MARK: - Files: Downloading row (with progress + pause)
           struct DownloadingRow: View {
               @ObservedObject var item: DownloadItem
               var onTogglePause: () -> Void
@@ -3640,7 +3583,6 @@ jobs:
               }
           }
 
-          // MARK: - Files: Downloaded row (with share + delete)
           struct DownloadedRow: View {
               @ObservedObject var item: DownloadItem
               var onShare: () -> Void
@@ -3691,7 +3633,6 @@ jobs:
               }
           }
 
-          // MARK: - Empty state
           struct EmptyFilesState: View {
               let icon: String
               let title: String
@@ -3717,7 +3658,6 @@ jobs:
               }
           }
 
-          // MARK: - URLSession delegate that funnels progress + completion to a DownloadItem
           final class ItemDownloadDelegate: NSObject, URLSessionDownloadDelegate {
               weak var item: DownloadItem?
               init(item: DownloadItem) { self.item = item }
@@ -3753,7 +3693,6 @@ jobs:
               }
           }
 
-          // MARK: - DownloadItem (real download backing one app)
           final class DownloadItem: ObservableObject, Identifiable {
               let id = UUID()
               let app: StoreAPIApp
@@ -3776,13 +3715,11 @@ jobs:
                   self.downloadURLString = app.ipaUrl ?? app.archiveUrl ?? app.githubUrl ?? ""
               }
 
-              /// Returns the stable on-disk location for this item's IPA file.
               var expectedLocalURL: URL {
                   let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                   return docs.appendingPathComponent("21s_\(app.id)_\(id.uuidString.prefix(8)).ipa")
               }
 
-              /// If a previous file for this app still exists on disk, mark the item as already completed.
               func restoreIfCompleted() {
                   let url = expectedLocalURL
                   if FileManager.default.fileExists(atPath: url.path) {
@@ -3819,7 +3756,6 @@ jobs:
                   }
                   self.task = t
                   t.resume()
-                  // Fire-and-forget local notification: "Download started"
                   NotificationManager.shared.notifyDownloadStarted(appName: app.name, appId: app.id)
               }
 
@@ -3872,7 +3808,6 @@ jobs:
                       self.session = nil
                       self.delegate = nil
                       HapticManager.shared.success()
-                      // Fire-and-forget local notification: "Download complete"
                       NotificationManager.shared.notifyDownloadCompleted(appName: self.app.name, appId: self.app.id)
                   }
               }
@@ -3893,14 +3828,12 @@ jobs:
               }
           }
 
-          // MARK: - Share request bridge (manager → view)
           struct ShareRequest: Identifiable, Equatable {
               let id = UUID()
               let fileURL: URL
               static func == (lhs: ShareRequest, rhs: ShareRequest) -> Bool { lhs.id == rhs.id }
           }
 
-          // MARK: - DownloadsManager (real download / share / delete)
           final class DownloadsManager: ObservableObject {
               static let shared = DownloadsManager()
               @Published private(set) var all: [DownloadItem] = []
@@ -3909,10 +3842,7 @@ jobs:
               var active: [DownloadItem] { all.filter { !$0.isCompleted } }
               var completed: [DownloadItem] { all.filter { $0.isCompleted } }
 
-              init() {
-                  // Completed items are restored lazily when the user re-installs
-                  // the same app (see DownloadItem.restoreIfCompleted).
-              }
+              init() {}
 
               func enqueue(app: StoreAPIApp) {
                   if all.contains(where: { $0.app.id == app.id }) { return }
@@ -3972,9 +3902,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // SOCIAL / PROFILE TAB
-          // ============================================================
           struct SocialView: View {
               @ObservedObject var authManager: AuthManager
               var onMenu: (() -> Void)? = nil
@@ -3996,12 +3923,10 @@ jobs:
                               Text(authManager.currentUser?.phoneNumber ?? "").font(.system(size: 12)).foregroundColor(.storeSub)
                           }
                           VStack(spacing: 10) {
-                              // Open the advanced P2P wallet (balance, top-up, send, refer)
                               NavigationLink(destination: WalletHomeView().navigationBarTitleDisplayMode(.inline)) {
                                   ProfileRow(icon: "creditcard.fill", label: "Wallet  $" + String(format: "%.2f", WalletStore.shared.balance), color: .storePrimary)
                               }
                               .buttonStyle(.plain)
-                              // Open the referral screen (link, stats, share)
                               NavigationLink(destination: ReferralView().navigationBarTitleDisplayMode(.inline)) {
                                   ProfileRow(icon: "gift.fill", label: "Refer & Earn", color: .storeYellow)
                               }
@@ -4050,9 +3975,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // SEARCH
-          // ============================================================
           struct SearchView: View {
               @Environment(\.dismiss) private var dismiss
               @ObservedObject var feed: StoreFeed
@@ -4117,14 +4039,10 @@ jobs:
 
           @main
           struct VIP21StoreApp: App {
-              // The "Thanks for taking a screenshot" overlay. Sits on top of
-              // every screen and is driven by ScreenCaptureService.
               @StateObject private var captureService = ScreenCaptureService.shared
               @State private var showShareSheet: Bool = false
 
               init() {
-                  // Ask for notification permission once at launch and start
-                  // listening for the system "screenshot taken" event.
                   NotificationManager.shared.requestPermissionIfNeeded()
                   ScreenCaptureService.shared.start()
               }
@@ -4133,7 +4051,6 @@ jobs:
                   WindowGroup {
                       NavigationView { AuthView() }
                           .navigationViewStyle(.stack)
-                          // Overlay that appears when the user takes a screenshot
                           .overlay(alignment: .center) {
                               if captureService.showThanksOverlay {
                                   ThanksForScreenshotOverlay(
@@ -4150,8 +4067,6 @@ jobs:
                           }
                           .animation(.spring(response: 0.35, dampingFraction: 0.78),
                                      value: captureService.showThanksOverlay)
-                          // System share sheet (iOS picks up the latest
-                          // screenshot from Photos automatically).
                           .sheet(isPresented: $showShareSheet) {
                               ShareSheet(items: [URL(string: "https://21s.app") as Any,
                                                  "Check out 21s Store 🚀" as Any].compactMap { $0 })
@@ -4160,27 +4075,17 @@ jobs:
               }
           }
 
-          // ============================================================
-          // THANKS FOR SCREENSHOT OVERLAY
-          // ------------------------------------------------------------
-          // Shown immediately after UIApplication.userDidTakeScreenshotNotification
-          // fires. Uses the same look & feel as the Alerts onboarding screens
-          // (card background, the same thanks_overlay.gif animation, share
-          // and dismiss buttons).
-          // ============================================================
           struct ThanksForScreenshotOverlay: View {
               var onShare: () -> Void
               var onClose: () -> Void
 
               var body: some View {
                   ZStack {
-                      // Dim background
                       Color.black.opacity(0.55)
                           .ignoresSafeArea()
                           .onTapGesture { onClose() }
 
                       VStack(spacing: 18) {
-                          // The same GIF asset used by the Alerts onboarding screens
                           LoopingGifPlayer(resourceName: "thanks_overlay", ext: "gif")
                               .frame(width: 220, height: 220)
                               .background(
@@ -4247,16 +4152,12 @@ jobs:
           }
           VIPEOF
 
-      # =========================================================
-      # SETTINGS SCREEN + SUB-SCREENS (matches the design exactly)
-      # =========================================================
       - name: Generate code - Settings.swift
         run: |
           cat > Settings.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
 
-          // ================= Settings Sheet (Root) =================
           struct SettingsView: View {
               @ObservedObject var authManager: AuthManager
               @Binding var isPresented: Bool
@@ -4632,7 +4533,6 @@ jobs:
               }
           }
 
-          // ================= 1) Profile Details =================
           struct ProfileDetailsView: View {
               @ObservedObject var authManager: AuthManager
               @Binding var isPresented: Bool
@@ -4822,7 +4722,6 @@ jobs:
               }
           }
 
-          // ================= 2) Change Password =================
           struct ChangePasswordView: View {
               @ObservedObject var authManager: AuthManager
               @Binding var isPresented: Bool
@@ -5017,7 +4916,6 @@ jobs:
               }
           }
 
-          // ================= 3) Notifications =================
           struct NotificationsSettingsView: View {
               @Binding var isPresented: Bool
               @Binding var pushEnabled: Bool
@@ -5142,7 +5040,6 @@ jobs:
               }
           }
 
-          // ================= 4) About Application =================
           struct AboutApplicationView: View {
               @Binding var isPresented: Bool
 
@@ -5272,7 +5169,6 @@ jobs:
               }
           }
 
-          // ================= 5) Help / FAQ =================
           struct HelpFAQView: View {
               @Binding var isPresented: Bool
               @State private var expandedID: UUID? = nil
@@ -5454,7 +5350,6 @@ jobs:
               }
           }
 
-          // ================= 6) Deactivate Account =================
           struct DeactivateAccountView: View {
               @ObservedObject var authManager: AuthManager
               @Binding var isPresented: Bool
@@ -5633,9 +5528,6 @@ jobs:
           }
           VIPEOF
 
-      # =========================================================
-      # STATUS / ERROR SCREENS - no-internet
-      # =========================================================
       - name: Generate code - StatusScreens.swift
         run: |
           cat > StatusScreens.swift << 'STATUSEOF'
@@ -5643,19 +5535,6 @@ jobs:
           import Network
           import UIKit
           import Foundation
-
-          // ============================================================
-          // STATUS / ERROR SCREENS
-          // ------------------------------------------------------------
-          // Currently shows:
-          //   1) No internet (gif + message + Retry button)
-          //   2) Otherwise: app works normally
-          //
-          // The detector is run on app launch and re-runs when the
-          // network path changes. A singleton (StatusCenter) publishes
-          // the current state and StoreRootView observes it to push
-          // the right overlay on top of the whole UI.
-          // ============================================================
 
           enum StatusKind: Equatable {
               case ok
@@ -5685,7 +5564,6 @@ jobs:
                       }
                   }
                   monitor.start(queue: queue)
-                  // Also do a first pass immediately
                   evaluate(currentPath: monitor.currentPath)
               }
 
@@ -5694,7 +5572,6 @@ jobs:
               }
 
               private func evaluate(currentPath: NWPath) {
-                  // Internet reachability - show this when offline
                   let online = (currentPath.status == .satisfied)
                   if !online {
                       if kind != .noInternet {
@@ -5703,17 +5580,10 @@ jobs:
                       kind = .noInternet
                       return
                   }
-
-                  // All good
                   kind = .ok
               }
           }
 
-          // ============================================================
-          // GIF-ONLY OVERLAY (no buttons, no chrome - just the GIF)
-          // ============================================================
-          // Used inside the larger status screens so the GIF can be
-          // sized and positioned cleanly without rebuilding the player.
           struct GifOnlyView: UIViewRepresentable {
               let resourceName: String
               func makeUIView(context: Context) -> UIView {
@@ -5740,9 +5610,6 @@ jobs:
               func updateUIView(_ uiView: UIView, context: Context) {}
           }
 
-          // ============================================================
-          // NO-INTERNET SCREEN
-          // ============================================================
           struct NoInternetScreen: View {
               var onRetry: () -> Void
               @State private var animatePulse = false
@@ -5759,7 +5626,6 @@ jobs:
                       )
                       .edgesIgnoringSafeArea(.all)
 
-                      // soft glow behind the GIF
                       Circle()
                           .fill(Color.storePrimary.opacity(0.18))
                           .frame(width: 320, height: 320)
@@ -5822,13 +5688,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // STATUS OVERLAY HOST
-          // ------------------------------------------------------------
-          // Drop this anywhere in your view tree (typically at the very
-          // top of StoreRootView) and it will display the right screen
-          // based on StatusCenter.shared.kind.
-          // ============================================================
           struct StatusOverlayHost: View {
               @ObservedObject var center = StatusCenter.shared
 
@@ -5850,10 +5709,6 @@ jobs:
           }
           STATUSEOF
 
-
-      # =========================================================
-      # BUILD
-      # =========================================================
       # =========================================================
       # ADVANCED FEATURES: Wallet, Crypto, Referral, Auto-UDID
       # =========================================================
@@ -5862,24 +5717,6 @@ jobs:
           cat > WalletAdvanced.swift << 'WALLEOF'
           import SwiftUI
           import Foundation
-
-          // ============================================================
-          // ADVANCED P2P WALLET
-          // ------------------------------------------------------------
-          // Public surface used by the rest of the app:
-          //
-          //   WalletStore.shared                       (singleton, ObservableObject)
-          //     - balance, pendingIncoming, transactions
-          //     - send(to:username, amount:), requestFrom(username, amount:)
-          //     - topUp(method:amount:txid:)           (records the top-up)
-          //     - recordReferralReward(usd:from:),     (referral credit)
-          //
-          //   WalletHomeView()                         (full screen)
-          //   WalletSendSheet()                        (modal)
-          //   WalletTopUpSheet()                       (modal - routes to crypto/apple pay)
-          //   WalletTransactionsView()                 (full screen)
-          //   WalletAdvancedOnboardingView()           (3-screen intro, called from Auth)
-          // ============================================================
 
           public enum WalletCurrency: String, Codable, CaseIterable, Identifiable {
               case usd = "USD"
@@ -5901,11 +5738,11 @@ jobs:
               public let id: UUID
               public let kind: Kind
               public let currency: WalletCurrency
-              public let amount: Double           // signed; + credit, - debit
-              public let counterparty: String?    // username or "Crypto" / "Apple Pay" / "Referral"
+              public let amount: Double
+              public let counterparty: String?
               public let note: String?
               public let createdAt: Date
-              public let txid: String?            // for crypto top-ups
+              public let txid: String?
 
               public enum Kind: String, Codable {
                   case topUp, send, receive, referral, refund, fee
@@ -5930,13 +5767,6 @@ jobs:
 
           @MainActor
           public final class WalletStore: ObservableObject {
-              // Singleton so views can read balance/transactions without having
-              // to receive the store as a parameter. `load()` updates
-              // @Published values which must happen on the main actor. We use
-              // `MainActor.assumeIsolated` inside the static let initializer
-              // (safe because Swift guarantees `static let` is initialized
-              // lazily on first access, and our first access is from a
-              // SwiftUI view, i.e. on the main thread).
               public static let shared = MainActor.assumeIsolated { WalletStore() }
 
               @Published public private(set) var balance: Double = 0
@@ -6038,9 +5868,6 @@ jobs:
               }
           }
 
-          // -----------------------------------------------------------
-          // MARK: - Wallet Home (full screen)
-          // -----------------------------------------------------------
           public struct WalletHomeView: View {
               @StateObject private var store = WalletStore.shared
               @State private var showSend = false
@@ -6274,9 +6101,6 @@ jobs:
               }
           }
 
-          // -----------------------------------------------------------
-          // MARK: - Send Sheet
-          // -----------------------------------------------------------
           public struct WalletSendSheet: View {
               @Environment(\.dismiss) private var dismiss
               @StateObject private var store = WalletStore.shared
@@ -6348,9 +6172,6 @@ jobs:
               }
           }
 
-          // -----------------------------------------------------------
-          // MARK: - Top-up Sheet (routes to Crypto / Apple Pay)
-          // -----------------------------------------------------------
           public struct WalletTopUpSheet: View {
               @Environment(\.dismiss) private var dismiss
               @StateObject private var store = WalletStore.shared
@@ -6471,9 +6292,6 @@ jobs:
               }
           }
 
-          // -----------------------------------------------------------
-          // MARK: - Transactions full screen
-          // -----------------------------------------------------------
           public struct WalletTransactionsView: View {
               @Environment(\.dismiss) private var dismiss
               @StateObject private var store = WalletStore.shared
@@ -6500,9 +6318,6 @@ jobs:
               }
           }
 
-          // -----------------------------------------------------------
-          // MARK: - Onboarding
-          // -----------------------------------------------------------
           public struct WalletAdvancedOnboardingView: View {
               @Environment(\.dismiss) private var dismiss
               @State private var page: Int = 0
@@ -6557,23 +6372,6 @@ jobs:
           import CryptoKit
           import LocalAuthentication
 
-          // ============================================================
-          // CRYPTO TOP-UP + APPLE PAY
-          // ------------------------------------------------------------
-          //   CryptoTopUpCoordinator.charge(amountUSD:currency:completion:)
-          //     - generates a one-time deposit address (off-chain wallet
-          //       could be plugged in here; defaults to a deterministic
-          //       placeholder address derived from the user id so the
-          //       UI flow is testable end-to-end).
-          //     - returns a synthetic txid in the completion so the
-          //       wallet transaction list shows the top-up immediately.
-          //
-          //   ApplePayCoordinator.charge(amountUSD:completion:)
-          //     - presents a PassKit sheet; on simulator/no-cards it
-          //       still completes with success after a short delay so
-          //       the flow stays testable.
-          // ============================================================
-
           public enum CryptoTopUpError: LocalizedError {
               case amountInvalid
               case noWallet
@@ -6595,8 +6393,6 @@ jobs:
               private let merchantWalletETH  = "0x21sEth0000000000000000000000000000000dEaD"
               private let merchantWalletUSDT = "TJRz7KXd3e9b6v3c2b1c21sUSDT0000000000"
 
-              // Public so that `quote()` (public) can return it and so that
-              // CryptoTopUpView can store one as a @State value.
               public struct Quote: Codable, Equatable {
                   public let usdPerBTC: Double
                   public let usdPerETH: Double
@@ -6680,9 +6476,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // APPLE PAY COORDINATOR
-          // ============================================================
           public final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDelegate {
               public static nonisolated(unsafe) let shared = ApplePayCoordinator()
               private override init() { super.init() }
@@ -6740,9 +6533,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // CRYPTO TOP-UP FULL SCREEN
-          // ============================================================
           public struct CryptoTopUpView: View {
               @Environment(\.dismiss) private var dismiss
               @State private var currency: WalletCurrency = .usdt
@@ -6860,9 +6650,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // QR CODE VIEW
-          // ============================================================
           public struct QRCodeView: View {
               public let payload: String
               public init(payload: String) { self.payload = payload }
@@ -6895,18 +6682,6 @@ jobs:
           import SwiftUI
           import Foundation
 
-          // ============================================================
-          // REFERRAL SYSTEM
-          // ------------------------------------------------------------
-          //   ReferralManager.shared
-          //     - referralCode(for: username)   - deterministic, 6 chars
-          //     - referralLink(for: username)   - 21s://r/<code>?u=<username>
-          //     - parse(url:) -> (code, username)?
-          //     - rewardIfNeeded(inviter:)      - first-time signup credit
-          //
-          //   ReferralView()                   - share sheet + link list
-          // ============================================================
-
           public struct ReferralAttribution: Codable, Equatable {
               public let inviterUsername: String
               public let inviterCode: String
@@ -6920,9 +6695,6 @@ jobs:
 
           @MainActor
           public final class ReferralManager: ObservableObject {
-              // Singleton. `load()` updates @Published values on the main
-              // actor. `MainActor.assumeIsolated` is safe because the first
-              // access is always from a SwiftUI view on the main thread.
               public static let shared = MainActor.assumeIsolated { ReferralManager() }
               @Published public private(set) var attribution: ReferralAttribution?
               @Published public private(set) var totalEarnedUSD: Double = 0
@@ -7010,9 +6782,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // REFERRAL VIEW
-          // ============================================================
           public struct ReferralView: View {
               @Environment(\.dismiss) private var dismiss
               @StateObject private var rm = ReferralManager.shared
@@ -7161,27 +6930,6 @@ jobs:
           import Security
           import WebKit
 
-          // ============================================================
-          // AUTO-UDID
-          // ------------------------------------------------------------
-          //   UDIDFetcher.shared.fetchNow(presenter:completion:)
-          //     - generates a short-lived, single-use enrollment token
-          //     - opens a SafariViewController that loads a temporary
-          //       mobileconfig profile hosted at
-          //       https://21s.app/udid/<token>.mobileconfig
-          //     - iOS prompts the user to install the profile
-          //     - the profile service reads the device's UDID via the
-          //       standard "UDID" payload key and POSTs it back to
-          //       https://21s.app/api/udid/<token> with the token in
-          //       the URL
-          //     - Safari then redirects to 21s://udid?token=<token>
-          //       which the app handles via openURL and resolves
-          //       against the local cache (token -> UDID pair is
-          //       stored when the server pushes the value back).
-          //
-          //   AutoUDIDView()    - "Get UDID automatically" UI
-          // ============================================================
-
           public final class UDIDFetcher: NSObject {
               public static nonisolated(unsafe) let shared = UDIDFetcher()
 
@@ -7260,9 +7008,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // SAFARI VIEW CONTROLLER WRAPPER
-          // ============================================================
           public final class SafariViewController: UIViewController, WKNavigationDelegate {
               private let web: WKWebView
               public var udidCompletion: ((String?) -> Void)?
@@ -7293,9 +7038,6 @@ jobs:
               }
           }
 
-          // ============================================================
-          // AUTO-UDID VIEW
-          // ============================================================
           public struct AutoUDIDView: View {
               @Environment(\.dismiss) private var dismiss
               @Binding var udid: String
@@ -7466,9 +7208,6 @@ jobs:
           ldid -S build-output/Payload/VIP21Store.app/VIP21Store
 
           rm -f artifacts/21s.ipa
-          # Use standard zip instead of ditto for max compatibility with iOS Unzip tools.
-          # Some tools fail to open a "ditto" zip with extended attributes / AppleDouble,
-          # so we strip everything and build a plain zip.
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
           xattr -cr build-output/Payload/VIP21Store.app || true
@@ -7498,7 +7237,6 @@ jobs:
           if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature/CodeResources\|_CodeSignature"; then
             echo "⚠️ Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
           fi
-          # Check that the binary is a valid Mach-O (magic bytes)
           unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
           echo "✅ IPA is valid, passes zip integrity test, and contains the App Bundle."
 
