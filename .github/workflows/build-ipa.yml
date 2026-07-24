@@ -823,7 +823,12 @@ jobs:
           public final class AuthManager: ObservableObject {
               // Singleton so views (e.g. ReferralView) can read currentUser
               // without having to receive the manager as a parameter.
-              public static nonisolated(unsafe) let shared = AuthManager()
+              // `loadUser()` updates @Published values which must happen on
+              // the main actor. We use `MainActor.assumeIsolated` inside the
+              // static let initializer (safe because Swift guarantees
+              // `static let` is initialized lazily on first access, and our
+              // first access is from a SwiftUI view, i.e. on the main thread).
+              public static let shared = MainActor.assumeIsolated { AuthManager() }
 
               @Published var currentUser: AppUser?
               @Published var isAuthenticated: Bool = false
@@ -832,6 +837,10 @@ jobs:
 
               private let userDefaultsKey = AppConstants.userDefaultsKey
 
+              // `loadUser` only touches UserDefaults and @Published values,
+              // both safe to call on the main actor. The default initializer
+              // is the @MainActor-isolated one; SwiftUI guarantees the first
+              // access to `AuthManager.shared` happens on the main thread.
               public init() { loadUser() }
 
               func signUp(phoneNumber: String, username: String, password: String, confirmPassword: String, udid: String) -> Bool {
