@@ -303,6 +303,7 @@ jobs:
               static let characterGif: String        = "timeline_character"
               static let bottomIcon: String         = "timeline_icon"
 
+              // 6 cards (each uses a GIF for both character and background where supported)
               static let cards: [LineaTemporalCard] = [
                   .init(id: 1, act: "Acto I",   title: "INICIOS",
                         name: "Powder", accent: Color(red: 0.45, green: 0.08, blue: 0.85),
@@ -316,6 +317,18 @@ jobs:
                         name: "Echo",   accent: Color(red: 0.30, green: 0.78, blue: 1.00),
                         background: "timeline_bg", character: "timeline_character",
                         icon: "timeline_icon", favorite: true),
+                  .init(id: 4, act: "Acto IV",  title: "SOMBRAS",
+                        name: "Silco",  accent: Color(red: 0.65, green: 0.10, blue: 0.40),
+                        background: "timeline_bg", character: "timeline_character",
+                        icon: "timeline_icon", favorite: false),
+                  .init(id: 5, act: "Acto V",   title: "ALIANZAS",
+                        name: "Vi",     accent: Color(red: 0.90, green: 0.40, blue: 0.20),
+                        background: "timeline_bg", character: "timeline_character",
+                        icon: "timeline_icon", favorite: false),
+                  .init(id: 6, act: "Acto VI",  title: "LIBERTAD",
+                        name: "Caitlyn", accent: Color(red: 0.20, green: 0.55, blue: 0.95),
+                        background: "timeline_bg", character: "timeline_character",
+                        icon: "timeline_icon", favorite: false),
               ]
           }
 
@@ -373,7 +386,7 @@ jobs:
                               }
 
                               ForEach(Array(LineaTemporalData.cards.enumerated()), id: \.element.id) { idx, card in
-                                  LineaTemporalCardView(card: card, cardWidth: cardWidth, cardHeight: cardHeight)
+                                  LineaTemporalCardWithCharacter(card: card, cardWidth: cardWidth, cardHeight: cardHeight)
                                       .frame(width: cardWidth, height: cardHeight)
                                       .position(
                                           x: baseX + CGFloat(idx) * (cardWidth + spacing) + activeOffset + liveDrag,
@@ -452,39 +465,24 @@ jobs:
 
               var body: some View {
                   ZStack(alignment: .bottomLeading) {
-                      // background (also accepts gif because we render via UIImage)
-                      if let img = UIImage(named: card.background) {
-                          Image(uiImage: img)
+                      // background (accepts both static image AND gif via UIImage.gifImage)
+                      if let bgImg = UIImage.gifImage(named: card.background)
+                          ?? UIImage(named: card.background) {
+                          Image(uiImage: bgImg)
                               .resizable()
                               .scaledToFill()
                               .frame(width: cardWidth, height: cardHeight)
                               .clipped()
                       } else {
-                          LinearGradient(colors: [card.accent.opacity(0.7), .black],
-                                         startPoint: .top, endPoint: .bottom)
+                          // last-resort fallback (no color tint, just keeps the card visible)
+                          Color.white.opacity(0.05)
                       }
-                      // dark scrim
-                      Color.black.opacity(0.30)
-                      // character gif
-                      if let ch = UIImage.gifImage(named: card.character) {
-                          Image(uiImage: ch)
-                              .resizable()
-                              .scaledToFit()
-                              .frame(width: cardWidth * 0.85, height: cardHeight * 0.75)
-                              .offset(y: -20)
-                      }
-                      // bottom gradient for text legibility
+
+                      // bottom gradient for text legibility (only the bottom half is darkened)
                       LinearGradient(colors: [.clear, .black.opacity(0.85)],
                                      startPoint: .center, endPoint: .bottom)
                           .frame(height: cardHeight * 0.55)
                           .frame(maxWidth: .infinity, alignment: .bottom)
-                      // side glow strips (same edges style as the reference)
-                      HStack {
-                          card.accent.opacity(0.55).frame(width: 3)
-                          Spacer()
-                          card.accent.opacity(0.55).frame(width: 3)
-                      }
-                      .frame(height: cardHeight)
 
                       // text block
                       VStack(alignment: .leading, spacing: 2) {
@@ -498,14 +496,13 @@ jobs:
                       .padding(.leading, 14)
                       .padding(.bottom, 28)
 
-                      // bottom info row (icon + name)
+                      // bottom info row (icon + name) — no background rectangle
                       HStack(spacing: 6) {
                           if let ico = UIImage(named: card.icon) {
                               Image(uiImage: ico)
                                   .resizable()
                                   .scaledToFill()
                                   .frame(width: 10, height: 10)
-                                  .clipShape(RoundedRectangle(cornerRadius: 2))
                           } else {
                               Circle().fill(Color.white).frame(width: 8, height: 8)
                           }
@@ -521,14 +518,9 @@ jobs:
                           VStack {
                               HStack {
                                   Spacer()
-                                  ZStack {
-                                      Circle()
-                                          .stroke(Color.white, lineWidth: 1.2)
-                                          .frame(width: 22, height: 22)
-                                      Text("☆")
-                                          .font(.system(size: 12, weight: .bold))
-                                          .foregroundColor(.white)
-                                  }
+                                  Text("☆")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.white)
                               }
                               .padding(.trailing, 8)
                               .padding(.top, 8)
@@ -537,11 +529,53 @@ jobs:
                       }
                   }
                   .frame(width: cardWidth, height: cardHeight)
-                  .clipShape(RoundedRectangle(cornerRadius: 14))
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 14)
-                          .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-                  )
+                  // NO clipShape / NO overlay -> the character floats freely outside the card
+              }
+
+              // Character is rendered as a SEPARATE view (no box, no border, no background)
+              // so it appears as a free-floating image on top of everything.
+              @ViewBuilder
+              private func characterLayer() -> some View {
+                  // try gif first, then static png
+                  let charImage: UIImage? = UIImage.gifImage(named: card.character)
+                      ?? UIImage(named: card.character)
+                  if let ch = charImage {
+                      Image(uiImage: ch)
+                          .resizable()
+                          .scaledToFit()
+                          .frame(width: cardWidth * 0.95, height: cardHeight * 0.95)
+                  }
+              }
+          }
+
+          // MARK: - Wrapped card + free-floating character (NO black box around it)
+          private struct LineaTemporalCardWithCharacter: View {
+              let card: LineaTemporalCard
+              let cardWidth: CGFloat
+              let cardHeight: CGFloat
+
+              var body: some View {
+                  ZStack {
+                      // 1) The card (text + background only, no character)
+                      LineaTemporalCardView(card: card, cardWidth: cardWidth, cardHeight: cardHeight)
+
+                      // 2) Character floating on top, OUTSIDE the card clip — no box, no border
+                      characterImage()
+                          .frame(width: cardWidth * 0.95, height: cardHeight * 0.95)
+                          .offset(y: -10)
+                  }
+                  .frame(width: cardWidth, height: cardHeight)
+              }
+
+              @ViewBuilder
+              private func characterImage() -> some View {
+                  let img: UIImage? = UIImage.gifImage(named: card.character)
+                      ?? UIImage(named: card.character)
+                  if let ch = img {
+                      Image(uiImage: ch)
+                          .resizable()
+                          .scaledToFit()
+                  }
               }
           }
 
