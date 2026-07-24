@@ -58,8 +58,183 @@ jobs:
           curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178475589206661.gif"
           # Thanks overlay (shown after the user takes a screenshot)
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
-          file Resources/*.png Resources/*.gif
+          file Resources/*.png Resources/*.gif 2>/dev/null || true
           ls -lh Resources
+
+      - name: Generate feature images (Advanced Wallet / Crypto / Referral / Auto-UDID)
+        run: |
+          python3 -m pip install --quiet --break-system-packages Pillow 2>/dev/null || true
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os, random
+          os.makedirs("Resources", exist_ok=True)
+          random.seed(42)
+
+          def gradient(w, h, c1, c2, vertical=True):
+              img = Image.new("RGB", (w, h), c1)
+              d = ImageDraw.Draw(img)
+              steps = h if vertical else w
+              for i in range(steps):
+                  t = i / max(1, steps - 1)
+                  r = int(c1[0] + (c2[0] - c1[0]) * t)
+                  g = int(c1[1] + (c2[1] - c1[1]) * t)
+                  b = int(c1[2] + (c2[2] - c1[2]) * t)
+                  d.line([(0, i), (w, i)] if vertical else [(i, 0), (i, h)], fill=(r, g, b))
+              return img
+
+          def rounded_card(w, h, radius, fill, shadow=True):
+              img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+              d = ImageDraw.Draw(img)
+              if shadow:
+                  d.rounded_rectangle((4, 8, w - 4, h - 4), radius=radius, fill=(0, 0, 0, 60))
+              d.rounded_rectangle((0, 0, w - 8, h - 12), radius=radius, fill=fill)
+              return img
+
+          def find_font(size):
+              for p in [
+                  "/System/Library/Fonts/Helvetica.ttc",
+                  "/System/Library/Fonts/SFNSDisplay.ttf",
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                  "/Library/Fonts/Arial Bold.ttf",
+              ]:
+                  if os.path.exists(p):
+                      try: return ImageFont.truetype(p, size)
+                      except: pass
+              return ImageFont.load_default()
+
+          def text_centered(d, txt, x, y, font, fill):
+              try:
+                  bbox = d.textbbox((0, 0), txt, font=font)
+                  w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
+              except AttributeError:
+                  w, h = d.textsize(txt, font=font)
+              d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
+
+          def draw_icon_circle(w, h, color, glyph, glyph_color=(255, 255, 255)):
+              img = gradient(w, h, color, tuple(max(0, c - 40) for c in color))
+              d = ImageDraw.Draw(img)
+              f = find_font(int(h * 0.55))
+              text_centered(d, glyph, w // 2, h // 2, f, glyph_color)
+              return img
+
+          def write_image(path, img):
+              if img.mode == "RGBA":
+                  bg = Image.new("RGB", img.size, (255, 255, 255))
+                  bg.paste(img, mask=img.split()[-1])
+                  img = bg
+              img.save(path, "PNG", optimize=True)
+
+          # Advanced Wallet hero
+          W, H = 900, 600
+          base = gradient(W, H, (10, 18, 42), (24, 36, 80))
+          d = ImageDraw.Draw(base)
+          card = rounded_card(W - 120, 260, 28, (255, 255, 255))
+          base.paste(card, (60, 200), card)
+          d = ImageDraw.Draw(base)
+          text_centered(d, "P2P WALLET", W // 2, 250, find_font(28), (120, 130, 160))
+          text_centered(d, "$ 1,250.00", W // 2, 340, find_font(72), (20, 25, 50))
+          text_centered(d, "Available balance", W // 2, 410, find_font(22), (110, 120, 140))
+          chip = rounded_card(140, 50, 14, (90, 200, 130))
+          base.paste(chip, (380, 130), chip)
+          d = ImageDraw.Draw(base)
+          text_centered(d, "ACTIVE", W // 2, 155, find_font(20), (255, 255, 255))
+          write_image("Resources/wallet_advanced_hero.png", base)
+
+          # Crypto top-up
+          base = gradient(W, H, (18, 24, 56), (40, 18, 70))
+          d = ImageDraw.Draw(base)
+          coins = [("USDT", (38, 161, 110)), ("BTC", (247, 147, 26)), ("ETH", (98, 126, 234))]
+          for i, (label, col) in enumerate(coins):
+              chip = rounded_card(220, 180, 22, col)
+              base.paste(chip, (90 + i * 240, 220), chip)
+              d = ImageDraw.Draw(base)
+              text_centered(d, label, 200 + i * 240, 310, find_font(48), (255, 255, 255))
+          text_centered(d, "Crypto Top-up", W // 2, 130, find_font(46), (255, 255, 255))
+          text_centered(d, "Pay with USDT, BTC, ETH or Apple Pay", W // 2, 470, find_font(22), (220, 220, 240))
+          write_image("Resources/crypto_topup_hero.png", base)
+
+          # Referral
+          base = gradient(W, H, (30, 50, 30), (16, 28, 18))
+          d = ImageDraw.Draw(base)
+          you = draw_icon_circle(180, 180, (90, 200, 130), "Y")
+          base.paste(you, (140, 280), you)
+          fr = draw_icon_circle(180, 180, (60, 160, 240), "F")
+          base.paste(fr, (580, 280), fr)
+          d.line((330, 370, 570, 370), fill=(255, 255, 255), width=8)
+          d.polygon([(570, 350), (590, 370), (570, 390)], fill=(255, 255, 255))
+          text_centered(d, "Invite friends. Earn wallet credit.", W // 2, 140, find_font(36), (255, 255, 255))
+          text_centered(d, "Get $5 for every signup", W // 2, 200, find_font(26), (180, 240, 200))
+          write_image("Resources/referral_hero.png", base)
+
+          # Auto-UDID
+          base = gradient(W, H, (8, 14, 30), (20, 28, 60))
+          d = ImageDraw.Draw(base)
+          px, py, pw, ph = 320, 90, 260, 460
+          d.rounded_rectangle((px, py, px + pw, py + ph), radius=36, outline=(140, 200, 255), width=4)
+          d.rounded_rectangle((px + 16, py + 60, px + pw - 16, py + 110), radius=8, fill=(40, 50, 90))
+          text_centered(d, "UDID", px + pw // 2, py + 85, find_font(22), (200, 220, 255))
+          d.text((px + 30, py + 160), "ABCDEF12-3456-7890-", font=find_font(20), fill=(220, 230, 255))
+          d.text((px + 30, py + 200), "ABCD-1234-EFGH-5678", font=find_font(20), fill=(220, 230, 255))
+          d.text((px + 30, py + 240), "9012-IJKL-MNOP-QRST", font=find_font(20), fill=(220, 230, 255))
+          d.rounded_rectangle((px + 30, py + 330, px + pw - 30, py + 380), radius=12, fill=(70, 130, 240))
+          text_centered(d, "FETCH", px + pw // 2, py + 355, find_font(20), (255, 255, 255))
+          text_centered(d, "Auto-UDID", W // 2, 50, find_font(30), (200, 220, 255))
+          text_centered(d, "One-tap profile installer", W // 2, 580, find_font(22), (180, 200, 240))
+          write_image("Resources/autoudid_hero.png", base)
+
+          # Onboarding slides
+          def onboarding(text_title, text_body, accent):
+              W, H = 900, 1400
+              base = gradient(W, H, (250, 251, 255), (235, 240, 255))
+              d = ImageDraw.Draw(base)
+              d.rounded_rectangle((80, 200, W - 80, 900), radius=40, fill=accent)
+              text_centered(d, text_title, W // 2, 350, find_font(60), (255, 255, 255))
+              text_centered(d, "*", W // 2, 560, find_font(80), (255, 255, 255))
+              for i, line in enumerate(text_body.split("\n")):
+                  text_centered(d, line, W // 2, 1050 + i * 70, find_font(34), (40, 50, 80))
+              for i in range(3):
+                  x = W // 2 - 60 + i * 60
+                  d.ellipse((x, 1280, x + 30, 1310), fill=(180, 190, 220))
+              d.ellipse((W // 2 - 15, 1280, W // 2 + 15, 1310), fill=(40, 50, 80))
+              return base
+
+          for i, (t, b, c) in enumerate([
+              ("Send & Receive", "Transfer wallet credit\nto any 21s user, instantly.", (60, 130, 220)),
+              ("Top-up Anywhere", "USDT, BTC, ETH or\nlocal payment methods.", (90, 200, 130)),
+              ("Refer & Earn", "Share your link - every\nsignup gives you $5.", (200, 100, 220)),
+          ]):
+              write_image(f"Resources/wallet_advanced_onb{i+1}.png", onboarding(t, b, c))
+
+          for i, (t, b, c) in enumerate([
+              ("USDT TRC-20", "Low-fee stable coin top-up,\narrives in ~1 minute.", (38, 161, 110)),
+              ("BTC & ETH", "Native on-chain support with\nlive rate conversion.", (60, 100, 220)),
+              ("Apple Pay", "One-tap checkout with\nFace ID confirmation.", (10, 10, 10)),
+          ]):
+              write_image(f"Resources/crypto_onb{i+1}.png", onboarding(t, b, c))
+
+          for i, (t, b, c) in enumerate([
+              ("Your unique link", "Share your code, get paid\nevery time a friend joins.", (90, 200, 130)),
+              ("Earn in wallet", "Referral rewards land in\nyour P2P wallet instantly.", (60, 130, 220)),
+              ("No limits", "Stack unlimited rewards,\nno expiry, no fees.", (200, 100, 220)),
+          ]):
+              write_image(f"Resources/referral_onb{i+1}.png", onboarding(t, b, c))
+
+          for i, (t, b, c) in enumerate([
+              ("One tap fetch", "Open a temporary profile\nin Safari to read your UDID.", (60, 130, 220)),
+              ("Auto-return", "We bring you back to 21s\nwith the UDID already filled in.", (90, 200, 130)),
+              ("0% error rate", "No copy-paste, no typos -\nverified by Apple's profile.", (200, 100, 220)),
+          ]):
+              write_image(f"Resources/autoudid_onb{i+1}.png", onboarding(t, b, c))
+
+          ico = gradient(1024, 1024, (24, 36, 80), (10, 18, 42))
+          d = ImageDraw.Draw(ico)
+          d.rounded_rectangle((120, 120, 904, 904), radius=180, fill=(70, 130, 240))
+          d.rounded_rectangle((220, 340, 804, 700), radius=30, fill=(255, 255, 255))
+          d.text((260, 380), "21s", font=find_font(280), fill=(24, 36, 80))
+          write_image("Resources/feature_app_icon.png", ico)
+          print("All feature images generated.")
+          PYEOF
+          ls -lh Resources | tail -30
 
       - name: Generate app icons from the logo image
         run: |
@@ -154,6 +329,53 @@ jobs:
                   <key>UIApplicationSupportsMultipleScenes</key><false/>
               </dict>
               <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+              <!-- Custom URL scheme for the auto-UDID profile redirect -->
+              <key>CFBundleURLTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleURLName</key>
+                      <string>com.vip21.store.pro</string>
+                      <key>CFBundleURLSchemes</key>
+                      <array>
+                          <string>21s</string>
+                      </array>
+                  </dict>
+              </array>
+              <!-- Apple Pay merchant capability -->
+              <key>com.apple.developer.in-app-payments</key>
+              <array>
+                  <string>merchant.com.vip21.store.pro</string>
+              </array>
+              <!-- Allow HTTPS to AppTesters repo + crypto endpoints -->
+              <key>NSAppTransportSecurity</key>
+              <dict>
+                  <key>NSAllowsArbitraryLoads</key>
+                  <false/>
+                  <key>NSExceptionDomains</key>
+                  <dict>
+                      <key>repository.apptesters.org</key>
+                      <dict>
+                          <key>NSIncludesSubdomains</key>
+                          <true/>
+                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                          <false/>
+                          <key>NSExceptionRequiresForwardSecrecy</key>
+                          <true/>
+                      </dict>
+                      <key>21s.app</key>
+                      <dict>
+                          <key>NSIncludesSubdomains</key>
+                          <true/>
+                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                          <false/>
+                          <key>NSExceptionRequiresForwardSecrecy</key>
+                          <true/>
+                      </dict>
+                  </dict>
+              </dict>
+              <!-- Camera (QR scan, optional) -->
+              <key>NSCameraUsageDescription</key>
+              <string>21s uses the camera to scan wallet QR codes for fast top-up.</string>
           </dict>
           </plist>
           PEOF
@@ -388,7 +610,26 @@ jobs:
           }
 
           // ==================== Remote Store API models ====================
-          // Mirrors https://kurdstore.info/store-data.json
+          // Primary source: https://repository.apptesters.org/apps.json
+          // Schema (AppTesters):
+          //   { "name": "...", "identifier": "...", "apps": [
+          //       { "name": "AdobeExpress",
+          //         "bundleID": "com.adobe.post",
+          //         "bundleIdentifier": "com.adobe.post",
+          //         "version": "30.7.0",
+          //         "versionDate": "2026-07-24",
+          //         "fullDate": "20260724032303",
+          //         "size": 141820849,
+          //         "down": "<github release .ipa URL>",
+          //         "downloadURL": "<github release .ipa URL>",
+          //         "developerName": "...",
+          //         "localizedDescription": "...",
+          //         "icon": "<icon png URL>",
+          //         "iconURL": "<icon png URL>" }, ... ] }
+          //
+          // The decoder is LENIENT — it also accepts the legacy kurdstore
+          // shape (apps.apps[].ipa_url) so the app keeps working if the
+          // source is swapped back at any point.
 
           struct StoreAPIResponse: Codable {
               let lastUpdated: String?
@@ -423,23 +664,136 @@ jobs:
               let createdAt: String?
               let updatedAt: String?
 
+              // AppTesters-only fields (optional, both supported)
+              let downloadURL: String?
+              let down: String?
+              let iconURL: String?
+              let localizedDescription: String?
+              let developerName: String?
+              let version: String?
+              let versionDate: String?
+              let fullDate: String?
+              let size: Double?
+              let type: Int?
+
               enum CodingKeys: String, CodingKey {
                   case id, name
                   case bundleId = "bundle_id"
+                  case bundleIdAlt = "bundleID"
+                  case bundleIdentifier
                   case bundleVersion = "bundle_version"
                   case ipaSize = "ipa_size"
                   case githubUrl = "github_url"
                   case archiveUrl = "archive_url"
                   case ipaUrl = "ipa_url"
-                  case host, icon, description, screenshots, category
+                  case host
+                  case icon
+                  case iconURL
+                  case description
+                  case localizedDescription
+                  case screenshots, category
                   case createdAt = "created_at"
                   case updatedAt = "updated_at"
+                  case downloadURL
+                  case down
+                  case developerName
+                  case version
+                  case versionDate
+                  case fullDate
+                  case size, type
+              }
+
+              init(from decoder: Decoder) throws {
+                  let c = try decoder.container(keyedBy: CodingKeys.self)
+                  // AppTesters schema has no numeric id — synthesize a stable one
+                  if let intId = try? c.decode(Int.self, forKey: .id) {
+                      self.id = intId
+                  } else {
+                      let bundle = (try? c.decode(String.self, forKey: .bundleIdAlt))
+                          ?? (try? c.decode(String.self, forKey: .bundleIdentifier))
+                          ?? UUID().uuidString
+                      self.id = abs(bundle.hashValue)
+                  }
+                  self.name = (try? c.decode(String.self, forKey: .name)) ?? "Untitled"
+                  self.bundleId = (try? c.decode(String.self, forKey: .bundleId))
+                      ?? (try? c.decode(String.self, forKey: .bundleIdAlt))
+                      ?? (try? c.decode(String.self, forKey: .bundleIdentifier))
+                  self.bundleVersion = (try? c.decode(String.self, forKey: .bundleVersion))
+                      ?? (try? c.decode(String.self, forKey: .version))
+                  self.ipaSize = (try? c.decode(String.self, forKey: .ipaSize))
+                  self.githubUrl = (try? c.decode(String.self, forKey: .githubUrl))
+                  self.archiveUrl = (try? c.decode(String.self, forKey: .archiveUrl))
+                  self.ipaUrl = (try? c.decode(String.self, forKey: .ipaUrl))
+                      ?? (try? c.decode(String.self, forKey: .downloadURL))
+                      ?? (try? c.decode(String.self, forKey: .down))
+                  self.host = (try? c.decode(String.self, forKey: .host))
+                  self.icon = (try? c.decode(String.self, forKey: .icon))
+                      ?? (try? c.decode(String.self, forKey: .iconURL))
+                  self.description = (try? c.decode(String.self, forKey: .description))
+                      ?? (try? c.decode(String.self, forKey: .localizedDescription))
+                  self.screenshots = try? c.decode([String].self, forKey: .screenshots)
+                  self.category = (try? c.decode(String.self, forKey: .category))
+                  self.createdAt = (try? c.decode(String.self, forKey: .createdAt))
+                  self.updatedAt = (try? c.decode(String.self, forKey: .updatedAt))
+                      ?? (try? c.decode(String.self, forKey: .versionDate))
+                      ?? (try? c.decode(String.self, forKey: .fullDate))
+                  self.downloadURL = (try? c.decode(String.self, forKey: .downloadURL))
+                      ?? (try? c.decode(String.self, forKey: .down))
+                  self.down = (try? c.decode(String.self, forKey: .down))
+                  self.iconURL = (try? c.decode(String.self, forKey: .iconURL))
+                  self.localizedDescription = (try? c.decode(String.self, forKey: .localizedDescription))
+                  self.developerName = (try? c.decode(String.self, forKey: .developerName))
+                  self.version = (try? c.decode(String.self, forKey: .version))
+                  self.versionDate = (try? c.decode(String.self, forKey: .versionDate))
+                  self.fullDate = (try? c.decode(String.self, forKey: .fullDate))
+                  self.size = (try? c.decode(Double.self, forKey: .size))
+                  self.type = (try? c.decode(Int.self, forKey: .type))
+              }
+
+              // Re-encode path (kept identical to decode — used when caching)
+              func encode(to encoder: Encoder) throws {
+                  var c = encoder.container(keyedBy: CodingKeys.self)
+                  try c.encode(id, forKey: .id)
+                  try c.encode(name, forKey: .name)
+                  try c.encodeIfPresent(bundleId, forKey: .bundleId)
+                  try c.encodeIfPresent(bundleVersion, forKey: .bundleVersion)
+                  try c.encodeIfPresent(ipaSize, forKey: .ipaSize)
+                  try c.encodeIfPresent(githubUrl, forKey: .githubUrl)
+                  try c.encodeIfPresent(archiveUrl, forKey: .archiveUrl)
+                  try c.encodeIfPresent(ipaUrl, forKey: .ipaUrl)
+                  try c.encodeIfPresent(host, forKey: .host)
+                  try c.encodeIfPresent(icon, forKey: .icon)
+                  try c.encodeIfPresent(description, forKey: .description)
+                  try c.encodeIfPresent(screenshots, forKey: .screenshots)
+                  try c.encodeIfPresent(category, forKey: .category)
+                  try c.encodeIfPresent(createdAt, forKey: .createdAt)
+                  try c.encodeIfPresent(updatedAt, forKey: .updatedAt)
+              }
+
+              /// Pretty byte-string, used by the UI list
+              var cleanSize: String {
+                  if let s = size, s > 0 {
+                      let f = ByteCountFormatter()
+                      f.allowedUnits = [.useMB, .useGB, .useKB]
+                      f.countStyle = .file
+                      return f.string(fromByteCount: Int64(s))
+                  }
+                  if let s = ipaSize, !s.isEmpty { return s }
+                  return "—"
               }
 
               var cleanDescription: String {
-                  guard let d = description else { return "Exclusive app on 21s Store — download the premium version with all features enabled." }
-                  let lines = d.split(whereSeparator: { $0.isNewline || $0 == "\r" })
+                  let raw = description ?? localizedDescription ?? ""
+                  if raw.isEmpty {
+                      return "Exclusive app on 21s Store — download the premium version with all features enabled."
+                  }
+                  let lines = raw.split(whereSeparator: { $0.isNewline || $0 == "\r" })
                   return lines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+              }
+
+              /// Resolves the final .ipa download URL regardless of source
+              var resolvedDownloadURL: String? {
+                  return ipaUrl ?? downloadURL ?? down ?? githubUrl ?? archiveUrl
               }
           }
           VIPEOF
@@ -926,6 +1280,7 @@ jobs:
               @State private var password = ""
               @State private var confirmPassword = ""
               @State private var udid = ""
+              @State private var showAutoUDID = false
               @State private var showUDIDInfo = false
               @State private var isPasswordVisible = false
               @State private var isConfirmPasswordVisible = false
@@ -1053,6 +1408,23 @@ jobs:
                                           }
                                       }
 
+                                      // Auto-fetch UDID: opens Safari, reads device UDID
+                                      // via a temporary mobileconfig profile, returns
+                                      // to the app with 0% error rate.
+                                      Button {
+                                          showAutoUDID = true
+                                      } label: {
+                                          HStack(spacing: 8) {
+                                              Image(systemName: "arrow.down.doc.fill")
+                                              Text("Fetch UDID automatically")
+                                                  .font(.system(size: 14, weight: .bold))
+                                          }
+                                          .foregroundColor(.white)
+                                          .frame(maxWidth: .infinity, minHeight: 46)
+                                          .background(Capsule().fill(Color.xcodeAccent))
+                                      }
+                                      .buttonStyle(.plain)
+
                                       HStack {
                                           Text("Reminder me nextime")
                                               .font(.system(size: 12))
@@ -1135,6 +1507,7 @@ jobs:
                       }
                   }
                   .sheet(isPresented: $showUDIDInfo) { UDIDInfoView() }
+                  .sheet(isPresented: $showAutoUDID) { AutoUDIDView(udid: $udid) }
                   .preferredColorScheme(.light)
               }
           }
@@ -1344,7 +1717,7 @@ jobs:
                   self.session = URLSession(configuration: cfg)
 
                   let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                  let dir = caches.appendingPathComponent("kurdstore-icons", isDirectory: true)
+                  let dir = caches.appendingPathComponent("apptesters-icons", isDirectory: true)
                   try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                   self.diskDir = dir
               }
@@ -1442,10 +1815,11 @@ jobs:
               @Published var lastError: String?
               @Published var lastUpdated: String?
 
-              private let url = URL(string: "https://kurdstore.info/store-data.json")!
+              // Primary source: AppTesters IPA Repo (apptesters.org)
+              private let url = URL(string: "https://repository.apptesters.org/apps.json")!
               private let cacheURL: URL = {
                   let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                  return caches.appendingPathComponent("kurdstore-feed.json")
+                  return caches.appendingPathComponent("apptesters-feed.json")
               }()
 
               init() { loadCachedThenRefresh() }
@@ -1719,7 +2093,7 @@ jobs:
                               .foregroundColor(.storePink)
                               .lineLimit(1)
                       } else {
-                          Text("Source: kurdstore.info")
+                          Text("Source: apptesters.org")
                               .font(.system(size: 11, weight: .semibold))
                               .foregroundColor(.storeSub)
                       }
@@ -3595,6 +3969,16 @@ jobs:
                               Text(authManager.currentUser?.phoneNumber ?? "").font(.system(size: 12)).foregroundColor(.storeSub)
                           }
                           VStack(spacing: 10) {
+                              // Open the advanced P2P wallet (balance, top-up, send, refer)
+                              NavigationLink(destination: WalletHomeView().navigationBarTitleDisplayMode(.inline)) {
+                                  ProfileRow(icon: "creditcard.fill", label: "Wallet  $" + String(format: "%.2f", WalletStore.shared.balance), color: .storePrimary)
+                              }
+                              .buttonStyle(.plain)
+                              // Open the referral screen (link, stats, share)
+                              NavigationLink(destination: ReferralView().navigationBarTitleDisplayMode(.inline)) {
+                                  ProfileRow(icon: "gift.fill", label: "Refer & Earn", color: .storeYellow)
+                              }
+                              .buttonStyle(.plain)
                               ProfileRow(icon: "heart.fill", label: "Wishlist", color: .storePink)
                               ProfileRow(icon: "square.and.arrow.down.fill", label: "My Downloads", color: .storePrimary)
                               Button {
@@ -5443,6 +5827,1507 @@ jobs:
       # =========================================================
       # BUILD
       # =========================================================
+      # =========================================================
+      # ADVANCED FEATURES: Wallet, Crypto, Referral, Auto-UDID
+      # =========================================================
+      - name: Generate code - Advanced features (Wallet, Crypto, Referral, Auto-UDID)
+        run: |
+          cat > WalletAdvanced.swift << 'WALLEOF'
+          import SwiftUI
+          import Foundation
+          
+          // ============================================================
+          // ADVANCED P2P WALLET
+          // ------------------------------------------------------------
+          // Public surface used by the rest of the app:
+          //
+          //   WalletStore.shared                       (singleton, ObservableObject)
+          //     - balance, pendingIncoming, transactions
+          //     - send(to:username, amount:), requestFrom(username, amount:)
+          //     - topUp(method:amount:txid:)           (records the top-up)
+          //     - recordReferralReward(usd:from:),     (referral credit)
+          //
+          //   WalletHomeView()                         (full screen)
+          //   WalletSendSheet()                        (modal)
+          //   WalletTopUpSheet()                       (modal - routes to crypto/apple pay)
+          //   WalletTransactionsView()                 (full screen)
+          //   WalletAdvancedOnboardingView()           (3-screen intro, called from Auth)
+          // ============================================================
+          
+          public enum WalletCurrency: String, Codable, CaseIterable, Identifiable {
+              case usd = "USD"
+              case usdt = "USDT"
+              case btc = "BTC"
+              case eth = "ETH"
+              public var id: String { rawValue }
+              public var symbol: String {
+                  switch self {
+                  case .usd: return "$"
+                  case .usdt: return "\u{20AE}"
+                  case .btc: return "\u{20BF}"
+                  case .eth: return "\u{039E}"
+                  }
+              }
+          }
+          
+          public struct WalletTransaction: Codable, Identifiable, Hashable {
+              public let id: UUID
+              public let kind: Kind
+              public let currency: WalletCurrency
+              public let amount: Double           // signed; + credit, - debit
+              public let counterparty: String?    // username or "Crypto" / "Apple Pay" / "Referral"
+              public let note: String?
+              public let createdAt: Date
+              public let txid: String?            // for crypto top-ups
+          
+              public enum Kind: String, Codable {
+                  case topUp, send, receive, referral, refund, fee
+              }
+          
+              public init(kind: WalletTransaction.Kind,
+                          currency: WalletCurrency,
+                          amount: Double,
+                          counterparty: String? = nil,
+                          note: String? = nil,
+                          txid: String? = nil) {
+                  self.id = UUID()
+                  self.kind = kind
+                  self.currency = currency
+                  self.amount = amount
+                  self.counterparty = counterparty
+                  self.note = note
+                  self.txid = txid
+                  self.createdAt = Date()
+              }
+          }
+          
+          @MainActor
+          public final class WalletStore: ObservableObject {
+              public static nonisolated(unsafe) let shared = WalletStore()
+          
+              @Published public private(set) var balance: Double = 0
+              @Published public private(set) var pendingIncoming: Double = 0
+              @Published public private(set) var transactions: [WalletTransaction] = []
+              @Published public var lastError: String?
+              @Published public private(set) var isProcessing: Bool = false
+          
+              private let keyBalance = "wallet.balance"
+              private let keyTx = "wallet.transactions.v2"
+              private let defaultUserDefaults = UserDefaults.standard
+          
+              private init() { load() }
+          
+              public func resetForLogout() {
+                  balance = 0
+                  pendingIncoming = 0
+                  transactions = []
+                  defaultUserDefaults.removeObject(forKey: keyBalance)
+                  defaultUserDefaults.removeObject(forKey: keyTx)
+              }
+          
+              public func load() {
+                  balance = defaultUserDefaults.double(forKey: keyBalance)
+                  if let data = defaultUserDefaults.data(forKey: keyTx),
+                     let decoded = try? JSONDecoder().decode([WalletTransaction].self, from: data) {
+                      transactions = decoded.sorted(by: { $0.createdAt > $1.createdAt })
+                  }
+              }
+          
+              public func save() {
+                  defaultUserDefaults.set(balance, forKey: keyBalance)
+                  if let data = try? JSONEncoder().encode(transactions) {
+                      defaultUserDefaults.set(data, forKey: keyTx)
+                  }
+              }
+          
+              public func credit(_ amount: Double, currency: WalletCurrency = .usd,
+                                 counterparty: String? = nil, note: String? = nil,
+                                 kind: WalletTransaction.Kind = .topUp,
+                                 txid: String? = nil) {
+                  guard amount > 0 else { return }
+                  balance += amount
+                  let tx = WalletTransaction(kind: kind, currency: currency,
+                                             amount: amount,
+                                             counterparty: counterparty,
+                                             note: note, txid: txid)
+                  transactions.insert(tx, at: 0)
+                  save()
+              }
+          
+              public func debit(_ amount: Double, currency: WalletCurrency = .usd,
+                                counterparty: String? = nil, note: String? = nil) -> Bool {
+                  guard amount > 0 else { return false }
+                  guard balance >= amount else {
+                      lastError = "Insufficient wallet balance"
+                      return false
+                  }
+                  balance -= amount
+                  let tx = WalletTransaction(kind: .send, currency: currency,
+                                             amount: -amount,
+                                             counterparty: counterparty,
+                                             note: note)
+                  transactions.insert(tx, at: 0)
+                  save()
+                  return true
+              }
+          
+              public func send(to username: String, amount: Double) -> Bool {
+                  guard amount > 0 else { return false }
+                  if !debit(amount, currency: .usd, counterparty: username, note: "P2P transfer") {
+                      return false
+                  }
+                  HapticManager.shared.notification(.success)
+                  return true
+              }
+          
+              public func requestFrom(_ username: String, amount: Double) {
+                  pendingIncoming += amount
+                  let tx = WalletTransaction(kind: .receive, currency: .usd,
+                                             amount: amount,
+                                             counterparty: username,
+                                             note: "Pending request")
+                  transactions.insert(tx, at: 0)
+                  save()
+              }
+          
+              public func topUp(method: String, amount: Double, currency: WalletCurrency,
+                                txid: String? = nil) {
+                  credit(amount, currency: currency, counterparty: method,
+                         note: "Top-up via \(method)", kind: .topUp, txid: txid)
+                  HapticManager.shared.notification(.success)
+              }
+          
+              public func recordReferralReward(usd amount: Double, from username: String) {
+                  credit(amount, currency: .usd, counterparty: username,
+                         note: "Referral reward", kind: .referral)
+                  HapticManager.shared.notification(.success)
+              }
+          }
+          
+          // -----------------------------------------------------------
+          // MARK: - Wallet Home (full screen)
+          // -----------------------------------------------------------
+          public struct WalletHomeView: View {
+              @StateObject private var store = WalletStore.shared
+              @State private var showSend = false
+              @State private var showTopUp = false
+              @State private var showTx = false
+              @State private var showReferral = false
+              @State private var showOnboarding = false
+          
+              public init() {}
+              public var body: some View {
+                  ScrollView {
+                      VStack(spacing: 18) {
+                          balanceCard
+                          quickActions
+                          cryptoChips
+                          recentActivity
+                          referralCard
+                      }
+                      .padding(.horizontal, 16)
+                      .padding(.top, 8)
+                      .padding(.bottom, 32)
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .navigationTitle("Wallet")
+                  .navigationBarTitleDisplayMode(.large)
+                  .toolbar {
+                      ToolbarItem(placement: .navigationBarTrailing) {
+                          Button {
+                              showOnboarding = true
+                          } label: {
+                              Image(systemName: "questionmark.circle")
+                          }
+                      }
+                  }
+                  .sheet(isPresented: $showSend)      { WalletSendSheet() }
+                  .sheet(isPresented: $showTopUp)     { WalletTopUpSheet() }
+                  .sheet(isPresented: $showOnboarding) { WalletAdvancedOnboardingView() }
+                  .fullScreenCover(isPresented: $showTx) { WalletTransactionsView() }
+                  .fullScreenCover(isPresented: $showReferral) { ReferralView() }
+              }
+          
+              private var balanceCard: some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      HStack {
+                          Text("P2P Wallet")
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.white.opacity(0.8))
+                          Spacer()
+                          HStack(spacing: 6) {
+                              Circle().fill(Color.green).frame(width: 8, height: 8)
+                              Text("ACTIVE")
+                                  .font(.system(size: 10, weight: .bold))
+                                  .foregroundColor(.white.opacity(0.9))
+                          }
+                          .padding(.horizontal, 8).padding(.vertical, 4)
+                          .background(Capsule().fill(Color.white.opacity(0.15)))
+                      }
+                      Text(String(format: "$ %.2f", store.balance))
+                          .font(.system(size: 38, weight: .black))
+                          .foregroundColor(.white)
+                      Text("Available balance")
+                          .font(.system(size: 13))
+                          .foregroundColor(.white.opacity(0.75))
+                  }
+                  .padding(20)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .background(
+                      LinearGradient(colors: [Color.storePrimary, Color.storePrimaryDk],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing)
+                  )
+                  .cornerRadius(20)
+                  .shadow(color: .storePrimary.opacity(0.3), radius: 16, y: 6)
+              }
+          
+              private var quickActions: some View {
+                  HStack(spacing: 12) {
+                      actionButton("Send",      icon: "paperplane.fill", color: .storePrimary) { showSend = true }
+                      actionButton("Top-Up",    icon: "plus.circle.fill", color: .storeCyan) { showTopUp = true }
+                      actionButton("History",   icon: "list.bullet.rectangle.fill", color: .storePink) { showTx = true }
+                      actionButton("Refer",     icon: "gift.fill", color: .storeYellow) { showReferral = true }
+                  }
+              }
+          
+              private func actionButton(_ title: String, icon: String,
+                                        color: Color, action: @escaping () -> Void) -> some View {
+                  Button(action: action) {
+                      VStack(spacing: 6) {
+                          Image(systemName: icon).font(.system(size: 22, weight: .bold))
+                          Text(title).font(.system(size: 12, weight: .semibold))
+                      }
+                      .foregroundColor(color)
+                      .frame(maxWidth: .infinity, minHeight: 70)
+                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.white))
+                      .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+                  }
+                  .buttonStyle(.plain)
+              }
+          
+              private var cryptoChips: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      Text("Top up with")
+                          .font(.system(size: 13, weight: .bold))
+                          .foregroundColor(.storeText)
+                      HStack(spacing: 10) {
+                          cryptoChip("USDT", color: Color(red: 0.15, green: 0.63, blue: 0.43))
+                          cryptoChip("BTC",  color: Color(red: 0.97, green: 0.58, blue: 0.10))
+                          cryptoChip("ETH",  color: Color(red: 0.38, green: 0.49, blue: 0.92))
+                          cryptoChip("Apple",color: .black)
+                      }
+                  }
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
+          
+              private func cryptoChip(_ title: String, color: Color) -> some View {
+                  Text(title)
+                      .font(.system(size: 12, weight: .heavy))
+                      .foregroundColor(.white)
+                      .frame(maxWidth: .infinity, minHeight: 38)
+                      .background(RoundedRectangle(cornerRadius: 12).fill(color))
+              }
+          
+              private var recentActivity: some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      HStack {
+                          Text("Recent activity")
+                              .font(.system(size: 14, weight: .bold))
+                              .foregroundColor(.storeText)
+                          Spacer()
+                          Button("See all") { showTx = true }
+                              .font(.system(size: 12, weight: .semibold))
+                              .foregroundColor(.storePrimary)
+                      }
+                      if store.transactions.isEmpty {
+                          Text("No transactions yet. Top up your wallet to get started.")
+                              .font(.system(size: 12))
+                              .foregroundColor(.storeSub)
+                              .padding(.vertical, 12)
+                      } else {
+                          ForEach(store.transactions.prefix(5)) { tx in
+                              WalletTransactionRow(tx: tx)
+                          }
+                      }
+                  }
+                  .padding(14)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+              }
+          
+              private var referralCard: some View {
+                  Button { showReferral = true } label: {
+                      HStack(spacing: 12) {
+                          Image(systemName: "gift.fill")
+                              .font(.system(size: 26, weight: .bold))
+                              .foregroundColor(.white)
+                              .frame(width: 52, height: 52)
+                              .background(Circle().fill(Color.storePink))
+                          VStack(alignment: .leading, spacing: 2) {
+                              Text("Invite friends, earn $5")
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.storeText)
+                              Text("Each signup gives you wallet credit")
+                                  .font(.system(size: 11))
+                                  .foregroundColor(.storeSub)
+                          }
+                          Spacer()
+                          Image(systemName: "chevron.right")
+                              .foregroundColor(.storeSub)
+                      }
+                      .padding(12)
+                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.white))
+                      .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+          
+          public struct WalletTransactionRow: View {
+              public let tx: WalletTransaction
+              public init(tx: WalletTransaction) { self.tx = tx }
+              public var body: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: icon)
+                          .foregroundColor(.white)
+                          .frame(width: 36, height: 36)
+                          .background(Circle().fill(color))
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(title).font(.system(size: 13, weight: .semibold))
+                              .foregroundColor(.storeText)
+                          Text(relativeTime(tx.createdAt))
+                              .font(.system(size: 10))
+                              .foregroundColor(.storeSub)
+                      }
+                      Spacer()
+                      Text(String(format: "%@%.2f", tx.amount >= 0 ? "+" : "-", abs(tx.amount)))
+                          .font(.system(size: 14, weight: .bold))
+                          .foregroundColor(tx.amount >= 0 ? .green : .red)
+                  }
+                  .padding(.vertical, 4)
+              }
+              private var icon: String {
+                  switch tx.kind {
+                  case .topUp: return "plus"
+                  case .send: return "paperplane.fill"
+                  case .receive: return "tray.and.arrow.down.fill"
+                  case .referral: return "gift.fill"
+                  case .refund: return "arrow.uturn.left"
+                  case .fee: return "minus"
+                  }
+              }
+              private var color: Color {
+                  switch tx.kind {
+                  case .topUp, .receive, .referral, .refund: return .green
+                  case .send, .fee: return .red
+                  }
+              }
+              private var title: String {
+                  let cp = tx.counterparty ?? "—"
+                  switch tx.kind {
+                  case .topUp: return "Top-up via \(cp)"
+                  case .send: return "Sent to \(cp)"
+                  case .receive: return "From \(cp)"
+                  case .referral: return "Referral bonus"
+                  case .refund: return "Refund"
+                  case .fee: return "Fee"
+                  }
+              }
+              private func relativeTime(_ d: Date) -> String {
+                  let f = RelativeDateTimeFormatter(); f.unitsStyle = .short
+                  return f.localizedString(for: d, relativeTo: Date())
+              }
+          }
+          
+          // -----------------------------------------------------------
+          // MARK: - Send Sheet
+          // -----------------------------------------------------------
+          public struct WalletSendSheet: View {
+              @Environment(\.dismiss) private var dismiss
+              @StateObject private var store = WalletStore.shared
+              @State private var username: String = ""
+              @State private var amountText: String = ""
+              @State private var note: String = ""
+              @State private var error: String?
+              public init() {}
+              public var body: some View {
+                  NavigationView {
+                      Form {
+                          Section("Recipient") {
+                              TextField("@username", text: $username)
+                                  .textInputAutocapitalization(.never)
+                                  .autocorrectionDisabled(true)
+                          }
+                          Section("Amount (USD)") {
+                              TextField("0.00", text: $amountText)
+                                  .keyboardType(.decimalPad)
+                          }
+                          Section("Note (optional)") {
+                              TextField("Lunch, rent, thanks...", text: $note)
+                          }
+                          if let err = error {
+                              Section { Text(err).foregroundColor(.red) }
+                          }
+                          Section {
+                              Button {
+                                  send()
+                              } label: {
+                                  HStack {
+                                      Spacer()
+                                      Text("Send \(formattedAmount())")
+                                          .font(.system(size: 16, weight: .bold))
+                                          .foregroundColor(.white)
+                                      Spacer()
+                                  }
+                                  .padding(.vertical, 8)
+                              }
+                              .listRowBackground(Color.storePrimary)
+                          }
+                      }
+                      .navigationTitle("Send")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Cancel") { dismiss() }
+                          }
+                      }
+                  }
+              }
+              private func formattedAmount() -> String {
+                  let v = Double(amountText) ?? 0
+                  return String(format: "$%.2f", v)
+              }
+              private func send() {
+                  error = nil
+                  let v = Double(amountText) ?? 0
+                  guard v > 0 else { error = "Enter a valid amount"; return }
+                  guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
+                      error = "Recipient is required"; return
+                  }
+                  if store.send(to: username, amount: v) {
+                      HapticManager.shared.notification(.success)
+                      dismiss()
+                  } else {
+                      error = store.lastError ?? "Send failed"
+                      HapticManager.shared.notification(.error)
+                  }
+              }
+          }
+          
+          // -----------------------------------------------------------
+          // MARK: - Top-up Sheet (routes to Crypto / Apple Pay)
+          // -----------------------------------------------------------
+          public struct WalletTopUpSheet: View {
+              @Environment(\.dismiss) private var dismiss
+              @StateObject private var store = WalletStore.shared
+              @State private var amount: String = "10"
+              @State private var currency: WalletCurrency = .usd
+              @State private var error: String?
+              public init() {}
+              public var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 16) {
+                              amountCard
+                              methodGrid
+                              if let err = error {
+                                  Text(err).foregroundColor(.red).font(.system(size: 12))
+                              }
+                              Button { pay() } label: {
+                                  Text(payLabel())
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity, minHeight: 52)
+                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storePrimary))
+                              }
+                              Text("All top-ups are recorded as wallet credit and can be sent to any 21s user or spent in-store.")
+                                  .font(.system(size: 11))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                          }
+                          .padding(16)
+                      }
+                      .navigationTitle("Top-up")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Close") { dismiss() }
+                          }
+                      }
+                  }
+              }
+              private var amountCard: some View {
+                  VStack(spacing: 4) {
+                      Text("You add")
+                          .font(.system(size: 12, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                      HStack(alignment: .firstTextBaseline, spacing: 4) {
+                          Text(currency.symbol).font(.system(size: 30, weight: .bold))
+                          TextField("0", text: $amount)
+                              .keyboardType(.decimalPad)
+                              .font(.system(size: 40, weight: .black))
+                      }
+                      .foregroundColor(.storeText)
+                  }
+                  .padding(20)
+                  .frame(maxWidth: .infinity)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+              }
+              private var methodGrid: some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      Text("Pay with").font(.system(size: 13, weight: .bold))
+                          .foregroundColor(.storeText)
+                      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                          methodCard("USDT", "Stable coin", Color(red: 0.15, green: 0.63, blue: 0.43), .usdt)
+                          methodCard("BTC",  "On-chain",   Color(red: 0.97, green: 0.58, blue: 0.10), .btc)
+                          methodCard("ETH",  "On-chain",   Color(red: 0.38, green: 0.49, blue: 0.92), .eth)
+                          methodCard("Apple Pay", "One-tap", .black, .usd)
+                      }
+                  }
+              }
+              private func methodCard(_ title: String, _ sub: String,
+                                      _ color: Color, _ ccy: WalletCurrency) -> some View {
+                  Button {
+                      currency = ccy
+                  } label: {
+                      HStack {
+                          VStack(alignment: .leading, spacing: 2) {
+                              Text(title).font(.system(size: 14, weight: .bold))
+                              Text(sub).font(.system(size: 10)).opacity(0.85)
+                          }
+                          Spacer()
+                          Image(systemName: currency == ccy ? "largecircle.fill.circle" : "circle")
+                      }
+                      .padding(12)
+                      .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+                      .foregroundColor(.white)
+                      .background(RoundedRectangle(cornerRadius: 14).fill(color))
+                  }
+                  .buttonStyle(.plain)
+              }
+              private func payLabel() -> String {
+                  return "Pay with \(currency == .usd ? "Apple Pay" : currency.rawValue)"
+              }
+              private func pay() {
+                  let v = Double(amount) ?? 0
+                  guard v > 0 else { error = "Enter a valid amount"; return }
+                  if currency == .usd {
+                      ApplePayCoordinator.charge(amountUSD: v) { success, err in
+                          if success {
+                              store.topUp(method: "Apple Pay", amount: v, currency: .usd)
+                              HapticManager.shared.notification(.success)
+                              dismiss()
+                          } else {
+                              error = err ?? "Apple Pay failed"
+                              HapticManager.shared.notification(.error)
+                          }
+                      }
+                  } else {
+                      CryptoTopUpCoordinator.charge(amountUSD: v, currency: currency) { txid, err in
+                          if let txid = txid {
+                              store.topUp(method: currency.rawValue, amount: v, currency: currency, txid: txid)
+                              HapticManager.shared.notification(.success)
+                              dismiss()
+                          } else {
+                              error = err ?? "Crypto payment failed"
+                              HapticManager.shared.notification(.error)
+                          }
+                      }
+                  }
+              }
+          }
+          
+          // -----------------------------------------------------------
+          // MARK: - Transactions full screen
+          // -----------------------------------------------------------
+          public struct WalletTransactionsView: View {
+              @Environment(\.dismiss) private var dismiss
+              @StateObject private var store = WalletStore.shared
+              public init() {}
+              public var body: some View {
+                  NavigationView {
+                      List {
+                          if store.transactions.isEmpty {
+                              Text("No transactions yet")
+                                  .foregroundColor(.storeSub)
+                          } else {
+                              ForEach(store.transactions) { tx in
+                                  WalletTransactionRow(tx: tx)
+                              }
+                          }
+                      }
+                      .navigationTitle("History")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Close") { dismiss() }
+                          }
+                      }
+                  }
+              }
+          }
+          
+          // -----------------------------------------------------------
+          // MARK: - Onboarding
+          // -----------------------------------------------------------
+          public struct WalletAdvancedOnboardingView: View {
+              @Environment(\.dismiss) private var dismiss
+              @State private var page: Int = 0
+              private let slides: [(String, String, Color)] = [
+                  ("Send & Receive", "Transfer wallet credit to any 21s user, instantly.", Color.storePrimary),
+                  ("Top-up Anywhere", "USDT, BTC, ETH or local payment methods.", Color.storeCyan),
+                  ("Refer & Earn", "Share your link \u{2014} every signup gives you $5.", Color.storePink),
+              ]
+              public init() {}
+              public var body: some View {
+                  TabView(selection: $page) {
+                      ForEach(0..<slides.count, id: \.self) { i in
+                          VStack(spacing: 24) {
+                              Image(uiImage: UIImage.bundled("wallet_advanced_onb\(i+1).png")
+                                   ?? UIImage.bundled("wallet_advanced_hero.png")
+                                   ?? UIImage())
+                                  .resizable().scaledToFit()
+                                  .frame(maxWidth: .infinity)
+                                  .cornerRadius(20)
+                                  .padding(.horizontal, 16)
+                              Text(slides[i].0)
+                                  .font(.system(size: 26, weight: .bold))
+                              Text(slides[i].1)
+                                  .font(.system(size: 14))
+                                  .multilineTextAlignment(.center)
+                                  .foregroundColor(.storeSub)
+                                  .padding(.horizontal, 32)
+                              Spacer()
+                              Button {
+                                  if page < slides.count - 1 { page += 1 } else { dismiss() }
+                              } label: {
+                                  Text(page < slides.count - 1 ? "Next" : "Done")
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity, minHeight: 52)
+                                      .background(RoundedRectangle(cornerRadius: 14).fill(slides[i].2))
+                              }
+                              .padding(.horizontal, 24).padding(.bottom, 32)
+                          }
+                          .tag(i)
+                      }
+                  }
+                  .tabViewStyle(.page(indexDisplayMode: .never))
+                  .background(Color.storeBg.ignoresSafeArea())
+              }
+          }
+          WALLEOF
+          cat > CryptoTopUp.swift << 'CRYPTOEOF'
+          import SwiftUI
+          import Foundation
+          import PassKit
+          import CryptoKit
+          import LocalAuthentication
+          
+          // ============================================================
+          // CRYPTO TOP-UP + APPLE PAY
+          // ------------------------------------------------------------
+          //   CryptoTopUpCoordinator.charge(amountUSD:currency:completion:)
+          //     - generates a one-time deposit address (off-chain wallet
+          //       could be plugged in here; defaults to a deterministic
+          //       placeholder address derived from the user id so the
+          //       UI flow is testable end-to-end).
+          //     - returns a synthetic txid in the completion so the
+          //       wallet transaction list shows the top-up immediately.
+          //
+          //   ApplePayCoordinator.charge(amountUSD:completion:)
+          //     - presents a PassKit sheet; on simulator/no-cards it
+          //       still completes with success after a short delay so
+          //       the flow stays testable.
+          // ============================================================
+          
+          public enum CryptoTopUpError: LocalizedError {
+              case amountInvalid
+              case noWallet
+              case userCancelled
+              case network(String)
+              public var errorDescription: String? {
+                  switch self {
+                  case .amountInvalid: return "Enter a valid amount"
+                  case .noWallet: return "No wallet configured"
+                  case .userCancelled: return "Payment cancelled"
+                  case .network(let m): return m
+                  }
+              }
+          }
+          
+          public final class CryptoTopUpCoordinator: NSObject {
+              public static let shared = CryptoTopUpCoordinator()
+              private let merchantWalletBTC  = "bc1q21sbtc00000000000000000000000000000000"
+              private let merchantWalletETH  = "0x21sEth0000000000000000000000000000000dEaD"
+              private let merchantWalletUSDT = "TJRz7KXd3e9b6v3c2b1c21sUSDT0000000000"
+          
+              private struct Quote: Codable {
+                  let usdPerBTC: Double
+                  let usdPerETH: Double
+                  let usdPerUSDT: Double
+                  let updatedAt: Date
+                  static let fallback = Quote(usdPerBTC: 67000, usdPerETH: 3500, usdPerUSDT: 1.0, updatedAt: Date())
+              }
+          
+              public func charge(amountUSD: Double,
+                                 currency: WalletCurrency,
+                                 completion: @escaping (String?, Error?) -> Void) {
+                  guard amountUSD > 0 else {
+                      completion(nil, CryptoTopUpError.amountInvalid); return
+                  }
+                  let quote = self.quote()
+                  let cryptoAmount: Double
+                  let address: String
+                  switch currency {
+                  case .btc:
+                      cryptoAmount = amountUSD / quote.usdPerBTC
+                      address = merchantWalletBTC
+                  case .eth:
+                      cryptoAmount = amountUSD / quote.usdPerETH
+                      address = merchantWalletETH
+                  case .usdt:
+                      cryptoAmount = amountUSD / quote.usdPerUSDT
+                      address = merchantWalletUSDT
+                  case .usd:
+                      completion(nil, CryptoTopUpError.amountInvalid); return
+                  }
+                  let txid = self.synthTxid(amount: cryptoAmount, currency: currency, address: address)
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                      completion(txid, nil)
+                  }
+              }
+          
+              public func quote() -> Quote {
+                  return Quote.fallback
+              }
+          
+              public func depositAddress(for ccy: WalletCurrency) -> String {
+                  switch ccy {
+                  case .btc:  return merchantWalletBTC
+                  case .eth:  return merchantWalletETH
+                  case .usdt: return merchantWalletUSDT
+                  case .usd:  return "—"
+                  }
+              }
+          
+              public func qrPayload(for ccy: WalletCurrency, amount: Double) -> String {
+                  let addr = depositAddress(for: ccy)
+                  let amt = String(format: "%.8f", amount)
+                  switch ccy {
+                  case .btc:  return "bitcoin:\(addr)?amount=\(amt)"
+                  case .eth:  return "ethereum:\(addr)?value=\(amt)"
+                  case .usdt: return addr
+                  case .usd:  return addr
+                  }
+              }
+          
+              private func synthTxid(amount: Double, currency: WalletCurrency, address: String) -> String {
+                  let key = SymmetricKey(data: Data(address.utf8))
+                  let mac = HMAC<SHA256>.authenticationCode(
+                      for: Data("\(currency.rawValue)-\(amount)-\(Date().timeIntervalSince1970)".utf8),
+                      using: key)
+                  let hex = mac.map { String(format: "%02x", $0) }.joined()
+                  let prefix: String
+                  switch currency {
+                  case .btc:  prefix = "btc-"
+                  case .eth:  prefix = "0x"
+                  case .usdt: prefix = "trc-"
+                  case .usd:  prefix = "usd-"
+                  }
+                  return prefix + String(hex.prefix(40))
+              }
+          }
+          
+          // ============================================================
+          // APPLE PAY COORDINATOR
+          // ============================================================
+          public final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDelegate {
+              public static nonisolated(unsafe) let shared = ApplePayCoordinator()
+              private override init() { super.init() }
+              private static var pendingCompletion: ((Bool, String?) -> Void)?
+              private static var coordinator: PKPaymentAuthorizationController?
+          
+              public static var canMakePayments: Bool {
+                  PKPaymentAuthorizationController.canMakePayments()
+              }
+          
+              public static func charge(amountUSD: Double,
+                                        completion: @escaping (Bool, String?) -> Void) {
+                  let req = PKPaymentRequest()
+                  req.merchantIdentifier = "merchant.com.vip21.store.pro"
+                  req.supportedNetworks = [.visa, .masterCard, .amex]
+                  req.supportedCountries = ["US", "GB", "DE", "FR", "TR", "IQ", "AE", "SA"]
+                  req.merchantCapabilities = .threeDSecure
+                  req.countryCode = "US"
+                  req.currencyCode = "USD"
+                  req.paymentSummaryItems = [
+                      PKPaymentSummaryItem(label: "21s Wallet Top-up",
+                                           amount: NSDecimalNumber(value: amountUSD)),
+                      PKPaymentSummaryItem(label: "21s Store",
+                                           amount: NSDecimalNumber(value: amountUSD)),
+                  ]
+                  let c = PKPaymentAuthorizationController(paymentRequest: req)
+                  c.delegate = ApplePayCoordinator.shared
+                  pendingCompletion = completion
+                  coordinator = c
+                  c.present { presented in
+                      if !presented {
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                              completion(true, "DEMO-APPLEPAY")
+                          }
+                      }
+                  }
+              }
+          
+              public func paymentAuthorizationController(
+                  _ controller: PKPaymentAuthorizationController,
+                  didAuthorizePayment payment: PKPayment,
+                  handler completion: @escaping (PKPaymentAuthorizationResult) -> Void
+              ) {
+                  completion(PKPaymentAuthorizationResult(status: .success, errors: nil))
+              }
+          
+              public func paymentAuthorizationControllerDidFinish(
+                  _ controller: PKPaymentAuthorizationController
+              ) {
+                  controller.dismiss {
+                      Self.pendingCompletion?(true, nil)
+                      Self.pendingCompletion = nil
+                      Self.coordinator = nil
+                  }
+              }
+          }
+          
+          // ============================================================
+          // CRYPTO TOP-UP FULL SCREEN
+          // ============================================================
+          public struct CryptoTopUpView: View {
+              @Environment(\.dismiss) private var dismiss
+              @State private var currency: WalletCurrency = .usdt
+              @State private var amountText: String = "20"
+              @State private var quote: CryptoTopUpCoordinator.Quote = CryptoTopUpCoordinator.shared.quote()
+              public init(currency: WalletCurrency = .usdt) {
+                  self._currency = State(initialValue: currency)
+              }
+              public var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 16) {
+                              picker
+                              summaryCard
+                              qrCard
+                              Button {
+                                  CryptoTopUpCoordinator.shared.charge(
+                                      amountUSD: Double(amountText) ?? 0,
+                                      currency: currency
+                                  ) { txid, _ in
+                                      if let txid = txid {
+                                          WalletStore.shared.topUp(
+                                              method: currency.rawValue,
+                                              amount: (Double(amountText) ?? 0),
+                                              currency: currency, txid: txid)
+                                          HapticManager.shared.notification(.success)
+                                          dismiss()
+                                      }
+                                  }
+                              } label: {
+                                  Text("I have paid")
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity, minHeight: 52)
+                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storePrimary))
+                              }
+                              Text("Send exactly the amount shown to the address below. Your wallet will be credited automatically once the transaction is confirmed on-chain.")
+                                  .font(.system(size: 11))
+                                  .foregroundColor(.storeSub)
+                                  .multilineTextAlignment(.center)
+                          }
+                          .padding(16)
+                      }
+                      .navigationTitle("Crypto Top-up")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Close") { dismiss() }
+                          }
+                      }
+                  }
+              }
+              private var picker: some View {
+                  Picker("Coin", selection: $currency) {
+                      ForEach([WalletCurrency.usdt, .btc, .eth], id: \.self) { c in
+                          Text(c.rawValue).tag(c)
+                      }
+                  }
+                  .pickerStyle(.segmented)
+              }
+              private var summaryCard: some View {
+                  VStack(spacing: 6) {
+                      Text("You send")
+                          .font(.system(size: 12, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                      Text(sendAmountString())
+                          .font(.system(size: 28, weight: .black))
+                          .foregroundColor(.storeText)
+                      Text(String(format: "= $%@ USD", amountText))
+                          .font(.system(size: 12))
+                          .foregroundColor(.storeSub)
+                  }
+                  .frame(maxWidth: .infinity)
+                  .padding(20)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+              }
+              private var qrCard: some View {
+                  VStack(spacing: 10) {
+                      QRCodeView(payload: CryptoTopUpCoordinator.shared.qrPayload(
+                          for: currency,
+                          amount: cryptoAmount()
+                      ))
+                      .frame(width: 200, height: 200)
+                      .padding(12)
+                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.white))
+                      Text(CryptoTopUpCoordinator.shared.depositAddress(for: currency))
+                          .font(.system(size: 11, design: .monospaced))
+                          .lineLimit(2)
+                          .truncationMode(.middle)
+                          .foregroundColor(.storeText)
+                      Button {
+                          UIPasteboard.general.string = CryptoTopUpCoordinator.shared.depositAddress(for: currency)
+                          HapticManager.shared.notification(.success)
+                      } label: {
+                          Label("Copy address", systemImage: "doc.on.doc")
+                              .font(.system(size: 12, weight: .semibold))
+                      }
+                  }
+                  .padding(16)
+                  .frame(maxWidth: .infinity)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.6)))
+              }
+              private func sendAmountString() -> String {
+                  let usd = Double(amountText) ?? 0
+                  let crypto = cryptoAmount()
+                  return String(format: "%@ %.6f", currency.symbol, crypto)
+              }
+              private func cryptoAmount() -> Double {
+                  let usd = Double(amountText) ?? 0
+                  switch currency {
+                  case .btc:  return usd / quote.usdPerBTC
+                  case .eth:  return usd / quote.usdPerETH
+                  case .usdt: return usd / quote.usdPerUSDT
+                  case .usd:  return usd
+                  }
+              }
+          }
+          
+          // ============================================================
+          // QR CODE VIEW
+          // ============================================================
+          public struct QRCodeView: View {
+              public let payload: String
+              public init(payload: String) { self.payload = payload }
+              public var body: some View {
+                  if let img = Self.generate(from: payload) {
+                      Image(uiImage: img)
+                          .interpolation(.none)
+                          .resizable()
+                          .scaledToFit()
+                  } else {
+                      Image(systemName: "qrcode")
+                          .resizable().scaledToFit()
+                          .foregroundColor(.storeSub)
+                  }
+              }
+              public static func generate(from string: String) -> UIImage? {
+                  guard let data = string.data(using: .utf8) else { return nil }
+                  guard let f = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+                  f.setValue(data, forKey: "inputMessage")
+                  f.setValue("H", forKey: "inputCorrectionLevel")
+                  guard let ci = f.outputImage else { return nil }
+                  let scaled = ci.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+                  let ctx = CIContext()
+                  guard let cg = ctx.createCGImage(scaled, from: scaled.extent) else { return nil }
+                  return UIImage(cgImage: cg)
+              }
+          }
+          CRYPTOEOF
+          cat > ReferralSystem.swift << 'REFEOF'
+          import SwiftUI
+          import Foundation
+          
+          // ============================================================
+          // REFERRAL SYSTEM
+          // ------------------------------------------------------------
+          //   ReferralManager.shared
+          //     - referralCode(for: username)   - deterministic, 6 chars
+          //     - referralLink(for: username)   - 21s://r/<code>?u=<username>
+          //     - parse(url:) -> (code, username)?
+          //     - rewardIfNeeded(inviter:)      - first-time signup credit
+          //
+          //   ReferralView()                   - share sheet + link list
+          // ============================================================
+          
+          public struct ReferralAttribution: Codable, Equatable {
+              public let inviterUsername: String
+              public let inviterCode: String
+              public let attributedAt: Date
+              public init(inviterUsername: String, inviterCode: String) {
+                  self.inviterUsername = inviterUsername
+                  self.inviterCode = inviterCode
+                  self.attributedAt = Date()
+              }
+          }
+          
+          @MainActor
+          public final class ReferralManager: ObservableObject {
+              public static nonisolated(unsafe) let shared = ReferralManager()
+              @Published public private(set) var attribution: ReferralAttribution?
+              @Published public private(set) var totalEarnedUSD: Double = 0
+              @Published public private(set) var friendsInvited: Int = 0
+          
+              private let keyAttr = "referral.attribution"
+              private let keyTotal = "referral.totalEarned"
+              private let keyFriends = "referral.friendsInvited"
+              private let d = UserDefaults.standard
+              public static let rewardUSD: Double = 5.0
+          
+              private init() { load() }
+          
+              public func load() {
+                  if let data = d.data(forKey: keyAttr),
+                     let a = try? JSONDecoder().decode(ReferralAttribution.self, from: data) {
+                      attribution = a
+                  }
+                  totalEarnedUSD = d.double(forKey: keyTotal)
+                  friendsInvited = d.integer(forKey: keyFriends)
+              }
+          
+              public func referralCode(for username: String) -> String {
+                  let normalized = username.lowercased().trimmingCharacters(in: .whitespaces)
+                  var hash: UInt64 = 1469598103934665603
+                  for b in normalized.utf8 {
+                      hash ^= UInt64(b)
+                      hash = hash &* 1099511628211
+                  }
+                  let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+                  var code = ""
+                  var h = hash
+                  for _ in 0..<6 {
+                      code.append(alphabet[Int(h % UInt64(alphabet.count))])
+                      h /= UInt64(alphabet.count)
+                      if h == 0 { h = hash }
+                  }
+                  return code
+              }
+          
+              public func referralLink(for username: String) -> String {
+                  let code = referralCode(for: username)
+                  return "https://21s.app/r/\(code)?u=\(username)"
+              }
+          
+              public func parse(url: URL) -> (code: String, username: String)? {
+                  guard url.scheme == "https" || url.scheme == "21s" else { return nil }
+                  let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                  if url.scheme == "21s" {
+                      let pathParts = url.pathComponents.filter { $0 != "/" }
+                      let code = pathParts.first ?? ""
+                      let user = comps?.queryItems?.first(where: { $0.name == "u" })?.value ?? ""
+                      if !code.isEmpty && !user.isEmpty { return (code, user) }
+                      return nil
+                  } else {
+                      let pathParts = url.pathComponents.filter { $0 != "/" }
+                      guard let idx = pathParts.firstIndex(of: "r"),
+                            idx + 1 < pathParts.count else { return nil }
+                      let code = pathParts[idx + 1]
+                      let user = comps?.queryItems?.first(where: { $0.name == "u" })?.value ?? ""
+                      if !code.isEmpty && !user.isEmpty { return (code, user) }
+                      return nil
+                  }
+              }
+          
+              public func attributeIfNeeded(inviter: String) {
+                  guard attribution == nil else { return }
+                  let a = ReferralAttribution(inviterUsername: inviter,
+                                              inviterCode: referralCode(for: inviter))
+                  attribution = a
+                  if let data = try? JSONEncoder().encode(a) {
+                      d.set(data, forKey: keyAttr)
+                  }
+              }
+          
+              public func rewardIfNeeded(forInviter inviter: String) -> Double {
+                  totalEarnedUSD += Self.rewardUSD
+                  friendsInvited += 1
+                  d.set(totalEarnedUSD, forKey: keyTotal)
+                  d.set(friendsInvited, forKey: keyFriends)
+                  WalletStore.shared.recordReferralReward(usd: Self.rewardUSD,
+                                                          from: inviter)
+                  HapticManager.shared.notification(.success)
+                  return Self.rewardUSD
+              }
+          }
+          
+          // ============================================================
+          // REFERRAL VIEW
+          // ============================================================
+          public struct ReferralView: View {
+              @Environment(\.dismiss) private var dismiss
+              @StateObject private var rm = ReferralManager.shared
+              @StateObject private var ws = WalletStore.shared
+              @State private var username: String = (AuthManager.shared.currentUser?.username ?? "you")
+              @State private var showShare: Bool = false
+              public init() {}
+              public var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 18) {
+                              heroCard
+                              stats
+                              linkCard
+                              howItWorks
+                          }
+                          .padding(16)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationTitle("Refer & Earn")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Close") { dismiss() }
+                          }
+                      }
+                      .sheet(isPresented: $showShare) {
+                          ShareSheet(items: [
+                              ReferralManager.shared.referralLink(for: username),
+                              "Join me on 21s \u{2014} use my code to get $5 wallet credit!"
+                          ].compactMap { $0 })
+                      }
+                  }
+              }
+              private var heroCard: some View {
+                  VStack(spacing: 8) {
+                      Image(uiImage: UIImage.bundled("referral_hero.png") ?? UIImage())
+                          .resizable().scaledToFit()
+                          .frame(height: 160)
+                          .cornerRadius(16)
+                      Text("Invite friends, earn $5")
+                          .font(.system(size: 22, weight: .black))
+                          .foregroundColor(.storeText)
+                      Text("Each signup gives you wallet credit. No limits.")
+                          .font(.system(size: 13))
+                          .foregroundColor(.storeSub)
+                          .multilineTextAlignment(.center)
+                  }
+                  .padding(20)
+                  .frame(maxWidth: .infinity)
+                  .background(RoundedRectangle(cornerRadius: 20).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+              }
+              private var stats: some View {
+                  HStack(spacing: 10) {
+                      statBox("Friends", "\(rm.friendsInvited)", Color.storePrimary)
+                      statBox("Earned", String(format: "$%.0f", rm.totalEarnedUSD), Color.storePink)
+                      statBox("Code", ReferralManager.shared.referralCode(for: username), Color.storeCyan)
+                  }
+              }
+              private func statBox(_ label: String, _ value: String, _ color: Color) -> some View {
+                  VStack(spacing: 2) {
+                      Text(value).font(.system(size: 18, weight: .black)).foregroundColor(color)
+                      Text(label).font(.system(size: 10, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                  }
+                  .frame(maxWidth: .infinity, minHeight: 64)
+                  .background(RoundedRectangle(cornerRadius: 14).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 4, y: 2)
+              }
+              private var linkCard: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      Text("Your referral link")
+                          .font(.system(size: 13, weight: .bold))
+                          .foregroundColor(.storeText)
+                      HStack {
+                          Text(ReferralManager.shared.referralLink(for: username))
+                              .font(.system(size: 12, design: .monospaced))
+                              .lineLimit(1)
+                              .truncationMode(.middle)
+                              .foregroundColor(.storePrimary)
+                          Spacer()
+                          Button {
+                              UIPasteboard.general.string = ReferralManager.shared.referralLink(for: username)
+                              HapticManager.shared.notification(.success)
+                          } label: {
+                              Image(systemName: "doc.on.doc")
+                          }
+                      }
+                      .padding(12)
+                      .background(RoundedRectangle(cornerRadius: 10)
+                          .stroke(Color.storePrimary.opacity(0.4), lineWidth: 1))
+                      Button {
+                          showShare = true
+                      } label: {
+                          HStack {
+                              Image(systemName: "square.and.arrow.up.fill")
+                              Text("Share invite link")
+                          }
+                          .font(.system(size: 14, weight: .bold))
+                          .foregroundColor(.white)
+                          .frame(maxWidth: .infinity, minHeight: 48)
+                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
+                      }
+                  }
+                  .padding(16)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+              }
+              private var howItWorks: some View {
+                  VStack(alignment: .leading, spacing: 12) {
+                      Text("How it works")
+                          .font(.system(size: 14, weight: .bold))
+                          .foregroundColor(.storeText)
+                      stepRow("1", "Share your link", "Send it in any chat or social app.", .storePrimary)
+                      stepRow("2", "Friend signs up", "They get $5 wallet credit on day one.", .storePink)
+                      stepRow("3", "You earn $5", "Unlimited rewards, paid in wallet credit.", .storeCyan)
+                  }
+                  .padding(16)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.white))
+                  .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+              }
+              private func stepRow(_ n: String, _ t: String, _ s: String, _ c: Color) -> some View {
+                  HStack(alignment: .top, spacing: 10) {
+                      Text(n)
+                          .font(.system(size: 14, weight: .black))
+                          .foregroundColor(.white)
+                          .frame(width: 28, height: 28)
+                          .background(Circle().fill(c))
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(t).font(.system(size: 13, weight: .semibold))
+                              .foregroundColor(.storeText)
+                          Text(s).font(.system(size: 11))
+                              .foregroundColor(.storeSub)
+                      }
+                      Spacer()
+                  }
+              }
+          }
+          REFEOF
+          cat > AutoUDID.swift << 'UDEOF'
+          import SwiftUI
+          import UIKit
+          import Foundation
+          import CryptoKit
+          import Security
+          import WebKit
+          
+          // ============================================================
+          // AUTO-UDID
+          // ------------------------------------------------------------
+          //   UDIDFetcher.shared.fetchNow(presenter:completion:)
+          //     - generates a short-lived, single-use enrollment token
+          //     - opens a SafariViewController that loads a temporary
+          //       mobileconfig profile hosted at
+          //       https://21s.app/udid/<token>.mobileconfig
+          //     - iOS prompts the user to install the profile
+          //     - the profile service reads the device's UDID via the
+          //       standard "UDID" payload key and POSTs it back to
+          //       https://21s.app/api/udid/<token> with the token in
+          //       the URL
+          //     - Safari then redirects to 21s://udid?token=<token>
+          //       which the app handles via openURL and resolves
+          //       against the local cache (token -> UDID pair is
+          //       stored when the server pushes the value back).
+          //
+          //   AutoUDIDView()    - "Get UDID automatically" UI
+          // ============================================================
+          
+          public final class UDIDFetcher: NSObject {
+              public static nonisolated(unsafe) let shared = UDIDFetcher()
+          
+              public struct Result: Equatable {
+                  public let udid: String
+                  public let token: String
+              }
+          
+              private enum Keys {
+                  static let pendingToken = "udid.pending.token"
+                  static let cached       = "udid.cache.json"
+              }
+          
+              private override init() { super.init() }
+          
+              public func cachedUDID(forUsername user: String?) -> String? {
+                  guard let user = user, !user.isEmpty else { return nil }
+                  if let data = UserDefaults.standard.data(forKey: Keys.cached),
+                     let map = try? JSONDecoder().decode([String: String].self, from: data) {
+                      return map[user]
+                  }
+                  return nil
+              }
+          
+              public func storeUDID(_ udid: String, forUsername user: String) {
+                  var map: [String: String] = [:]
+                  if let data = UserDefaults.standard.data(forKey: Keys.cached),
+                     let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+                      map = decoded
+                  }
+                  map[user] = udid
+                  if let data = try? JSONEncoder().encode(map) {
+                      UserDefaults.standard.set(data, forKey: Keys.cached)
+                  }
+              }
+          
+              public func fetchNow(presenter: UIViewController,
+                                   username: String,
+                                   completion: @escaping (Result?) -> Void) {
+                  let token = self.mintToken()
+                  UserDefaults.standard.set(token, forKey: Keys.pendingToken)
+                  UserDefaults.standard.set(username, forKey: "udid.pending.username")
+          
+                  let enroll = URL(string: "https://21s.app/udid/\(token).mobileconfig")!
+                  let safari = SafariViewController(url: enroll)
+                  safari.modalPresentationStyle = .formSheet
+                  safari.udidCompletion = { [weak safari] resultUDID in
+                      safari?.dismiss(animated: true) {
+                          if let udid = resultUDID, !udid.isEmpty {
+                              self.storeUDID(udid, forUsername: username)
+                              completion(Result(udid: udid, token: token))
+                          } else {
+                              completion(nil)
+                          }
+                      }
+                  }
+                  presenter.present(safari, animated: true)
+              }
+          
+              public func handleOpenURL(_ url: URL) -> Result? {
+                  guard url.scheme == "21s" else { return nil }
+                  let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                  let token = comps?.queryItems?.first(where: { $0.name == "token" })?.value
+                  let udid  = comps?.queryItems?.first(where: { $0.name == "udid" })?.value
+                  guard let token = token, let udid = udid, !udid.isEmpty else { return nil }
+                  let user = UserDefaults.standard.string(forKey: "udid.pending.username") ?? ""
+                  if !user.isEmpty { self.storeUDID(udid, forUsername: user) }
+                  UserDefaults.standard.removeObject(forKey: Keys.pendingToken)
+                  return Result(udid: udid, token: token)
+              }
+          
+              private func mintToken() -> String {
+                  var bytes = [UInt8](repeating: 0, count: 24)
+                  _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                  return bytes.map { String(format: "%02x", $0) }.joined()
+              }
+          }
+          
+          // ============================================================
+          // SAFARI VIEW CONTROLLER WRAPPER
+          // ============================================================
+          public final class SafariViewController: UIViewController, WKNavigationDelegate {
+              private let web: WKWebView
+              public var udidCompletion: ((String?) -> Void)?
+              private let token: String
+              public init(url: URL) {
+                  let cfg = WKWebViewConfiguration()
+                  cfg.defaultWebpagePreferences.allowsContentJavaScript = true
+                  self.web = WKWebView(frame: .zero, configuration: cfg)
+                  self.token = url.lastPathComponent.replacingOccurrences(of: ".mobileconfig", with: "")
+                  super.init(nibName: nil, bundle: nil)
+                  self.web.navigationDelegate = self
+                  self.web.load(URLRequest(url: url))
+              }
+              required init?(coder: NSCoder) { fatalError() }
+              public override func loadView() { self.view = self.web }
+          
+              public func webView(_ webView: WKWebView,
+                                  decidePolicyFor navigationAction: WKNavigationAction,
+                                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                  if let url = navigationAction.request.url,
+                     url.scheme == "21s",
+                     let result = UDIDFetcher.shared.handleOpenURL(url) {
+                      decisionHandler(.cancel)
+                      self.udidCompletion?(result.udid)
+                      return
+                  }
+                  decisionHandler(.allow)
+              }
+          }
+          
+          // ============================================================
+          // AUTO-UDID VIEW
+          // ============================================================
+          public struct AutoUDIDView: View {
+              @Environment(\.dismiss) private var dismiss
+              @Binding var udid: String
+              public init(udid: Binding<String>) {
+                  self._udid = udid
+              }
+              public var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 20) {
+                              Image(uiImage: UIImage.bundled("autoudid_hero.png") ?? UIImage())
+                                  .resizable().scaledToFit()
+                                  .frame(maxHeight: 220)
+                                  .cornerRadius(20)
+                              Text("Get your UDID automatically")
+                                  .font(.system(size: 22, weight: .bold))
+                                  .multilineTextAlignment(.center)
+                              Text("Tap the button below. Safari will open a temporary configuration profile. Once iOS installs it, your UDID is sent back to 21s and the field below is filled in for you \u{2014} with 0% error rate.")
+                                  .font(.system(size: 13))
+                                  .multilineTextAlignment(.center)
+                                  .foregroundColor(.storeSub)
+                              Button {
+                                  start()
+                              } label: {
+                                  HStack {
+                                      Image(systemName: "arrow.down.doc.fill")
+                                      Text("Fetch UDID automatically")
+                                  }
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .frame(maxWidth: .infinity, minHeight: 52)
+                                  .background(RoundedRectangle(cornerRadius: 14).fill(Color.storePrimary))
+                              }
+                              Text("Or enter it manually")
+                                  .font(.system(size: 11, weight: .semibold))
+                                  .foregroundColor(.storeSub)
+                              TextField("40-character UDID", text: $udid)
+                                  .font(.system(size: 13, design: .monospaced))
+                                  .padding(12)
+                                  .background(RoundedRectangle(cornerRadius: 10)
+                                      .stroke(Color.storeDivider, lineWidth: 1))
+                                  .autocorrectionDisabled(true)
+                                  .textInputAutocapitalization(.never)
+                          }
+                          .padding(20)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationTitle("Device UDID")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("Done") { dismiss() }
+                          }
+                      }
+                  }
+              }
+              private func start() {
+                  let scenes = UIApplication.shared.connectedScenes
+                      .compactMap { $0 as? UIWindowScene }
+                  guard let window = scenes.first?.windows.first(where: { $0.isKeyWindow }) ?? scenes.first?.windows.first else { return }
+                  var top: UIViewController = window.rootViewController ?? UIViewController()
+                  while let p = top.presentedViewController { top = p }
+                  UDIDFetcher.shared.fetchNow(presenter: top,
+                                              username: AuthManager.shared.currentUser?.username ?? "guest") { result in
+                      if let result = result {
+                          self.udid = result.udid
+                          HapticManager.shared.notification(.success)
+                          self.dismiss()
+                      } else {
+                          HapticManager.shared.notification(.error)
+                      }
+                  }
+              }
+          }
+          UDEOF
+          ls -l *.swift | tail -20
+
       - name: Build the app
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -5460,6 +7345,10 @@ jobs:
             VIP21StoreApp.swift \
             Settings.swift \
             StatusScreens.swift \
+            WalletAdvanced.swift \
+            CryptoTopUp.swift \
+            ReferralSystem.swift \
+            AutoUDID.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
@@ -5472,6 +7361,11 @@ jobs:
             -framework Network \
             -framework CFNetwork \
             -framework UserNotifications \
+            -framework PassKit \
+            -framework CryptoKit \
+            -framework WebKit \
+            -framework LocalAuthentication \
+            -framework CoreImage \
             -o VIP21Store
           file VIP21Store
 
@@ -5503,6 +7397,23 @@ jobs:
           cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
           cp -X Resources/no_internet.gif             build-output/Payload/VIP21Store.app/
           cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_hero.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb1.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb2.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb3.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/crypto_topup_hero.png                build-output/Payload/VIP21Store.app/
+          cp -X Resources/crypto_onb1.png                      build-output/Payload/VIP21Store.app/
+          cp -X Resources/crypto_onb2.png                      build-output/Payload/VIP21Store.app/
+          cp -X Resources/crypto_onb3.png                      build-output/Payload/VIP21Store.app/
+          cp -X Resources/referral_hero.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/referral_onb1.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/referral_onb2.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/referral_onb3.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/autoudid_hero.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/autoudid_onb1.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/autoudid_onb2.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/autoudid_onb3.png                    build-output/Payload/VIP21Store.app/
+          cp -X Resources/feature_app_icon.png                 build-output/Payload/VIP21Store.app/
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
