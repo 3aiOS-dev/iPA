@@ -5930,7 +5930,14 @@ jobs:
           
           @MainActor
           public final class WalletStore: ObservableObject {
-              public static nonisolated(unsafe) let shared = WalletStore()
+              // Singleton so views can read balance/transactions without having
+              // to receive the store as a parameter. `load()` updates
+              // @Published values which must happen on the main actor. We use
+              // `MainActor.assumeIsolated` inside the static let initializer
+              // (safe because Swift guarantees `static let` is initialized
+              // lazily on first access, and our first access is from a
+              // SwiftUI view, i.e. on the main thread).
+              public static let shared = MainActor.assumeIsolated { WalletStore() }
           
               @Published public private(set) var balance: Double = 0
               @Published public private(set) var pendingIncoming: Double = 0
@@ -6450,13 +6457,13 @@ jobs:
                           }
                       }
                   } else {
-                      CryptoTopUpCoordinator.charge(amountUSD: v, currency: currency) { txid, err in
+                      CryptoTopUpCoordinator.shared.charge(amountUSD: v, currency: currency) { txid, err in
                           if let txid = txid {
                               store.topUp(method: currency.rawValue, amount: v, currency: currency, txid: txid)
                               HapticManager.shared.notification(.success)
                               dismiss()
                           } else {
-                              error = err ?? "Crypto payment failed"
+                              error = err?.localizedDescription ?? "Crypto payment failed"
                               HapticManager.shared.notification(.error)
                           }
                       }
@@ -6906,7 +6913,10 @@ jobs:
           
           @MainActor
           public final class ReferralManager: ObservableObject {
-              public static nonisolated(unsafe) let shared = ReferralManager()
+              // Singleton. `load()` updates @Published values on the main
+              // actor. `MainActor.assumeIsolated` is safe because the first
+              // access is always from a SwiftUI view on the main thread.
+              public static let shared = MainActor.assumeIsolated { ReferralManager() }
               @Published public private(set) var attribution: ReferralAttribution?
               @Published public private(set) var totalEarnedUSD: Double = 0
               @Published public private(set) var friendsInvited: Int = 0
