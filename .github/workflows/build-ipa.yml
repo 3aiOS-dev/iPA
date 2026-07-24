@@ -1946,7 +1946,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift (redesigned Home tab)
+      # SOURCE CODE - StoreView.swift
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -1956,7 +1956,25 @@ jobs:
           import ImageIO
 
           extension Color {
-              static let storeBg        = Color(red: 0.96, green: 0.97, blue: 1.00)
+              // App-wide background tone (deep warm red) used by small
+              // inner fills (search pill, circles inside cards, etc.) so
+              // they blend with the page gradient.
+              static let storeBg        = Color(red: 0.22, green: 0.06, blue: 0.05)
+              // Full-page gradient backdrop — inspired by the Steam
+              // "Game store" warm glow. Applied on every top-level screen
+              // (StoreRootView, AuthView, OnboardingView, AlertsOnboardingView,
+              // SettingsView, etc.) via `Color.storeBgGradient.ignoresSafeArea()`.
+              static let storeBgGradient: AnyShapeStyle = AnyShapeStyle(
+                  LinearGradient(
+                      colors: [
+                          Color(red: 0.78, green: 0.18, blue: 0.10), // deep orange-red (left, intense)
+                          Color(red: 0.55, green: 0.10, blue: 0.08), // crimson (center)
+                          Color(red: 0.18, green: 0.05, blue: 0.05)  // near-black red (right edge)
+                      ],
+                      startPoint: UnitPoint(x: 0.05, y: 0.50),
+                      endPoint:   UnitPoint(x: 0.95, y: 0.50)
+                  )
+              )
               static let storeCard      = Color.white
               static let storePrimary   = Color(red: 0.24, green: 0.36, blue: 0.98)
               static let storePrimaryDk = Color(red: 0.18, green: 0.27, blue: 0.82)
@@ -1965,6 +1983,11 @@ jobs:
               static let storeCyan      = Color(red: 0.30, green: 0.80, blue: 0.90)
               static let storeText      = Color(red: 0.08, green: 0.10, blue: 0.20)
               static let storeSub       = Color(red: 0.55, green: 0.58, blue: 0.66)
+              // Light variants for text/icons placed directly on the new
+              // dark red gradient background (e.g. page titles in
+              // StoreHeader, SettingsTopBar, SectionHeader, search field).
+              static let storeTextOnBg  = Color.white
+              static let storeSubOnBg   = Color.white.opacity(0.70)
               static let storeDivider   = Color(red: 0.92, green: 0.93, blue: 0.97)
               static let betaOrange     = Color(red: 1.00, green: 0.55, blue: 0.10)
               static let walletGreen    = Color(red: 0.20, green: 0.65, blue: 0.40)
@@ -1973,7 +1996,10 @@ jobs:
               static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
           }
 
-          // ================= Image cache =================
+          // ================= Image cache: scales to 10,000+ apps =================
+          // Uses NSCache for memory + on-disk dedupe by hash of URL. Cache is
+          // bounded by total bytes (default 512MB) so a 10,000-app feed does
+          // not blow the device memory.
           @MainActor
           final class RemoteIconCache: ObservableObject {
               static let shared = RemoteIconCache()
@@ -2116,7 +2142,10 @@ jobs:
               return .storePrimary
           }
 
-          // ================= View Model =================
+          // ================= View Model: loads & caches the store feed =================
+          // Pulls apps from each enabled repository in RepositoriesStore, dedupes
+          // by bundle id (or name if missing), and exposes a paginated list so
+          // the UI can render 10,000+ apps without allocating them all up front.
           @MainActor
           final class StoreFeed: ObservableObject {
               @Published var apps: [StoreAPIApp] = []
@@ -2247,6 +2276,7 @@ jobs:
               }
           }
 
+          // Fixed initializer and __build helper for StoreAPIResponse
           extension StoreAPIResponse {
               init(lastUpdated: String?, apps: [StoreAPIApp]) {
                   self.lastUpdated = lastUpdated
@@ -2267,10 +2297,11 @@ jobs:
               @AppStorage("hasSeenSettingsOnboarding21s") private var hasSeenSettingsOnboarding: Bool = false
               @State private var showSettingsOnboarding: Bool = false
 
-              // Tabs: 0 Home, 1 Favorites, 2 Files, 3 Apps, 4 Sources, 5 Profile
+              // Tabs are: 0 Home, 1 Favorites, 2 Files, 3 Apps, 4 Sources, 5 Profile
+              // Favorites gets its own dedicated slot in the tab bar.
               var body: some View {
                   ZStack(alignment: .bottom) {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
+                      Rectangle().fill(Color.storeBgGradient).ignoresSafeArea()
 
                       ZStack {
                           StoreHomeView(feed: feed,
@@ -2405,108 +2436,52 @@ jobs:
               }
           }
 
-          // ================= REDESIGNED HOME TAB (Steam‑like) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
               var onBell: (() -> Void)? = nil
 
-              @State private var searchText: String = ""
-              @State private var selectedCategory: String? = nil
-
-              private var categories: [String] {
-                  let set = Set(feed.apps.compactMap { $0.category?.capitalized })
-                  return Array(set).sorted()
-              }
-
-              private var filteredApps: [StoreAPIApp] {
-                  let base = feed.apps
-                  let byCat: [StoreAPIApp]
-                  if let cat = selectedCategory {
-                      byCat = base.filter { ($0.category ?? "App").lowercased() == cat.lowercased() }
-                  } else {
-                      byCat = base
-                  }
-                  let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                  if q.isEmpty { return byCat }
-                  return byCat.filter {
-                      $0.name.lowercased().contains(q) ||
-                      ($0.bundleId?.lowercased().contains(q) ?? false) ||
-                      ($0.category?.lowercased().contains(q) ?? false)
-                  }
-              }
-
               var body: some View {
                   NavigationStack {
                       ScrollView(showsIndicators: false) {
-                          VStack(alignment: .leading, spacing: 16) {
-                              // Header: 21s logo + search + profile
-                              HomeHeader(onMenu: onMenu, searchText: $searchText, onBell: onBell)
+                          VStack(spacing: 22) {
+                              StoreHeader(title: "Store",
+                                          onRefresh: {
+                                              HapticManager.shared.impact(.light)
+                                              Task { await feed.refresh() }
+                                          },
+                                          onMenu: { onMenu?() },
+                                          onBell: { onBell?() })
 
-                              // Categories horizontal scroll
-                              if !categories.isEmpty {
+                              HomeBanner()
+                              StoreStatusBar(feed: feed)
+
+                              if feed.apps.isEmpty && feed.isLoading {
+                                  LoadingGrid()
+                              } else if feed.apps.isEmpty {
+                                  EmptyState(message: feed.lastError ?? "No apps available.")
+                              } else {
+                                  SectionHeader(title: "Popular Apps", count: feed.featured.count)
+                                  LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
+                                      ForEach(feed.featured) { app in
+                                          NavigationLink(value: app) { AppTile(app: app) }
+                                              .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+
+                                  SectionHeader(title: "All Apps", count: feed.allSorted.count)
                                   ScrollView(.horizontal, showsIndicators: false) {
-                                      HStack(spacing: 10) {
-                                          categoryChip(label: "All", value: nil)
-                                          ForEach(categories, id: \.self) { cat in
-                                              categoryChip(label: cat, value: cat)
+                                      HStack(spacing: 14) {
+                                          ForEach(feed.allSorted.prefix(40)) { app in
+                                              NavigationLink(value: app) { FlashCard(app: app) }
+                                                  .buttonStyle(.plain)
                                           }
                                       }
                                       .padding(.horizontal, 20)
                                   }
                               }
-
-                              // Featured horizontal scroll (like the image's "Cats", "Adventure"...)
-                              if !feed.featured.isEmpty {
-                                  VStack(alignment: .leading, spacing: 8) {
-                                      Text("Featured")
-                                          .font(.system(size: 18, weight: .bold))
-                                          .foregroundColor(.storeText)
-                                          .padding(.horizontal, 20)
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 12) {
-                                              ForEach(feed.featured) { app in
-                                                  NavigationLink(value: app) {
-                                                      FeaturedCard(app: app)
-                                                  }
-                                                  .buttonStyle(.plain)
-                                              }
-                                          }
-                                          .padding(.horizontal, 20)
-                                      }
-                                  }
-                              }
-
-                              // Grid of apps (2 columns)
-                              if filteredApps.isEmpty && !feed.isLoading {
-                                  VStack(spacing: 16) {
-                                      Image(systemName: "tray.fill")
-                                          .font(.system(size: 36))
-                                          .foregroundColor(.storeSub)
-                                      Text("No apps match your search")
-                                          .font(.system(size: 14, weight: .semibold))
-                                          .foregroundColor(.storeSub)
-                                  }
-                                  .frame(maxWidth: .infinity)
-                                  .padding(.vertical, 40)
-                              } else {
-                                  LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
-                                      ForEach(filteredApps) { app in
-                                          NavigationLink(value: app) {
-                                              AppGridCard(app: app)
-                                          }
-                                          .buttonStyle(.plain)
-                                      }
-                                  }
-                                  .padding(.horizontal, 20)
-                              }
-
-                              if feed.isLoading {
-                                  ProgressView()
-                                      .padding()
-                              }
-
-                              Spacer(minLength: 20)
+                              Spacer(minLength: 12)
                           }
                           .padding(.top, 8)
                       }
@@ -2515,134 +2490,11 @@ jobs:
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
                       }
-                      .onChange(of: searchText) { _ in
-                          selectedCategory = nil // reset category when searching
-                      }
-                      .onChange(of: selectedCategory) { _ in
-                          searchText = "" // reset search when category changes
-                      }
-                  }
-              }
-
-              private func categoryChip(label: String, value: String?) -> some View {
-                  let active = (value == nil && selectedCategory == nil) || (value != nil && selectedCategory == value)
-                  return Button {
-                      HapticManager.shared.selection()
-                      withAnimation(.easeInOut(duration: 0.2)) {
-                          selectedCategory = value
-                      }
-                  } label: {
-                      Text(label)
-                          .font(.system(size: 12, weight: .semibold))
-                          .foregroundColor(active ? .white : .storeText)
-                          .padding(.horizontal, 14)
-                          .padding(.vertical, 8)
-                          .background(
-                              Capsule().fill(active ? Color.storePrimary : Color.storeCard)
-                          )
-                          .overlay(
-                              Capsule().stroke(active ? Color.clear : Color.storeDivider, lineWidth: 1)
-                          )
-                  }
-                  .buttonStyle(.plain)
-              }
-          }
-
-          // Home header with search and profile
-          struct HomeHeader: View {
-              var onMenu: (() -> Void)?
-              @Binding var searchText: String
-              var onBell: (() -> Void)?
-
-              var body: some View {
-                  VStack(spacing: 8) {
-                      HStack {
-                          Text("21s")
-                              .font(.system(size: 24, weight: .heavy))
-                              .foregroundColor(.storeText)
-                          Spacer()
-                          Button {
-                              HapticManager.shared.selection()
-                              onMenu?()
-                          } label: {
-                              Image(systemName: "person.circle.fill")
-                                  .font(.system(size: 28))
-                                  .foregroundColor(.storePrimary)
-                          }
-                      }
-                      .padding(.horizontal, 20)
-
-                      HStack {
-                          Image(systemName: "magnifyingglass")
-                              .foregroundColor(.storeSub)
-                          TextField("Search apps...", text: $searchText)
-                              .font(.system(size: 14))
-                          if !searchText.isEmpty {
-                              Button { searchText = "" } label: {
-                                  Image(systemName: "xmark.circle.fill")
-                                      .foregroundColor(.storeSub)
-                              }
-                          }
-                      }
-                      .padding(.horizontal, 14)
-                      .frame(height: 44)
-                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                      .padding(.horizontal, 20)
                   }
               }
           }
 
-          // Large featured card (horizontal)
-          struct FeaturedCard: View {
-              let app: StoreAPIApp
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 6) {
-                      RemoteIcon(url: app.icon, size: 160, cornerRadius: 18)
-                          .frame(width: 160, height: 160)
-                          .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-                      Text(app.name)
-                          .font(.system(size: 14, weight: .bold))
-                          .foregroundColor(.storeText)
-                          .lineLimit(1)
-                      Text(app.category ?? "App")
-                          .font(.system(size: 11, weight: .semibold))
-                          .foregroundColor(.storeSub)
-                  }
-                  .frame(width: 160)
-              }
-          }
-
-          // Grid card (2 columns)
-          struct AppGridCard: View {
-              let app: StoreAPIApp
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 6) {
-                      RemoteIcon(url: app.icon, size: 120, cornerRadius: 16)
-                          .frame(width: 120, height: 120)
-                          .shadow(color: .black.opacity(0.08), radius: 6, y: 3)
-                      Text(app.name)
-                          .font(.system(size: 13, weight: .bold))
-                          .foregroundColor(.storeText)
-                          .lineLimit(1)
-                      HStack {
-                          Text(app.category ?? "App")
-                              .font(.system(size: 10, weight: .semibold))
-                              .foregroundColor(.storeSub)
-                          Spacer()
-                          Text(app.cleanSize)
-                              .font(.system(size: 10, weight: .semibold))
-                              .foregroundColor(.storeSub)
-                      }
-                  }
-                  .padding(6)
-                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                  .shadow(color: .black.opacity(0.04), radius: 4, y: 2)
-              }
-          }
-
-          // ================= APPS TAB (list with pagination) =================
+          // ================= NEW: APPS tab (10,000+ apps) =================
           struct AppsListView: View {
               @ObservedObject var feed: StoreFeed
               @ObservedObject private var reposStore = RepositoriesStore.shared
@@ -2759,7 +2611,7 @@ jobs:
                               .refreshable { await feed.refresh() }
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
@@ -2833,7 +2685,9 @@ jobs:
               }
           }
 
-          // ================= FAVORITES TAB =================
+          // ================= NEW: FAVORITES tab (المفضلة) =================
+          // Stores the apps the user has hearted. Renders the same list
+          // component used in the Apps tab so the look and feel matches.
           struct FavoritesView: View {
               @ObservedObject private var favs = FavoritesStore.shared
               @ObservedObject private var feed: StoreFeed
@@ -2946,7 +2800,7 @@ jobs:
                               }
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
@@ -3027,7 +2881,7 @@ jobs:
               }
           }
 
-          // ================= SOURCES TAB =================
+          // ================= NEW: SOURCES tab =================
           struct SourcesView: View {
               @ObservedObject private var reposStore = RepositoriesStore.shared
               var onMenu: (() -> Void)? = nil
@@ -3062,7 +2916,7 @@ jobs:
                           }
                           .padding(.top, 8)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                   }
               }
 
@@ -3290,7 +3144,7 @@ jobs:
                       Spacer()
                       Text(title)
                           .font(.system(size: 18, weight: .bold))
-                          .foregroundColor(.storeText)
+                          .foregroundColor(.storeTextOnBg)
                       Spacer()
                       HStack(spacing: 10) {
                           if let onRefresh {
@@ -3323,6 +3177,11 @@ jobs:
 
           struct HomeBanner: View {
               var body: some View {
+                  // Banner fills the official frame completely:
+                  // - full-bleed (no padding, edgesIgnoringSafeArea left/right via parent ScrollView)
+                  // - scaleAspectFill inside the image view so the GIF stretches to every edge
+                  // - clipsToBounds + clipShape clip the overflow to the rounded corners
+                  // - hard frame so layout is stable above the "Popular Apps" section
                   LoopingGifPlayer(resourceName: "home_banner", ext: "gif", fillMode: .fill)
                       .frame(maxWidth: .infinity)
                       .frame(height: 170)
@@ -3343,7 +3202,7 @@ jobs:
                   HStack {
                       Text(title)
                           .font(.system(size: 16, weight: .bold))
-                          .foregroundColor(.storeText)
+                          .foregroundColor(.storeTextOnBg)
                       if let c = count {
                           Text("(\(c))")
                               .font(.system(size: 12, weight: .bold))
@@ -3556,7 +3415,7 @@ jobs:
                           .padding(.bottom, 40)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(Color.storeBgGradient.ignoresSafeArea())
                   .navigationBarHidden(true)
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
@@ -3668,6 +3527,8 @@ jobs:
                   container.clipsToBounds = true
 
                   let imageView = UIImageView()
+                  // scaleAspectFill = full-bleed, will crop overflow to container bounds
+                  // scaleAspectFit  = show whole image, letterboxed
                   imageView.contentMode = (fillMode == .fill) ? .scaleAspectFill : .scaleAspectFit
                   imageView.translatesAutoresizingMaskIntoConstraints = false
                   imageView.clipsToBounds = true
@@ -3742,7 +3603,7 @@ jobs:
 
               var body: some View {
                   ZStack {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
+                      Rectangle().fill(Color.storeBgGradient).ignoresSafeArea()
 
                       VStack(spacing: 0) {
                           HStack {
@@ -3894,7 +3755,7 @@ jobs:
                           .padding(.bottom, 24)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(Color.storeBgGradient.ignoresSafeArea())
                   .onAppear {
                       downloads.cleanupOrphanedFiles()
                       if !hasSeenAlertsOnboarding {
@@ -4507,6 +4368,7 @@ jobs:
                                       ProfileRow(icon: "gift.fill", label: "Refer & Earn", color: .storeYellow)
                                   }
                                   .buttonStyle(.plain)
+                                  // Wishlist -> opens the dedicated Favorites tab
                                   Button {
                                       HapticManager.shared.selection()
                                       showFavorites = true
@@ -4538,7 +4400,7 @@ jobs:
                           }
                           .padding(.top, 8)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .fullScreenCover(isPresented: $showFavorites) {
                           FavoritesView(feed: feed,
                                         onMenu: { showFavorites = false },
@@ -4602,14 +4464,14 @@ jobs:
                                   if results.isEmpty {
                                       Text("No results")
                                           .font(.system(size: 12, weight: .semibold))
-                                          .foregroundColor(.storeSub)
+                                          .foregroundColor(.storeSubOnBg)
                                           .padding(.top, 30)
                                   }
                               }
                               .padding(.horizontal, 16)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) { Text("Search").font(.system(size: 15, weight: .bold)) }
@@ -4843,7 +4705,7 @@ jobs:
                           }
                           .padding(.bottom, 30)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .sheet(isPresented: $showProfileDetails) {
@@ -4901,7 +4763,7 @@ jobs:
                       Spacer()
                       Text(title)
                           .font(.system(size: 17, weight: .bold))
-                          .foregroundColor(.storeText)
+                          .foregroundColor(.storeTextOnBg)
                       Spacer()
                       Color.clear.frame(width: 38, height: 38)
                   }
@@ -4962,7 +4824,7 @@ jobs:
 
               var body: some View {
                   ZStack {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
+                      Rectangle().fill(Color.storeBgGradient).ignoresSafeArea()
 
                       VStack(spacing: 0) {
                           HStack {
@@ -5185,7 +5047,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .onAppear { loadFromUser() }
@@ -5384,7 +5246,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .overlay(alignment: .top) {
@@ -5589,7 +5451,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .preferredColorScheme(.light)
@@ -5705,7 +5567,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .preferredColorScheme(.light)
@@ -5898,7 +5760,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .preferredColorScheme(.light)
@@ -6078,7 +5940,7 @@ jobs:
                               Spacer(minLength: 30)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
                   .preferredColorScheme(.light)
@@ -6491,7 +6353,7 @@ jobs:
                       .padding(.top, 8)
                       .padding(.bottom, 32)
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(Color.storeBgGradient.ignoresSafeArea())
                   .navigationTitle("Wallet")
                   .navigationBarTitleDisplayMode(.large)
                   .toolbar {
@@ -6962,7 +6824,7 @@ jobs:
                       }
                   }
                   .tabViewStyle(.page(indexDisplayMode: .never))
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(Color.storeBgGradient.ignoresSafeArea())
               }
           }
           WALLEOF
@@ -7401,7 +7263,7 @@ jobs:
                           }
                           .padding(16)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationTitle("Refer & Earn")
                       .toolbar {
                           ToolbarItem(placement: .navigationBarLeading) {
@@ -7685,7 +7547,7 @@ jobs:
                           }
                           .padding(20)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(Color.storeBgGradient.ignoresSafeArea())
                       .navigationTitle("Device UDID")
                       .toolbar {
                           ToolbarItem(placement: .navigationBarLeading) {
