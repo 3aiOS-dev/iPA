@@ -1,4 +1,4 @@
-name: 21s Login + Apps (SwiftUI) - 1000GB Edition - Steam Style
+name: 21s Login + Apps (SwiftUI) - 1000GB Edition
 
 "on":
   push:
@@ -66,25 +66,6 @@ jobs:
           curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178475589206661.gif"
           # Thanks overlay (shown after the user takes a screenshot)
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
-          # ===========================================================
-          # STEAM-STYLE STORE IMAGES (Game store + Home tab hero/cards)
-          # ===========================================================
-          # Featured hero artwork (Stray cat on the cover)
-          curl -L -o Resources/stray_hero.png          "https://up6.cc/2026/07/178480680000011.png"
-          # Right-side game cards (Stray close-up + neon street scene)
-          curl -L -o Resources/stray_card1.png         "https://up6.cc/2026/07/178480680000012.png"
-          curl -L -o Resources/stray_card2.png         "https://up6.cc/2026/07/178480680000013.png"
-          # Special offers tiles
-          curl -L -o Resources/offer_hogwarts.png      "https://up6.cc/2026/07/178480680000014.png"
-          curl -L -o Resources/offer_callofduty.png    "https://up6.cc/2026/07/178480680000015.png"
-          curl -L -o Resources/offer_fifa23.png        "https://up6.cc/2026/07/178480680000016.png"
-          curl -L -o Resources/offer_masseffect.png   "https://up6.cc/2026/07/178480680000017.png"
-          # Steam logo (top-left brand mark)
-          curl -L -o Resources/steam_logo.png          "https://up6.cc/2026/07/178480680000018.png"
-          # Steam hero background (dark red gradient with atmospheric glow)
-          curl -L -o Resources/steam_hero_bg.png       "https://up6.cc/2026/07/178480680000019.png"
-          # Steam sidebar active icon pack (for the orange indicator glow)
-          curl -L -o Resources/steam_sidebar_glow.png  "https://up6.cc/2026/07/178480680000020.png"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
           ls -lh Resources
 
@@ -1965,7 +1946,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift
+      # SOURCE CODE - StoreView.swift (redesigned Home tab)
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -1992,10 +1973,7 @@ jobs:
               static let creamBg        = Color(red: 0.99, green: 0.93, blue: 0.85)
           }
 
-          // ================= Image cache: scales to 10,000+ apps =================
-          // Uses NSCache for memory + on-disk dedupe by hash of URL. Cache is
-          // bounded by total bytes (default 512MB) so a 10,000-app feed does
-          // not blow the device memory.
+          // ================= Image cache =================
           @MainActor
           final class RemoteIconCache: ObservableObject {
               static let shared = RemoteIconCache()
@@ -2064,7 +2042,7 @@ jobs:
 
               private func fetch(urlString: String, url: URL, name: String) async {
                   defer {
-                      _ = inflightQueue.sync { inflightSet.remove(urlString) }
+                      inflightQueue.sync { inflightSet.remove(urlString) }
                   }
                   do {
                       let (data, _) = try await session.data(from: url)
@@ -2094,7 +2072,6 @@ jobs:
                       .replacingOccurrences(of: ":", with: "_")
                       .replacingOccurrences(of: "?", with: "_")
                       .replacingOccurrences(of: "&", with: "_")
-                      .replacingOccurrences(of: "=", with: "_")
                   return String(cleaned.prefix(160))
               }
           }
@@ -2139,10 +2116,7 @@ jobs:
               return .storePrimary
           }
 
-          // ================= View Model: loads & caches the store feed =================
-          // Pulls apps from each enabled repository in RepositoriesStore, dedupes
-          // by bundle id (or name if missing), and exposes a paginated list so
-          // the UI can render 10,000+ apps without allocating them all up front.
+          // ================= View Model =================
           @MainActor
           final class StoreFeed: ObservableObject {
               @Published var apps: [StoreAPIApp] = []
@@ -2273,7 +2247,6 @@ jobs:
               }
           }
 
-          // Fixed initializer and __build helper for StoreAPIResponse
           extension StoreAPIResponse {
               init(lastUpdated: String?, apps: [StoreAPIApp]) {
                   self.lastUpdated = lastUpdated
@@ -2294,50 +2267,43 @@ jobs:
               @AppStorage("hasSeenSettingsOnboarding21s") private var hasSeenSettingsOnboarding: Bool = false
               @State private var showSettingsOnboarding: Bool = false
 
-              // Tabs are: 0 Home (Steam), 1 Game Store, 2 Favorites, 3 Files, 4 Apps, 5 Sources, 6 Profile
-              // The first two tabs are the new Steam-style Home + Game store, the rest are the
-              // existing 21s tabs (Favorites / Files / Apps / Sources / Profile).
+              // Tabs: 0 Home, 1 Favorites, 2 Files, 3 Apps, 4 Sources, 5 Profile
               var body: some View {
                   ZStack(alignment: .bottom) {
                       Color.storeBg.edgesIgnoringSafeArea(.all)
 
                       ZStack {
-                          SteamHomeView(feed: feed,
-                                        onMenu: { openSettings() },
-                                        onBell: { showSearch = true })
+                          StoreHomeView(feed: feed,
+                                       onMenu: { openSettings() },
+                                       onBell: { showSearch = true })
                               .opacity(tab == 0 ? 1 : 0)
                               .allowsHitTesting(tab == 0)
-                          GameStoreView(feed: feed,
+                          FavoritesView(feed: feed,
                                         onMenu: { openSettings() },
                                         onBell: { showSearch = true })
                               .opacity(tab == 1 ? 1 : 0)
                               .allowsHitTesting(tab == 1)
-                          FavoritesView(feed: feed,
-                                        onMenu: { openSettings() },
-                                        onBell: { showSearch = true })
-                              .opacity(tab == 2 ? 1 : 0)
-                              .allowsHitTesting(tab == 2)
                           AlertsView(feed: feed,
                                       onMenu: { openSettings() },
                                       onBell: { showSearch = true })
-                              .opacity(tab == 3 ? 1 : 0)
-                              .allowsHitTesting(tab == 3)
+                              .opacity(tab == 2 ? 1 : 0)
+                              .allowsHitTesting(tab == 2)
                           AppsListView(feed: feed,
                                        onMenu: { openSettings() },
                                        onBell: { showSearch = true })
+                              .opacity(tab == 3 ? 1 : 0)
+                              .allowsHitTesting(tab == 3)
+                          SocialView(authManager: authManager,
+                                     feed: feed,
+                                     onMenu: { openSettings() },
+                                     onBell: { showSearch = true },
+                                     onSettings: { openSettings() })
                               .opacity(tab == 4 ? 1 : 0)
                               .allowsHitTesting(tab == 4)
                           SourcesView(onMenu: { openSettings() },
                                       onBell: { showSearch = true })
                               .opacity(tab == 5 ? 1 : 0)
                               .allowsHitTesting(tab == 5)
-                          SocialView(authManager: authManager,
-                                     feed: feed,
-                                     onMenu: { openSettings() },
-                                     onBell: { showSearch = true },
-                                     onSettings: { openSettings() })
-                              .opacity(tab == 6 ? 1 : 0)
-                              .allowsHitTesting(tab == 6)
                       }
                       .padding(.bottom, 90)
 
@@ -2384,10 +2350,10 @@ jobs:
                   ZStack {
                       HStack {
                           tabItem(icon: "house.fill", label: "Home", index: 0)
-                          tabItem(icon: "gamecontroller.fill", label: "Game store", index: 1)
+                          tabItem(icon: "heart.fill", label: "Favorites", index: 1, badge: favs.items.count)
                           Spacer().frame(width: 70)
-                          tabItem(icon: "square.grid.2x2.fill", label: "Apps", index: 4)
-                          tabItem(icon: "tray.fill", label: "Files", index: 3)
+                          tabItem(icon: "square.grid.2x2.fill", label: "Apps", index: 3)
+                          tabItem(icon: "tray.fill", label: "Files", index: 2)
                       }
                       .padding(.horizontal, 24)
                       .padding(.vertical, 14)
@@ -2439,52 +2405,108 @@ jobs:
               }
           }
 
+          // ================= REDESIGNED HOME TAB (Steam‑like) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
               var onBell: (() -> Void)? = nil
 
+              @State private var searchText: String = ""
+              @State private var selectedCategory: String? = nil
+
+              private var categories: [String] {
+                  let set = Set(feed.apps.compactMap { $0.category?.capitalized })
+                  return Array(set).sorted()
+              }
+
+              private var filteredApps: [StoreAPIApp] {
+                  let base = feed.apps
+                  let byCat: [StoreAPIApp]
+                  if let cat = selectedCategory {
+                      byCat = base.filter { ($0.category ?? "App").lowercased() == cat.lowercased() }
+                  } else {
+                      byCat = base
+                  }
+                  let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                  if q.isEmpty { return byCat }
+                  return byCat.filter {
+                      $0.name.lowercased().contains(q) ||
+                      ($0.bundleId?.lowercased().contains(q) ?? false) ||
+                      ($0.category?.lowercased().contains(q) ?? false)
+                  }
+              }
+
               var body: some View {
                   NavigationStack {
                       ScrollView(showsIndicators: false) {
-                          VStack(spacing: 22) {
-                              StoreHeader(title: "Store",
-                                          onRefresh: {
-                                              HapticManager.shared.impact(.light)
-                                              Task { await feed.refresh() }
-                                          },
-                                          onMenu: { onMenu?() },
-                                          onBell: { onBell?() })
+                          VStack(alignment: .leading, spacing: 16) {
+                              // Header: 21s logo + search + profile
+                              HomeHeader(onMenu: onMenu, searchText: $searchText, onBell: onBell)
 
-                              HomeBanner()
-                              StoreStatusBar(feed: feed)
-
-                              if feed.apps.isEmpty && feed.isLoading {
-                                  LoadingGrid()
-                              } else if feed.apps.isEmpty {
-                                  EmptyState(message: feed.lastError ?? "No apps available.")
-                              } else {
-                                  SectionHeader(title: "Popular Apps", count: feed.featured.count)
-                                  LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
-                                      ForEach(feed.featured) { app in
-                                          NavigationLink(value: app) { AppTile(app: app) }
-                                              .buttonStyle(.plain)
-                                      }
-                                  }
-                                  .padding(.horizontal, 20)
-
-                                  SectionHeader(title: "All Apps", count: feed.allSorted.count)
+                              // Categories horizontal scroll
+                              if !categories.isEmpty {
                                   ScrollView(.horizontal, showsIndicators: false) {
-                                      HStack(spacing: 14) {
-                                          ForEach(feed.allSorted.prefix(40)) { app in
-                                              NavigationLink(value: app) { FlashCard(app: app) }
-                                                  .buttonStyle(.plain)
+                                      HStack(spacing: 10) {
+                                          categoryChip(label: "All", value: nil)
+                                          ForEach(categories, id: \.self) { cat in
+                                              categoryChip(label: cat, value: cat)
                                           }
                                       }
                                       .padding(.horizontal, 20)
                                   }
                               }
-                              Spacer(minLength: 12)
+
+                              // Featured horizontal scroll (like the image's "Cats", "Adventure"...)
+                              if !feed.featured.isEmpty {
+                                  VStack(alignment: .leading, spacing: 8) {
+                                      Text("Featured")
+                                          .font(.system(size: 18, weight: .bold))
+                                          .foregroundColor(.storeText)
+                                          .padding(.horizontal, 20)
+                                      ScrollView(.horizontal, showsIndicators: false) {
+                                          HStack(spacing: 12) {
+                                              ForEach(feed.featured) { app in
+                                                  NavigationLink(value: app) {
+                                                      FeaturedCard(app: app)
+                                                  }
+                                                  .buttonStyle(.plain)
+                                              }
+                                          }
+                                          .padding(.horizontal, 20)
+                                      }
+                                  }
+                              }
+
+                              // Grid of apps (2 columns)
+                              if filteredApps.isEmpty && !feed.isLoading {
+                                  VStack(spacing: 16) {
+                                      Image(systemName: "tray.fill")
+                                          .font(.system(size: 36))
+                                          .foregroundColor(.storeSub)
+                                      Text("No apps match your search")
+                                          .font(.system(size: 14, weight: .semibold))
+                                          .foregroundColor(.storeSub)
+                                  }
+                                  .frame(maxWidth: .infinity)
+                                  .padding(.vertical, 40)
+                              } else {
+                                  LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                                      ForEach(filteredApps) { app in
+                                          NavigationLink(value: app) {
+                                              AppGridCard(app: app)
+                                          }
+                                          .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
+
+                              if feed.isLoading {
+                                  ProgressView()
+                                      .padding()
+                              }
+
+                              Spacer(minLength: 20)
                           }
                           .padding(.top, 8)
                       }
@@ -2493,11 +2515,134 @@ jobs:
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
                       }
+                      .onChange(of: searchText) { _ in
+                          selectedCategory = nil // reset category when searching
+                      }
+                      .onChange(of: selectedCategory) { _ in
+                          searchText = "" // reset search when category changes
+                      }
+                  }
+              }
+
+              private func categoryChip(label: String, value: String?) -> some View {
+                  let active = (value == nil && selectedCategory == nil) || (value != nil && selectedCategory == value)
+                  return Button {
+                      HapticManager.shared.selection()
+                      withAnimation(.easeInOut(duration: 0.2)) {
+                          selectedCategory = value
+                      }
+                  } label: {
+                      Text(label)
+                          .font(.system(size: 12, weight: .semibold))
+                          .foregroundColor(active ? .white : .storeText)
+                          .padding(.horizontal, 14)
+                          .padding(.vertical, 8)
+                          .background(
+                              Capsule().fill(active ? Color.storePrimary : Color.storeCard)
+                          )
+                          .overlay(
+                              Capsule().stroke(active ? Color.clear : Color.storeDivider, lineWidth: 1)
+                          )
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+
+          // Home header with search and profile
+          struct HomeHeader: View {
+              var onMenu: (() -> Void)?
+              @Binding var searchText: String
+              var onBell: (() -> Void)?
+
+              var body: some View {
+                  VStack(spacing: 8) {
+                      HStack {
+                          Text("21s")
+                              .font(.system(size: 24, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Spacer()
+                          Button {
+                              HapticManager.shared.selection()
+                              onMenu?()
+                          } label: {
+                              Image(systemName: "person.circle.fill")
+                                  .font(.system(size: 28))
+                                  .foregroundColor(.storePrimary)
+                          }
+                      }
+                      .padding(.horizontal, 20)
+
+                      HStack {
+                          Image(systemName: "magnifyingglass")
+                              .foregroundColor(.storeSub)
+                          TextField("Search apps...", text: $searchText)
+                              .font(.system(size: 14))
+                          if !searchText.isEmpty {
+                              Button { searchText = "" } label: {
+                                  Image(systemName: "xmark.circle.fill")
+                                      .foregroundColor(.storeSub)
+                              }
+                          }
+                      }
+                      .padding(.horizontal, 14)
+                      .frame(height: 44)
+                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
+                      .padding(.horizontal, 20)
                   }
               }
           }
 
-          // ================= NEW: APPS tab (10,000+ apps) =================
+          // Large featured card (horizontal)
+          struct FeaturedCard: View {
+              let app: StoreAPIApp
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 6) {
+                      RemoteIcon(url: app.icon, size: 160, cornerRadius: 18)
+                          .frame(width: 160, height: 160)
+                          .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                      Text(app.name)
+                          .font(.system(size: 14, weight: .bold))
+                          .foregroundColor(.storeText)
+                          .lineLimit(1)
+                      Text(app.category ?? "App")
+                          .font(.system(size: 11, weight: .semibold))
+                          .foregroundColor(.storeSub)
+                  }
+                  .frame(width: 160)
+              }
+          }
+
+          // Grid card (2 columns)
+          struct AppGridCard: View {
+              let app: StoreAPIApp
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 6) {
+                      RemoteIcon(url: app.icon, size: 120, cornerRadius: 16)
+                          .frame(width: 120, height: 120)
+                          .shadow(color: .black.opacity(0.08), radius: 6, y: 3)
+                      Text(app.name)
+                          .font(.system(size: 13, weight: .bold))
+                          .foregroundColor(.storeText)
+                          .lineLimit(1)
+                      HStack {
+                          Text(app.category ?? "App")
+                              .font(.system(size: 10, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                          Spacer()
+                          Text(app.cleanSize)
+                              .font(.system(size: 10, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                      }
+                  }
+                  .padding(6)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                  .shadow(color: .black.opacity(0.04), radius: 4, y: 2)
+              }
+          }
+
+          // ================= APPS TAB (list with pagination) =================
           struct AppsListView: View {
               @ObservedObject var feed: StoreFeed
               @ObservedObject private var reposStore = RepositoriesStore.shared
@@ -2688,9 +2833,7 @@ jobs:
               }
           }
 
-          // ================= NEW: FAVORITES tab (المفضلة) =================
-          // Stores the apps the user has hearted. Renders the same list
-          // component used in the Apps tab so the look and feel matches.
+          // ================= FAVORITES TAB =================
           struct FavoritesView: View {
               @ObservedObject private var favs = FavoritesStore.shared
               @ObservedObject private var feed: StoreFeed
@@ -2884,7 +3027,7 @@ jobs:
               }
           }
 
-          // ================= NEW: SOURCES tab =================
+          // ================= SOURCES TAB =================
           struct SourcesView: View {
               @ObservedObject private var reposStore = RepositoriesStore.shared
               var onMenu: (() -> Void)? = nil
@@ -4478,866 +4621,6 @@ jobs:
           }
 
           VIPEOF
-
-      # =========================================================
-      # SOURCE CODE - SteamStoreView.swift (NEW: Game store + Home redesign)
-      # =========================================================
-      - name: Generate code - SteamStoreView.swift
-        run: |
-          cat > SteamStoreView.swift << 'STEAEOF'
-          import SwiftUI
-          import UIKit
-
-          // MARK: - Steam design tokens
-          // Color palette lifted directly from the Steam client so the Game store
-          // and the new Home tab look and feel identical to the reference image.
-          extension Color {
-              // Steam dark / desaturated purple background
-              static let steamBgDeep   = Color(red: 0.10, green: 0.07, blue: 0.12)
-              static let steamBgPanel  = Color(red: 0.16, green: 0.11, blue: 0.18)
-              // Red accent line under the active sidebar item
-              static let steamAccent   = Color(red: 0.86, green: 0.30, blue: 0.20)
-              // Bright orange used in the "Game store" tab
-              static let steamOrange   = Color(red: 1.00, green: 0.55, blue: 0.10)
-              // Soft cream/beige for the "Special offers" subheader
-              static let steamCream    = Color(red: 0.99, green: 0.93, blue: 0.85)
-              // Text used on dark backgrounds
-              static let steamText     = Color(red: 0.96, green: 0.94, blue: 0.92)
-              static let steamTextDim  = Color(red: 0.78, green: 0.72, blue: 0.78)
-              // Subtle separator on the dark theme
-              static let steamDivider  = Color.white.opacity(0.06)
-          }
-
-          // MARK: - Sidebar item definition
-          // Mirrors the Steam left rail: Game store / Library / Community / Friends.
-          // Used by both the Home tab and the Game store tab so the design is
-          // identical everywhere in the app.
-          struct SteamSidebarItem: Identifiable, Hashable {
-              let id: Int
-              let title: String
-              let icon: String
-              let badge: Int? = nil
-          }
-
-          let steamSidebarItems: [SteamSidebarItem] = [
-              SteamSidebarItem(id: 0, title: "Game store", icon: "gamecontroller.fill"),
-              SteamSidebarItem(id: 1, title: "Library",     icon: "books.vertical.fill"),
-              SteamSidebarItem(id: 2, title: "Community",   icon: "person.3.fill"),
-              SteamSidebarItem(id: 3, title: "Friends",     icon: "person.2.fill")
-          ]
-
-          // MARK: - Game catalog (hand-curated for the Steam-style tab)
-          // The Game store + Special offers rows are driven by a local catalog
-          // so the look matches the reference image even when the live feed
-          // has not yet been refreshed. The featured app (Stray) and the four
-          // "Special offers" tiles are bound 1:1 to the bundled images so the
-          // visuals never go empty.
-          struct SteamGame: Identifiable, Hashable {
-              let id: Int
-              let title: String
-              let subtitle: String?
-              let priceText: String
-              let imageName: String          // bundled asset
-              let smallCardImage: String?    // optional second image
-              let category: String           // e.g. "Cats", "Adventure", "Cyberpunk"
-              let bannerBackground: Color?   // tint used as a fallback when image is missing
-          }
-
-          let steamFeaturedGame = SteamGame(
-              id: 1,
-              title: "Stray",
-              subtitle: "Lorem ipsum dolor sit amet consectetur. Quam rhoncus vel id gravida vulputate",
-              priceText: "$17.99 USD",
-              imageName: "stray_hero.png",
-              smallCardImage: nil,
-              category: "Adventure",
-              bannerBackground: Color(red: 0.45, green: 0.10, blue: 0.10)
-          )
-
-          let steamSideCards: [SteamGame] = [
-              SteamGame(
-                  id: 2,
-                  title: "Stray",
-                  subtitle: "Lose yourself in a cybercity",
-                  priceText: "$17.99 USD",
-                  imageName: "stray_card1.png",
-                  smallCardImage: nil,
-                  category: "Cats",
-                  bannerBackground: Color(red: 0.55, green: 0.18, blue: 0.18)
-              ),
-              SteamGame(
-                  id: 3,
-                  title: "Stray",
-                  subtitle: "Neon streets adventure",
-                  priceText: "$17.99 USD",
-                  imageName: "stray_card2.png",
-                  smallCardImage: nil,
-                  category: "Atmosphere",
-                  bannerBackground: Color(red: 0.22, green: 0.10, blue: 0.40)
-              )
-          ]
-
-          let steamSpecialOffers: [SteamGame] = [
-              SteamGame(id: 11, title: "Hogwarts Legacy",
-                        subtitle: "Wizarding world RPG",
-                        priceText: "$59.99 USD",
-                        imageName: "offer_hogwarts.png",
-                        smallCardImage: nil,
-                        category: "RPG",
-                        bannerBackground: Color(red: 0.18, green: 0.18, blue: 0.32)),
-              SteamGame(id: 12, title: "Call of Duty: Infinite Warfare",
-                        subtitle: "Sci-fi FPS",
-                        priceText: "$39.99 USD",
-                        imageName: "offer_callofduty.png",
-                        smallCardImage: nil,
-                        category: "Shooter",
-                        bannerBackground: Color(red: 0.22, green: 0.22, blue: 0.24)),
-              SteamGame(id: 13, title: "FIFA 23",
-                        subtitle: "EA Sports football",
-                        priceText: "$69.99 USD",
-                        imageName: "offer_fifa23.png",
-                        smallCardImage: nil,
-                        category: "Sports",
-                        bannerBackground: Color(red: 0.20, green: 0.42, blue: 0.74)),
-              SteamGame(id: 14, title: "Mass Effect Andromeda",
-                        subtitle: "Sci-fi action RPG",
-                        priceText: "$29.99 USD",
-                        imageName: "offer_masseffect.png",
-                        smallCardImage: nil,
-                        category: "Action",
-                        bannerBackground: Color(red: 0.40, green: 0.20, blue: 0.20))
-          ]
-
-          // MARK: - Steam chip (used for the "Cats / Adventure / Cyberpunk / Atmosphere"
-          // row inside the Stray hero) and the "+" pill on the right of that row.
-          struct SteamChip: View {
-              let title: String
-              var trailingPlus: Bool = false
-              var body: some View {
-                  HStack(spacing: 4) {
-                      Text(title)
-                          .font(.system(size: 12, weight: .semibold))
-                          .foregroundColor(.white)
-                      if trailingPlus {
-                          Image(systemName: "plus")
-                              .font(.system(size: 11, weight: .bold))
-                              .foregroundColor(.white)
-                      }
-                  }
-                  .padding(.horizontal, 14)
-                  .padding(.vertical, 7)
-                  .background(
-                      Capsule().fill(Color.white.opacity(0.18))
-                  )
-                  .overlay(
-                      Capsule().stroke(Color.white.opacity(0.25), lineWidth: 0.5)
-                  )
-              }
-          }
-
-          // MARK: - Steam sidebar component
-          // Recreates the left rail: top brand row (Steam logo + wordmark) +
-          // vertical menu with the orange active-indicator line on the left.
-          // A separate footer group renders the Settings / Help buttons and the
-          // "Friend chat and Group" tile at the very bottom.
-          struct SteamSidebar: View {
-              @Binding var activeID: Int
-
-              var body: some View {
-                  VStack(spacing: 0) {
-                      // Brand row
-                      HStack(spacing: 8) {
-                          if let logo = UIImage.bundled("steam_logo.png") {
-                              Image(uiImage: logo)
-                                  .resizable()
-                                  .aspectRatio(contentMode: .fit)
-                                  .frame(width: 28, height: 28)
-                          } else {
-                              Image(systemName: "gamecontroller.fill")
-                                  .font(.system(size: 22, weight: .bold))
-                                  .foregroundColor(.steamText)
-                          }
-                          Text("STEAM")
-                              .font(.system(size: 18, weight: .heavy))
-                              .tracking(1.2)
-                              .foregroundColor(.steamText)
-                          Spacer()
-                      }
-                      .padding(.horizontal, 18)
-                      .padding(.top, 12)
-                      .padding(.bottom, 22)
-
-                      // Menu
-                      VStack(spacing: 4) {
-                          ForEach(steamSidebarItems) { item in
-                              sidebarRow(item: item)
-                          }
-                      }
-                      .padding(.horizontal, 12)
-
-                      Spacer(minLength: 16)
-
-                      // Bottom group: Settings / Help + Friend chat tile
-                      VStack(spacing: 6) {
-                          bottomRow(icon: "gearshape.fill", title: "Settings")
-                          bottomRow(icon: "questionmark.circle.fill", title: "Help")
-                      }
-                      .padding(.horizontal, 12)
-                      .padding(.top, 6)
-
-                      Button {
-                          HapticManager.shared.impact(.light)
-                      } label: {
-                          VStack(alignment: .leading, spacing: 4) {
-                              Text("Friend chat")
-                                  .font(.system(size: 11, weight: .bold))
-                                  .foregroundColor(.steamText)
-                              Text("and Group")
-                                  .font(.system(size: 11, weight: .bold))
-                                  .foregroundColor(.steamText)
-                          }
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                          .padding(.horizontal, 14)
-                          .padding(.vertical, 12)
-                          .background(
-                              RoundedRectangle(cornerRadius: 10)
-                                  .fill(Color.white.opacity(0.04))
-                          )
-                          .overlay(
-                              RoundedRectangle(cornerRadius: 10)
-                                  .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                          )
-                      }
-                      .buttonStyle(.plain)
-                      .overlay(alignment: .trailing) {
-                          Image(systemName: "plus")
-                              .font(.system(size: 14, weight: .bold))
-                              .foregroundColor(.steamTextDim)
-                              .padding(.trailing, 14)
-                      }
-                      .padding(.horizontal, 14)
-                      .padding(.top, 14)
-                      .padding(.bottom, 18)
-                  }
-                  .frame(width: 220)
-                  .background(
-                      Color.steamBgDeep
-                          .ignoresSafeArea(.all)
-                  )
-              }
-
-              @ViewBuilder
-              private func sidebarRow(item: SteamSidebarItem) -> some View {
-                  let isActive = (item.id == activeID)
-                  Button {
-                      HapticManager.shared.selection()
-                      activeID = item.id
-                  } label: {
-                      HStack(spacing: 12) {
-                          // Active-indicator vertical bar (the orange/red pill on
-                          // the left side of the active row).
-                          Capsule()
-                              .fill(isActive ? Color.steamAccent : Color.clear)
-                              .frame(width: 3, height: 18)
-                              .padding(.leading, 2)
-                          Image(systemName: item.icon)
-                              .font(.system(size: 14, weight: .semibold))
-                              .foregroundColor(isActive ? .steamText : .steamTextDim)
-                              .frame(width: 22)
-                          Text(item.title)
-                              .font(.system(size: 13, weight: isActive ? .bold : .semibold))
-                              .foregroundColor(isActive ? .steamText : .steamTextDim)
-                          Spacer()
-                          if let badge = item.badge {
-                              Text("\(badge)")
-                                  .font(.system(size: 10, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 6).padding(.vertical, 2)
-                                  .background(Capsule().fill(Color.steamAccent))
-                          }
-                      }
-                      .padding(.vertical, 10)
-                      .padding(.horizontal, 6)
-                      .background(
-                          RoundedRectangle(cornerRadius: 8)
-                              .fill(isActive ? Color.white.opacity(0.06) : Color.clear)
-                      )
-                  }
-                  .buttonStyle(.plain)
-              }
-
-              @ViewBuilder
-              private func bottomRow(icon: String, title: String) -> some View {
-                  Button {
-                      HapticManager.shared.selection()
-                  } label: {
-                      HStack(spacing: 10) {
-                          Image(systemName: icon)
-                              .font(.system(size: 13, weight: .semibold))
-                              .foregroundColor(.steamTextDim)
-                              .frame(width: 22)
-                          Text(title)
-                              .font(.system(size: 12, weight: .semibold))
-                              .foregroundColor(.steamTextDim)
-                          Spacer()
-                      }
-                      .padding(.vertical, 6)
-                      .padding(.horizontal, 8)
-                  }
-                  .buttonStyle(.plain)
-              }
-          }
-
-          // MARK: - Steam top header (search + bell + cart + profile)
-          // Sits above the hero on both the Home tab and the Game store tab.
-          // The search field, the bell with a red dot, the cart icon, and the
-          // user avatar with a chevron match the reference image.
-          struct SteamTopHeader: View {
-              var username: String
-              var onMenu: (() -> Void)? = nil
-              var onBell: (() -> Void)? = nil
-
-              var body: some View {
-                  HStack(spacing: 14) {
-                      Button {
-                          if let onMenu { onMenu() } else { HapticManager.shared.impact(.light) }
-                      } label: {
-                          Image(systemName: "line.3.horizontal")
-                              .font(.system(size: 16, weight: .semibold))
-                              .foregroundColor(.steamText)
-                              .frame(width: 36, height: 36)
-                              .background(Circle().fill(Color.white.opacity(0.06)))
-                      }
-                      .buttonStyle(.plain)
-
-                      // Search field
-                      HStack(spacing: 8) {
-                          Image(systemName: "magnifyingglass")
-                              .font(.system(size: 13, weight: .semibold))
-                              .foregroundColor(.steamTextDim)
-                          Text("Search")
-                              .font(.system(size: 13, weight: .medium))
-                              .foregroundColor(.steamTextDim.opacity(0.7))
-                          Spacer()
-                      }
-                      .padding(.horizontal, 14)
-                      .frame(height: 36)
-                      .background(
-                          Capsule()
-                              .fill(Color.white.opacity(0.06))
-                              .overlay(
-                                  Capsule().stroke(Color.white.opacity(0.05), lineWidth: 0.5)
-                              )
-                      )
-
-                      Spacer()
-
-                      // Bell with red notification dot
-                      Button {
-                          if let onBell { onBell() } else { HapticManager.shared.impact(.light) }
-                      } label: {
-                          ZStack(alignment: .topTrailing) {
-                              Image(systemName: "bell.fill")
-                                  .font(.system(size: 15, weight: .semibold))
-                                  .foregroundColor(.steamText)
-                                  .frame(width: 36, height: 36)
-                                  .background(Circle().fill(Color.white.opacity(0.06)))
-                              Circle()
-                                  .fill(Color.steamAccent)
-                                  .frame(width: 8, height: 8)
-                                  .offset(x: 2, y: 2)
-                          }
-                      }
-                      .buttonStyle(.plain)
-
-                      // Cart icon
-                      Button {
-                          HapticManager.shared.impact(.light)
-                      } label: {
-                          Image(systemName: "bag.fill")
-                              .font(.system(size: 15, weight: .semibold))
-                              .foregroundColor(.steamText)
-                              .frame(width: 36, height: 36)
-                              .background(Circle().fill(Color.white.opacity(0.06)))
-                      }
-                      .buttonStyle(.plain)
-
-                      // User avatar (gradient circle + initial + chevron)
-                      HStack(spacing: 6) {
-                          ZStack {
-                              Circle()
-                                  .fill(LinearGradient(
-                                      colors: [Color(red: 0.90, green: 0.55, blue: 0.35),
-                                               Color(red: 0.55, green: 0.20, blue: 0.40)],
-                                      startPoint: .topLeading, endPoint: .bottomTrailing))
-                                  .frame(width: 30, height: 30)
-                              Text(String(username.prefix(1)).uppercased())
-                                  .font(.system(size: 13, weight: .heavy))
-                                  .foregroundColor(.white)
-                          }
-                          Text(username)
-                              .font(.system(size: 12, weight: .semibold))
-                              .foregroundColor(.steamText)
-                              .lineLimit(1)
-                          Image(systemName: "chevron.down")
-                              .font(.system(size: 10, weight: .bold))
-                              .foregroundColor(.steamTextDim)
-                      }
-                      .padding(.leading, 4)
-                      .padding(.trailing, 6)
-                      .frame(height: 36)
-                      .background(Capsule().fill(Color.white.opacity(0.06)))
-                  }
-                  .padding(.horizontal, 22)
-                  .padding(.top, 12)
-              }
-          }
-
-          // MARK: - Featured hero card (Stray)
-          // Two-column hero: large featured artwork on the left, a small
-          // horizontal scroll of side cards on the right (Stray + neon street).
-          // Pills (Cats / Adventure / Cyberpunk / Atmosphere / +) are placed at
-          // the top of the hero, a 7-Friends badge is in the lower-left, and
-          // the featured game name is overlaid at the bottom in the
-          // characteristic graffiti/spray-paint style.
-          struct SteamFeaturedHero: View {
-              let featured: SteamGame
-              let sideCards: [SteamGame]
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 14) {
-                      HStack(alignment: .top, spacing: 14) {
-                          featuredCard
-                          sideCardsColumn
-                      }
-                      // Pagination dots (3 dots, the first one in orange)
-                      HStack(spacing: 6) {
-                          Capsule()
-                              .fill(Color.steamOrange)
-                              .frame(width: 22, height: 4)
-                          Capsule()
-                              .fill(Color.white.opacity(0.25))
-                              .frame(width: 22, height: 4)
-                          Capsule()
-                              .fill(Color.white.opacity(0.25))
-                              .frame(width: 22, height: 4)
-                      }
-                      .frame(maxWidth: .infinity, alignment: .center)
-                      .padding(.top, 2)
-                  }
-                  .padding(.horizontal, 22)
-              }
-
-              // Featured card with category chips, hero image, the
-              // 7-Friends badge, and the big stylized title overlay.
-              @ViewBuilder
-              private var featuredCard: some View {
-                  ZStack(alignment: .bottomLeading) {
-                      if let img = UIImage.bundled(featured.imageName) {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(contentMode: .fill)
-                      } else {
-                          // Fallback gradient so the design still looks like the
-                          // reference even if the asset is missing.
-                          LinearGradient(
-                              colors: [
-                                  Color(red: 0.65, green: 0.10, blue: 0.12),
-                                  Color(red: 0.30, green: 0.05, blue: 0.10),
-                                  Color.black
-                              ],
-                              startPoint: .top, endPoint: .bottom
-                          )
-                      }
-
-                      // Soft top-to-bottom darken so the chips at the top
-                      // and the title at the bottom both stay readable.
-                      LinearGradient(
-                          colors: [Color.black.opacity(0.55), Color.clear, Color.clear, Color.black.opacity(0.85)],
-                          startPoint: .top, endPoint: .bottom
-                      )
-
-                      VStack(alignment: .leading, spacing: 12) {
-                          // Pills row
-                          HStack(spacing: 6) {
-                              SteamChip(title: "Cats")
-                              SteamChip(title: "Adventure")
-                              SteamChip(title: "Cyberpunk")
-                              SteamChip(title: "Atmosphere")
-                              SteamChip(title: "", trailingPlus: true)
-                          }
-
-                      Spacer()
-
-                      // 7-Friends badge (overlaid in the lower-left)
-                      HStack(spacing: 8) {
-                          // Three tiny overlapping profile circles
-                          HStack(spacing: -8) {
-                              ForEach(0..<3, id: \.self) { i in
-                                  Circle()
-                                      .stroke(Color.black, lineWidth: 1.5)
-                                      .background(
-                                          Circle().fill(
-                                              LinearGradient(
-                                                  colors: [Color(red: 0.90, green: 0.55, blue: 0.30),
-                                                           Color(red: 0.55, green: 0.20, blue: 0.40)],
-                                                  startPoint: .top, endPoint: .bottom)
-                                          )
-                                      )
-                                      .frame(width: 22, height: 22)
-                              }
-                          }
-                          Text("7 Friends")
-                              .font(.system(size: 12, weight: .semibold))
-                              .foregroundColor(.white)
-                              .padding(.horizontal, 10)
-                              .padding(.vertical, 5)
-                              .background(
-                                  Capsule().fill(Color.black.opacity(0.55))
-                              )
-                      }
-                      .padding(.bottom, 80)
-                      .padding(.leading, 2)
-
-                      // Big stylized "STRAY" title overlay (grainy white
-                      // graffiti style, drawn with a heavy system font as a
-                      // portable substitute for the custom lettering).
-                      VStack(alignment: .leading, spacing: 0) {
-                          Text("STRAY")
-                              .font(.system(size: 96, weight: .black, design: .rounded))
-                              .foregroundColor(.white)
-                              .shadow(color: .black.opacity(0.7), radius: 0, x: 2, y: 2)
-                              .overlay(
-                                  // Subtle red accent shadow that mimics the
-                                  // raw/ink vibe in the reference image.
-                                  Text("STRAY")
-                                      .font(.system(size: 96, weight: .black, design: .rounded))
-                                      .foregroundColor(Color(red: 0.85, green: 0.20, blue: 0.20).opacity(0.55))
-                                      .offset(x: -2, y: 2)
-                                      .blendMode(.multiply)
-                              )
-                              .lineLimit(1)
-                              .minimumScaleFactor(0.6)
-                      }
-                      .padding(.bottom, 20)
-                      .padding(.leading, 6)
-                  }
-                  .padding(20)
-              }
-              .frame(maxWidth: .infinity)
-              .frame(height: 320)
-              .clipShape(RoundedRectangle(cornerRadius: 18))
-              .overlay(
-                  RoundedRectangle(cornerRadius: 18)
-                      .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-              )
-              }
-
-              // Right column: small thumbnail card (Stray close-up) and a
-              // 1:1 landscape card (neon street). Both share the same
-              // rounded background and sit one above the other.
-              @ViewBuilder
-              private var sideCardsColumn: some View {
-                  VStack(spacing: 12) {
-                      if sideCards.indices.contains(0) {
-                          sideCard(sideCards[0])
-                      }
-                      if sideCards.indices.contains(1) {
-                          sideCard(sideCards[1])
-                      }
-                  }
-                  .frame(width: 220)
-              }
-
-              @ViewBuilder
-              private func sideCard(_ g: SteamGame) -> some View {
-                  ZStack(alignment: .bottomLeading) {
-                      if let img = UIImage.bundled(g.imageName) {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(contentMode: .fill)
-                      } else {
-                          LinearGradient(
-                              colors: [Color(red: 0.45, green: 0.10, blue: 0.10),
-                                       Color(red: 0.10, green: 0.05, blue: 0.18)],
-                              startPoint: .topLeading, endPoint: .bottomTrailing)
-                      }
-                      LinearGradient(
-                          colors: [.clear, Color.black.opacity(0.65)],
-                          startPoint: .top, endPoint: .bottom
-                      )
-                      VStack(alignment: .leading, spacing: 6) {
-                          Text(g.title)
-                              .font(.system(size: 16, weight: .bold))
-                              .foregroundColor(.white)
-                          if let s = g.subtitle {
-                              Text(s)
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.white.opacity(0.8))
-                                  .lineLimit(2)
-                          }
-                      }
-                      .padding(12)
-                  }
-                  .frame(width: 220, height: 154)
-                  .clipShape(RoundedRectangle(cornerRadius: 14))
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 14)
-                          .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                  )
-              }
-          }
-
-          // MARK: - Right side detail card (price + Available now + Windows)
-          // Sits to the right of the hero, in a vertical column.
-          // Matches the reference: game name, short description, price, the
-          // "Available now" CTA, and a small Windows logo on the right.
-          struct SteamRightDetailCard: View {
-              let featured: SteamGame
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 12) {
-                      Text(featured.title)
-                          .font(.system(size: 22, weight: .heavy))
-                          .foregroundColor(.steamText)
-                      if let s = featured.subtitle {
-                          Text(s)
-                              .font(.system(size: 12, weight: .medium))
-                              .foregroundColor(.steamTextDim)
-                              .lineLimit(3)
-                      }
-                      Spacer(minLength: 6)
-                      Text(featured.priceText)
-                          .font(.system(size: 14, weight: .bold))
-                          .foregroundColor(.steamText)
-                      HStack {
-                          Button {
-                              HapticManager.shared.success()
-                          } label: {
-                              Text("Available now")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: 40)
-                                  .background(
-                                      RoundedRectangle(cornerRadius: 8)
-                                          .fill(Color.steamAccent)
-                                  )
-                          }
-                          .buttonStyle(.plain)
-                          // Windows-style glyph as a platform indicator
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 6)
-                                  .fill(Color.steamBgPanel)
-                                  .frame(width: 40, height: 40)
-                                  .overlay(
-                                      RoundedRectangle(cornerRadius: 6)
-                                          .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-                                  )
-                              Image(systemName: "rectangle.split.2x2.fill")
-                                  .font(.system(size: 16, weight: .bold))
-                                  .foregroundColor(Color(red: 0.30, green: 0.78, blue: 0.95))
-                          }
-                      }
-                  }
-                  .padding(18)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .background(
-                      RoundedRectangle(cornerRadius: 18)
-                          .fill(Color.steamBgPanel)
-                          .overlay(
-                              RoundedRectangle(cornerRadius: 18)
-                                  .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                          )
-                  )
-              }
-          }
-
-          // MARK: - Special offers row
-          // "Special offers" subheader + "Learn more" link on the right, then
-          // four large offer tiles (Hogwarts Legacy / CoD / FIFA 23 / Mass
-          // Effect) with a subtle rounded shadow and the title overlay.
-          struct SteamSpecialOffers: View {
-              let offers: [SteamGame]
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 12) {
-                      HStack {
-                          Text("Special offers")
-                              .font(.system(size: 18, weight: .heavy))
-                              .foregroundColor(.steamText)
-                          Spacer()
-                          Button {
-                              HapticManager.shared.selection()
-                          } label: {
-                              Text("Learn more")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.steamOrange)
-                          }
-                          .buttonStyle(.plain)
-                      }
-                      .padding(.horizontal, 22)
-
-                      ScrollView(.horizontal, showsIndicators: false) {
-                          HStack(spacing: 16) {
-                              ForEach(offers) { g in
-                                  SteamOfferTile(game: g)
-                              }
-                          }
-                          .padding(.horizontal, 22)
-                          .padding(.bottom, 4)
-                      }
-                  }
-                  .padding(.top, 18)
-              }
-          }
-
-          // MARK: - Single Special offer tile
-          struct SteamOfferTile: View {
-              let game: SteamGame
-              var body: some View {
-                  ZStack(alignment: .bottomLeading) {
-                      if let img = UIImage.bundled(game.imageName) {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(contentMode: .fill)
-                      } else {
-                          LinearGradient(
-                              colors: [Color(red: 0.20, green: 0.20, blue: 0.30),
-                                       Color(red: 0.05, green: 0.05, blue: 0.10)],
-                              startPoint: .topLeading, endPoint: .bottomTrailing)
-                      }
-                      LinearGradient(
-                          colors: [.clear, Color.black.opacity(0.80)],
-                          startPoint: .top, endPoint: .bottom
-                      )
-                      VStack(alignment: .leading, spacing: 4) {
-                          Text(game.title)
-                              .font(.system(size: 14, weight: .bold))
-                              .foregroundColor(.white)
-                              .lineLimit(1)
-                          if let s = game.subtitle {
-                              Text(s)
-                                  .font(.system(size: 10, weight: .medium))
-                                  .foregroundColor(.white.opacity(0.8))
-                                  .lineLimit(1)
-                          }
-                      }
-                      .padding(12)
-                  }
-                  .frame(width: 210, height: 260)
-                  .clipShape(RoundedRectangle(cornerRadius: 16))
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 16)
-                          .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                  )
-                  .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
-              }
-          }
-
-          // MARK: - Steam Home tab
-          // The Home tab uses a 2-column layout: a fixed-width sidebar on the
-          // left (220 pt) and a ScrollView on the right with the same content
-          // as the Game store tab (top header + hero + side cards + right
-          // detail card + Special offers). The active sidebar item is "Game
-          // store" by default; tapping another item just updates the indicator.
-          struct SteamHomeView: View {
-              @ObservedObject var feed: StoreFeed
-              var onMenu: (() -> Void)? = nil
-              var onBell: (() -> Void)? = nil
-
-              @State private var activeSidebarID: Int = 0
-              private let username: String = AuthManager.shared.currentUser?.username ?? "Alishan"
-
-              var body: some View {
-                  ZStack(alignment: .topLeading) {
-                      Color.steamBgDeep.ignoresSafeArea()
-
-                      HStack(spacing: 0) {
-                          SteamSidebar(activeID: $activeSidebarID)
-                              .ignoresSafeArea(.all, edges: .vertical)
-
-                          ScrollView(.vertical, showsIndicators: true) {
-                              VStack(alignment: .leading, spacing: 0) {
-                                  SteamTopHeader(
-                                      username: username,
-                                      onMenu: onMenu,
-                                      onBell: onBell
-                                  )
-                                  .padding(.top, 4)
-                                  .padding(.bottom, 18)
-
-                                  HStack(alignment: .top, spacing: 18) {
-                                      VStack(alignment: .leading, spacing: 18) {
-                                          SteamFeaturedHero(
-                                              featured: steamFeaturedGame,
-                                              sideCards: steamSideCards
-                                          )
-                                      }
-                                      .frame(maxWidth: .infinity, alignment: .leading)
-
-                                      SteamRightDetailCard(featured: steamFeaturedGame)
-                                          .frame(width: 240)
-                                          .padding(.trailing, 22)
-                                  }
-                                  .padding(.top, 4)
-
-                                  SteamSpecialOffers(offers: steamSpecialOffers)
-                                      .padding(.bottom, 30)
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-
-          // MARK: - Steam Game store tab
-          // Same look as the Home tab, but the sidebar is replaced by a top
-          // header to keep the Game store as a focused shopping experience.
-          // The visual content is otherwise identical to the reference image
-          // (hero + right detail card + Special offers).
-          struct GameStoreView: View {
-              @ObservedObject var feed: StoreFeed
-              var onMenu: (() -> Void)? = nil
-              var onBell: (() -> Void)? = nil
-
-              private let username: String = AuthManager.shared.currentUser?.username ?? "Alishan"
-
-              var body: some View {
-                  ZStack(alignment: .top) {
-                      Color.steamBgDeep.ignoresSafeArea()
-                      ScrollView(.vertical, showsIndicators: true) {
-                          VStack(alignment: .leading, spacing: 0) {
-                              SteamTopHeader(
-                                  username: username,
-                                  onMenu: onMenu,
-                                  onBell: onBell
-                              )
-                              .padding(.top, 4)
-                              .padding(.bottom, 18)
-
-                              HStack(alignment: .top, spacing: 18) {
-                                  VStack(alignment: .leading, spacing: 18) {
-                                      SteamFeaturedHero(
-                                          featured: steamFeaturedGame,
-                                          sideCards: steamSideCards
-                                      )
-                                  }
-                                  .frame(maxWidth: .infinity, alignment: .leading)
-
-                                  SteamRightDetailCard(featured: steamFeaturedGame)
-                                      .frame(width: 240)
-                                      .padding(.trailing, 22)
-                              }
-                              .padding(.top, 4)
-
-                              SteamSpecialOffers(offers: steamSpecialOffers)
-                                  .padding(.bottom, 30)
-                          }
-                      }
-                  }
-              }
-          }
-
-          STEAEOF
 
       - name: Generate code - VIP21StoreApp.swift
         run: |
@@ -7565,7 +6848,7 @@ jobs:
                   } label: {
                       HStack {
                           VStack(alignment: .leading, spacing: 2) {
-                          Text(title).font(.system(size: 14, weight: .bold))
+                              Text(title).font(.system(size: 14, weight: .bold))
                               Text(sub).font(.system(size: 10)).opacity(0.85)
                           }
                           Spacer()
@@ -8447,7 +7730,6 @@ jobs:
             OnboardingView.swift \
             AuthViews.swift \
             StoreView.swift \
-            SteamStoreView.swift \
             ContentView.swift \
             VIP21StoreApp.swift \
             Settings.swift \
@@ -8518,17 +7800,6 @@ jobs:
           cp -X Resources/autoudid_onb2.png                    build-output/Payload/VIP21Store.app/
           cp -X Resources/autoudid_onb3.png                    build-output/Payload/VIP21Store.app/
           cp -X Resources/feature_app_icon.png                 build-output/Payload/VIP21Store.app/
-          # Steam-style resources (Game store + Home tab redesign)
-          cp -X Resources/stray_hero.png          build-output/Payload/VIP21Store.app/
-          cp -X Resources/stray_card1.png         build-output/Payload/VIP21Store.app/
-          cp -X Resources/stray_card2.png         build-output/Payload/VIP21Store.app/
-          cp -X Resources/offer_hogwarts.png      build-output/Payload/VIP21Store.app/
-          cp -X Resources/offer_callofduty.png    build-output/Payload/VIP21Store.app/
-          cp -X Resources/offer_fifa23.png        build-output/Payload/VIP21Store.app/
-          cp -X Resources/offer_masseffect.png   build-output/Payload/VIP21Store.app/
-          cp -X Resources/steam_logo.png          build-output/Payload/VIP21Store.app/
-          cp -X Resources/steam_hero_bg.png       build-output/Payload/VIP21Store.app/
-          cp -X Resources/steam_sidebar_glow.png  build-output/Payload/VIP21Store.app/
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
@@ -8556,7 +7827,7 @@ jobs:
       - name: Verify IPA package
         run: |
           echo "== IPA Contents =="
-          unzip -l artifacts/21s.ipa | head -80
+          unzip -l artifacts/21s.ipa | head -60
           if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
             echo "Error: IPA does not contain a valid App Bundle"
             exit 1
