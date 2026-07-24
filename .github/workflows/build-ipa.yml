@@ -88,7 +88,7 @@ jobs:
       # =========================================================
       - name: Generate Línea Temporal assets (3 cards, swipeable)
         run: |
-          python3 -m pip install --quiet --break-system-packages Pillow
+          python3 -m pip install --quiet --break-system-packages --upgrade Pillow
           python3 << 'PYEOF'
           from PIL import Image, ImageDraw, ImageFont, ImageFilter
           import os, math, random
@@ -96,7 +96,7 @@ jobs:
           random.seed(7)
 
           # -------- helpers --------
-          def find_font(size, bold=False):
+          def find_font(size):
               candidates = [
                   "/System/Library/Fonts/Supplemental/Impact.ttf",
                   "/System/Library/Fonts/Helvetica.ttc",
@@ -108,11 +108,18 @@ jobs:
               for p in candidates:
                   if os.path.exists(p):
                       try: return ImageFont.truetype(p, size)
-                      except: pass
+                      except Exception: pass
               return ImageFont.load_default()
 
-          def rgba_to_hex(t):
-              return "#%02X%02X%02X" % t[:3]
+          def open_rgba(p):
+              img = Image.open(p)
+              if img.mode != "RGBA":
+                  img = img.convert("RGBA")
+              return img
+
+          # alpha_composite is an Image method, not ImageDraw
+          def ac(base, overlay):
+              return Image.alpha_composite(base, overlay)
 
           # =====================================================
           # 1) Load the downloaded assets (they are already in /Resources)
@@ -121,31 +128,21 @@ jobs:
           bg_path   = "Resources/timeline_bg.jpeg"
           ico_path  = "Resources/timeline_icon.jpeg"
 
-          def open_rgba(p):
-              img = Image.open(p)
-              if img.mode != "RGBA":
-                  img = img.convert("RGBA")
-              return img
-
           character = open_rgba(char_path)
           bg_full   = open_rgba(bg_path)
           icon_img  = open_rgba(ico_path).resize((64, 64), Image.LANCZOS)
+          print("assets loaded")
 
           # =====================================================
-          # 2) Section background — same Arcane purple, blurred
+          # 2) Section background — base image only (no extra color tints)
           # =====================================================
           W, H = 1920, 1080
           bg = bg_full.copy()
           bg.thumbnail((W * 1.4, H * 1.4))
-          # center on canvas
-          canvas_bg = Image.new("RGBA", (W, H), (12, 6, 22, 255))
+          canvas_bg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
           ox = (canvas_bg.width  - bg.width)  // 2
           oy = (canvas_bg.height - bg.height) // 2
-          canvas_bg.alpha_composite(bg, (ox, oy))
-          # dark purple overlay
-          overlay = Image.new("RGBA", (W, H), (10, 5, 25, 170))
-          canvas_bg = Image.alpha_composite(canvas_bg, overlay)
-          # slight blur
+          canvas_bg.paste(bg, (ox, oy))
           canvas_bg = canvas_bg.filter(ImageFilter.GaussianBlur(radius=2))
           canvas_bg.convert("RGB").save("Resources/timeline_section_bg.jpeg", "JPEG", quality=88, optimize=True)
           print("timeline_section_bg.jpeg ready")
@@ -156,8 +153,8 @@ jobs:
           header = Image.new("RGBA", (W, 220), (0, 0, 0, 0))
           hd = ImageDraw.Draw(header)
           lt_font = find_font(96)
-          hd.text((90, 40), "LÍNEA", font=lt_font, fill=(225, 38, 242, 255))
-          hd.text((90, 130), "TEMPORAL", font=lt_font, fill=(225, 38, 242, 255))
+          hd.text((90, 40),  "LÍNEA",    font=lt_font, fill=(255, 255, 255, 255))
+          hd.text((90, 130), "TEMPORAL", font=lt_font, fill=(255, 255, 255, 255))
           # brush stroke accent under the logo
           hd.rectangle((85, 215, 320, 222), fill=(255, 255, 255, 90))
           # divider line (right side)
@@ -165,15 +162,8 @@ jobs:
           # SINOPSIS label
           sin_font = find_font(36)
           sin_text = "SINOPSIS"
-          try:
-              sw = sin_font.getbbox(sin_text)[2]
-          except Exception:
-              sw = sin_font.getsize(sin_text)[0]
           hd.text((W - 320, 40), sin_text, font=sin_font, fill=(255, 255, 255, 230))
-          # letter spacing simulation
-          for i, ch in enumerate(sin_text):
-              pass  # already rendered as a single string
-          header.convert("RGBA").save("Resources/timeline_header.png")
+          header.save("Resources/timeline_header.png")
           print("timeline_header.png ready")
 
           # =====================================================
@@ -184,93 +174,87 @@ jobs:
           step = 8
           for i in range(-5, W // step + 20):
               x = i * step
-              t = i / (W / step)
+              t = i / max(1, (W / step))
               y = 120 + math.sin(t * 8) * 22
               r = 2 if i % 9 == 0 else 1
               pd.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, 110))
               if i % 17 == 0:
-                  pd.line((x-4, y-4, x+4, y+4), fill=(242, 51, 217, 220), width=2)
-                  pd.line((x-4, y+4, x+4, y-4), fill=(242, 51, 217, 220), width=2)
+                  pd.line((x-4, y-4, x+4, y+4), fill=(255, 255, 255, 220), width=2)
+                  pd.line((x-4, y+4, x+4, y-4), fill=(255, 255, 255, 220), width=2)
           # right ring
-          pd.ellipse((W - 130, 130, W - 100, 160), outline=(242, 51, 217, 255), width=3)
-          pd.ellipse((W - 119, 141, W - 111, 149), fill=(242, 51, 217, 255))
-          path.convert("RGBA").save("Resources/timeline_path.png")
+          pd.ellipse((W - 130, 130, W - 100, 160), outline=(255, 255, 255, 255), width=3)
+          pd.ellipse((W - 119, 141, W - 111, 149), fill=(255, 255, 255, 255))
+          path.save("Resources/timeline_path.png")
           print("timeline_path.png ready")
 
           # =====================================================
           # 5) Cards — INICIOS / RECUERDOS / VENGANZA
+          #    Composited as full RGBA layers (no tint colors)
           # =====================================================
           CW, CH = 720, 1080   # @3x export; SwiftUI scales down
           cards_data = [
-              {"act": "Acto I",   "title": "INICIOS",   "name": "Powder", "accent": (115, 21, 217),  "favorite": False},
-              {"act": "Acto II",  "title": "RECUERDOS", "name": "Jinx",   "accent": (242, 51, 217),  "favorite": False},
-              {"act": "Acto III", "title": "VENGANZA",  "name": "Echo",   "accent": (76, 200, 255),  "favorite": True },
+              {"act": "Acto I",   "title": "INICIOS",   "name": "Powder", "favorite": False},
+              {"act": "Acto II",  "title": "RECUERDOS", "name": "Jinx",   "favorite": False},
+              {"act": "Acto III", "title": "VENGANZA",  "name": "Echo",   "favorite": True },
           ]
 
-          def draw_card(d, data):
-              # background image
+          def draw_card(data):
+              # Start with transparent canvas, then composite layers
+              layer = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+
+              # 1) background image
               bg_card = bg_full.copy()
               bg_card.thumbnail((CW, CH))
-              d.alpha_composite(bg_card, ((CW - bg_card.width)//2, (CH - bg_card.height)//2))
-              # dark overlay (keeps text readable)
-              d.rectangle((0, 0, CW, CH), fill=(12, 5, 22, 75))
-              # side glow strips (same edges style as the reference)
-              for x in (0, CW - 12):
-                  d.rectangle((x, 0, x + 12, CH), fill=data["accent"] + (140,))
-              # character (gif first frame, scaled)
+              bgc = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+              bgc.paste(bg_card, ((CW - bg_card.width)//2, (CH - bg_card.height)//2))
+              layer = ac(layer, bgc)
+
+              # 2) character (gif first frame), scaled and centered
               ch = character.copy()
               ch.thumbnail((int(CW * 0.85), int(CH * 0.75)))
-              cx = (CW - ch.width) // 2
-              cy = int(CH * 0.05)
-              d.alpha_composite(ch, (cx, cy))
-              # bottom gradient under character
-              for y in range(CH - 320, CH):
-                  t = (y - (CH - 320)) / 320
-                  a = int(245 * t)
-                  d.line((0, y, CW, y), fill=(12, 5, 22, a))
-              # ACT label
-              f_act = find_font(36)
-              d.text((36, CH - 170), data["act"], font=f_act, fill=(255, 255, 255, 235))
-              # TITLE
+              ch_layer = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+              ch_layer.paste(ch, ((CW - ch.width)//2, int(CH * 0.05)))
+              layer = ac(layer, ch_layer)
+
+              # 3) text + decorations on top
+              d = ImageDraw.Draw(layer)
+              f_act   = find_font(36)
               f_title = find_font(120)
+              f_name  = find_font(28)
+              f_star  = find_font(56)
+              d.text((36, CH - 170), data["act"],   font=f_act,   fill=(255, 255, 255, 235))
               d.text((36, CH - 130), data["title"], font=f_title, fill=(255, 255, 255, 255))
-              # bottom info row (icon + name)
-              d.rectangle((0, CH - 50, CW, CH), fill=(0, 0, 0, 90))
-              d.alpha_composite(icon_img, (28, CH - 42))
-              f_name = find_font(28)
-              d.text((110, CH - 38), data["name"], font=f_name, fill=(255, 255, 255, 220))
-              # favorite star (top-right)
+              # bottom info row (icon + name) — composite icon image too
+              info_layer = Image.new("RGBA", (CW, 50), (0, 0, 0, 0))
+              id_ = ImageDraw.Draw(info_layer)
+              id_.rectangle((0, 0, CW, 50), fill=(0, 0, 0, 90))
+              info_layer.alpha_composite(icon_img, (28, 12))
+              id_.text((110, 14), data["name"], font=f_name, fill=(255, 255, 255, 220))
+              layer.alpha_composite(info_layer, (0, CH - 50))
+              # favorite star (top-right) — drawn on layer
               if data["favorite"]:
-                  f_star = find_font(56)
                   d.text((CW - 90, 36), "☆", font=f_star, fill=(255, 255, 255, 255))
-                  # ring around the star
                   d.ellipse((CW - 105, 24, CW - 55, 74), outline=(255, 255, 255, 255), width=3)
+              return layer
 
           for idx, data in enumerate(cards_data, start=1):
-              card = Image.new("RGBA", (CW, CH), (12, 5, 22, 255))
-              draw = ImageDraw.Draw(card)
-              draw_card(draw, data)
+              card_rgba = draw_card(data)
               out = f"Resources/timeline_card_{idx}.png"
-              card.convert("RGB").save(out, "PNG", optimize=True)
+              card_rgba.convert("RGB").save(out, "PNG", optimize=True)
               print(out, "ready")
 
           # =====================================================
           # 6) Carousel preview (3 cards side by side, the look of the reference)
           # =====================================================
           PVW, PVH = 1920, 1080
-          preview = Image.new("RGB", (PVW, PVH), (8, 4, 18))
-          pd2 = ImageDraw.Draw(preview)
-          # blurred section bg
+          preview = Image.new("RGB", (PVW, PVH), (0, 0, 0))
           sec_bg = Image.open("Resources/timeline_section_bg.jpeg").convert("RGB")
           sec_bg = sec_bg.resize((PVW, PVH))
           preview.paste(sec_bg, (0, 0))
-          # header
           hd2 = Image.open("Resources/timeline_header.png").convert("RGBA")
           preview.paste(hd2, (0, 40), hd2)
-          # path
           p_img = Image.open("Resources/timeline_path.png").convert("RGBA")
           preview.paste(p_img, (0, 380), p_img)
-          # cards centered
           gap = 60
           total = 3 * CW + 2 * gap
           start_x = (PVW - total) // 2
