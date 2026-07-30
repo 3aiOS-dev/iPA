@@ -62,8 +62,7 @@ jobs:
           curl -L -o Resources/alerts_onboarding3.gif "https://up6.cc/2026/07/17846720131242.gif"
           # Settings onboarding GIF (kept)
           curl -L -o Resources/settings_onboarding.gif "https://up6.cc/2026/07/178467999736562.gif"
-          # Status / Error screens (no-internet)
-          curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178493307055591.gif"
+          # Status / Error screens — NoInternet is now a SwiftUI view with animated SF Symbols (no GIF asset).
           # Thanks overlay
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
           # (No character images downloaded)
@@ -2056,14 +2055,20 @@ jobs:
               var onSearch: () -> Void
               @ObservedObject private var favs = FavoritesStore.shared
 
+              // Per-item animation triggers so each tab reacts when tapped.
+              @State private var bounceHome: Int = 0
+              @State private var bounceFav: Int = 0
+              @State private var bounceApps: Int = 0
+              @State private var bounceFiles: Int = 0
+
               var body: some View {
                   ZStack {
                       HStack {
-                          tabItem(icon: "house.fill", label: "Home", index: 0)
-                          tabItem(icon: "heart.fill", label: "Favorites", index: 1, badge: favs.items.count)
+                          tabItem(icon: "house.fill", label: "Home", index: 0, trigger: $bounceHome)
+                          tabItem(icon: "heart.fill", label: "Favorites", index: 1, badge: favs.items.count, trigger: $bounceFav)
                           Spacer().frame(width: 70)
-                          tabItem(icon: "square.grid.2x2.fill", label: "Apps", index: 3)
-                          tabItem(icon: "tray.fill", label: "Files", index: 2)
+                          tabItem(icon: "square.grid.2x2.fill", label: "Apps", index: 3, trigger: $bounceApps)
+                          tabItem(icon: "tray.fill", label: "Files", index: 2, trigger: $bounceFiles)
                       }
                       .padding(.horizontal, 24)
                       .padding(.vertical, 14)
@@ -2088,15 +2093,35 @@ jobs:
               }
 
               @ViewBuilder
-              private func tabItem(icon: String, label: String, index: Int, badge: Int = 0) -> some View {
+              private func tabItem(icon: String, label: String, index: Int, badge: Int = 0, trigger: Binding<Int>) -> some View {
+                  let isActive = (tab == index)
                   Button {
                       HapticManager.shared.selection()
-                      tab = index
+                      trigger.wrappedValue += 1   // re-trigger the bounce animation on every tap
+                      withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) {
+                          tab = index
+                      }
                   } label: {
                       VStack(spacing: 4) {
                           ZStack(alignment: .topTrailing) {
+                              // Icon with press-and-active animation.
+                              // - On tap: bounces + rotates a bit (driven by `trigger`).
+                              // - When active: stays slightly larger and tinted.
                               Image(systemName: icon)
                                   .font(.system(size: 18, weight: .semibold))
+                                  .scaleEffect(isActive ? 1.18 : 1.0)
+                                  .rotationEffect(.degrees(isActive
+                                                            ? (trigger.wrappedValue % 2 == 0 ? -8 : 8)
+                                                            : 0))
+                                  .symbolEffect(.bounce, value: trigger.wrappedValue)
+                                  .animation(
+                                      .spring(response: 0.4, dampingFraction: 0.5),
+                                      value: trigger.wrappedValue
+                                  )
+                                  .animation(
+                                      .spring(response: 0.4, dampingFraction: 0.65),
+                                      value: isActive
+                                  )
                               if badge > 0 {
                                   Text(badge > 99 ? "99+" : "\(badge)")
                                       .font(.system(size: 9, weight: .heavy))
@@ -2107,11 +2132,23 @@ jobs:
                                       .offset(x: 12, y: -8)
                               }
                           }
-                          Text(label).font(.system(size: 11, weight: .medium))
+                          // Active "Home" gets a tiny pill underline that animates in.
+                          ZStack {
+                              if isActive {
+                                  Capsule()
+                                      .fill(Color.storePrimary)
+                                      .frame(width: 22, height: 3)
+                                      .transition(.scale.combined(with: .opacity))
+                              } else {
+                                  Color.clear.frame(width: 22, height: 3)
+                              }
+                          }
+                          Text(label).font(.system(size: 11, weight: isActive ? .bold : .medium))
                       }
-                      .foregroundColor(tab == index ? .storePrimary : .storeSub)
+                      .foregroundColor(isActive ? .storePrimary : .storeSub)
                       .frame(maxWidth: .infinity)
                   }
+                  .buttonStyle(.plain)
               }
           }
 
@@ -5308,24 +5345,71 @@ jobs:
 
           struct NoInternetScreen: View {
               var onRetry: () -> Void
-              @State private var animatePulse = false
+              @State private var outerPulse: Bool = false
+              @State private var middlePulse: Bool = false
+              @State private var innerPulse: Bool = false
+              @State private var wiggle: Bool = false
+              @State private var didAppear: Bool = false
 
               var body: some View {
                   ZStack {
                       Color.white.edgesIgnoringSafeArea(.all)
 
                       VStack(spacing: 22) {
-                          GifOnlyView(resourceName: "no_internet")
-                              .frame(width: 240, height: 240)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 28)
-                                      .fill(Color.storeCard)
-                                      .overlay(
-                                          RoundedRectangle(cornerRadius: 28)
-                                              .stroke(Color.storeDivider, lineWidth: 1)
+                          // Animated SF Symbol stack — replaces the old no_internet.gif asset.
+                          ZStack {
+                              // Pulsing rings around the icon
+                              Circle()
+                                  .stroke(Color.storePrimary.opacity(0.18), lineWidth: 2)
+                                  .frame(width: 220, height: 220)
+                                  .scaleEffect(outerPulse ? 1.15 : 0.85)
+                                  .opacity(outerPulse ? 0.0 : 0.9)
+                                  .animation(
+                                      .easeOut(duration: 1.8).repeatForever(autoreverses: false),
+                                      value: outerPulse
+                                  )
+                              Circle()
+                                  .stroke(Color.storePrimary.opacity(0.28), lineWidth: 2)
+                                  .frame(width: 170, height: 170)
+                                  .scaleEffect(middlePulse ? 1.15 : 0.85)
+                                  .opacity(middlePulse ? 0.0 : 0.9)
+                                  .animation(
+                                      .easeOut(duration: 1.8).delay(0.3).repeatForever(autoreverses: false),
+                                      value: middlePulse
+                                  )
+
+                              // Card behind the icon
+                              RoundedRectangle(cornerRadius: 28)
+                                  .fill(Color.storeCard)
+                                  .overlay(
+                                      RoundedRectangle(cornerRadius: 28)
+                                          .stroke(Color.storeDivider, lineWidth: 1)
+                                  )
+                                  .frame(width: 150, height: 150)
+                                  .shadow(color: Color.storePrimary.opacity(0.20), radius: 18, y: 6)
+
+                              // The icon itself — gently bouncing, with a subtle wiggle
+                              ZStack {
+                                  Image(systemName: "wifi.exclamationmark")
+                                      .font(.system(size: 84, weight: .bold))
+                                      .foregroundStyle(
+                                          LinearGradient(colors: [Color.storePrimary, Color.storePrimaryDk],
+                                                         startPoint: .topLeading, endPoint: .bottomTrailing)
                                       )
-                              )
-                              .shadow(color: Color.storePrimary.opacity(0.20), radius: 18, y: 6)
+                                      .scaleEffect(innerPulse ? 1.08 : 0.94)
+                                      .rotationEffect(.degrees(wiggle ? -6 : 6))
+                                      .symbolEffect(.pulse, options: .repeating, isActive: didAppear)
+                                      .animation(
+                                          .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                                          value: innerPulse
+                                      )
+                                      .animation(
+                                          .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                                          value: wiggle
+                                      )
+                              }
+                          }
+                          .frame(width: 240, height: 240)
 
                           VStack(spacing: 10) {
                               Text("No Connection")
@@ -5364,7 +5448,13 @@ jobs:
                       }
                       .padding(.horizontal, 24)
                   }
-                  .onAppear { animatePulse = true }
+                  .onAppear {
+                      didAppear = true
+                      outerPulse = true
+                      middlePulse = true
+                      innerPulse = true
+                      wiggle = true
+                  }
               }
           }
 
@@ -5446,7 +5536,7 @@ jobs:
           cp -X Resources/alerts_onboarding2.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/alerts_onboarding3.gif      build-output/Payload/VIP21Store.app/
           cp -X Resources/settings_onboarding.gif     build-output/Payload/VIP21Store.app/
-          cp -X Resources/no_internet.gif             build-output/Payload/VIP21Store.app/
+          # no_internet removed — handled by animated SwiftUI view (SF Symbols)
           cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
           cp -X Resources/wallet_advanced_onb1.png    build-output/Payload/VIP21Store.app/
           cp -X Resources/wallet_advanced_onb2.png    build-output/Payload/VIP21Store.app/
