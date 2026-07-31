@@ -56,13 +56,23 @@ jobs:
       - name: Install Python libraries (lief, capstone, cryptography, pyelftools)
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --upgrade --break-system-packages pip
-          python3 -m pip install --quiet --break-system-packages \
+          # IMPORTANT: never run `pip install --upgrade pip` on macOS-latest.
+          # Homebrew owns the system pip and reinstalling it breaks the
+          # managed Python install. The stock pip is recent enough.
+          #
+          # Install everything into a project-local target dir so the .app
+          # can bundle the exact same site-packages later, regardless of
+          # whether the runner is x86_64 or arm64.
+          PY_SITE="$GITHUB_WORKSPACE/build-out/py-site-packages"
+          rm -rf "$PY_SITE"
+          mkdir -p "$PY_SITE"
+          python3 -m pip install --quiet --break-system-packages --target "$PY_SITE" \
               lief \
               capstone \
               cryptography \
               pyelftools
-          python3 -c "import lief, capstone, cryptography, elftools; print('lief', lief.__version__); print('capstone', capstone.__version__); print('cryptography', cryptography.__version__); print('pyelftools', elftools.__version__)" || true
+          # Re-launch the interpreter with our target dir on PYTHONPATH
+          PYTHONPATH="$PY_SITE" python3 -c "import lief, capstone, cryptography, elftools; print('lief', lief.__version__); print('capstone', capstone.__version__); print('cryptography', cryptography.__version__); print('pyelftools', elftools.__version__)"
 
       - name: Write Python dylib tool (uses lief + capstone + cryptography)
         run: |
@@ -297,16 +307,28 @@ jobs:
           /// (Mach-O parsing, disassembly, crypto) happens in Python where
           /// lief + capstone + cryptography are real production libraries.
           enum DylibToolBridge {
+              /// Search order: $DYLIBTOOL env var → bundled inside the .app → ~/Tools.
               static let scriptPath: String = {
-                  let env = ProcessInfo.processInfo.environment["DYLIBTOOL"]
-                            ?? "\(NSHomeDirectory())/Tools/dylibtool.py"
-                  if FileManager.default.fileExists(atPath: env) { return env }
-                  // bundled
-                  if let r = Bundle.main.resourcePath {
-                      let p = "\(r)/Tools/dylibtool.py"
-                      if FileManager.default.fileExists(atPath: p) { return p }
-                  }
-                  return env
+                  let candidates: [String] = {
+                      var c: [String] = []
+                      if let e = ProcessInfo.processInfo.environment["DYLIBTOOL"] { c.append(e) }
+                      if let r = Bundle.main.resourcePath {
+                          c.append("\(r)/Tools/dylibtool.py")
+                      }
+                      c.append("\(NSHomeDirectory())/Tools/dylibtool.py")
+                      return c
+                  }()
+                  return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
+                         ?? candidates.last!
+              }()
+
+              /// Path to the bundled py-site-packages dir (lief, capstone, …).
+              /// `nil` if the .app was built without bundling, in which case
+              /// the host Python's site-packages will be used.
+              static let bundledSitePackages: String? = {
+                  guard let r = Bundle.main.resourcePath else { return nil }
+                  let p = "\(r)/py-site-packages"
+                  return FileManager.default.fileExists(atPath: p) ? p : nil
               }()
 
               @discardableResult
@@ -314,6 +336,11 @@ jobs:
                   let p = Process()
                   p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                   p.arguments = ["python3", scriptPath] + args
+                  var env = ProcessInfo.processInfo.environment
+                  if let sp = bundledSitePackages {
+                      env["PYTHONPATH"] = sp
+                  }
+                  p.environment = env
                   let out = Pipe(), err = Pipe()
                   p.standardOutput = out; p.standardError = err
                   do { try p.run() } catch { return (-1, "", "spawn failed: \(error)") }
@@ -634,34 +661,20 @@ jobs:
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources/Tools"
-          mkdir -p "$APP/Contents/Frameworks"
+          mkdir -p "$APP/Contents/Resources/py-site-packages"
           cp -X "build-out/${{ env.TOOL_NAME }}" "$APP/Contents/MacOS/${{ env.TOOL_NAME }}"
           cp -X Tools/dylibtool.py          "$APP/Contents/Resources/Tools/dylibtool.py"
           chmod +x "$APP/Contents/Resources/Tools/dylibtool.py"
 
-          # Bundle Python + site-packages so the .app is self-contained
-          PYTHON_PATH=$(python3 -c "import sys; print(sys.prefix)")
-          echo "Embedding Python from: $PYTHON_PATH"
-          cp -R "$PYTHON_PATH" "$APP/Contents/Frameworks/Python"
-          # Trim site-packages to the libs we actually need
-          SP="$APP/Contents/Frameworks/Python/lib/python3.11/site-packages"
-          mkdir -p "$SP"
-          for pkg in lief capstone cryptography elftools; do
-              src=$(python3 -c "import importlib.util, os; m=importlib.util.find_spec('$pkg'); print(os.path.dirname(m.origin))" 2>/dev/null || true)
-              if [ -n "$src" ] && [ -d "$src" ]; then
-                  mkdir -p "$SP/$(basename $src)"
-                  cp -R "$src"/. "$SP/$(basename $src)/"
-                  echo "bundled $pkg from $src"
-              fi
-          done
-          # cryptography pulls in these too
-          for pkg in _cffi_backend cryptography.hazmat.bindings._rust cffi pyrsistent; do
-              src=$(python3 -c "import importlib.util, os; m=importlib.util.find_spec('$pkg'); print(os.path.dirname(m.origin))" 2>/dev/null || true)
-              if [ -n "$src" ] && [ -d "$src" ]; then
-                  mkdir -p "$SP/$(basename $src)"
-                  cp -R "$src"/. "$SP/$(basename $src)/"
-              fi
-          done
+          # Copy the pip --target dir produced by the previous step into the bundle.
+          # This is more reliable than chasing sys.prefix + find_spec on the runner.
+          if [ -d "build-out/py-site-packages" ]; then
+              cp -R build-out/py-site-packages/. "$APP/Contents/Resources/py-site-packages/"
+              echo "Bundled site-packages:"
+              ls "$APP/Contents/Resources/py-site-packages" | head -n 20
+          else
+              echo "WARNING: build-out/py-site-packages missing — GUI will need host Python"
+          fi
 
           cat > "$APP/Contents/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -683,15 +696,19 @@ jobs:
           sed -i '' "s/__TOOL_NAME__/${{ env.TOOL_NAME }}/g; s/__BUNDLE_ID__/${{ env.BUNDLE_ID }}/g; s/__VERSION__/${{ env.VERSION }}/g" "$APP/Contents/Info.plist"
           cat "$APP/Contents/Info.plist"
           echo "---"
-          find "$APP" -maxdepth 4 -print | head -n 40
+          find "$APP" -maxdepth 4 -print | head -n 60
 
       - name: Ad-hoc codesign
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           APP="$GITHUB_WORKSPACE/build-out/${{ env.TOOL_NAME }}.app"
-          # sign nested first then outer
-          find "$APP" -type f \( -name "*.dylib" -o -path "*/MacOS/*" -o -path "*/Frameworks/Python/bin/python*" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+          # Sign every Mach-O inside the bundle first (deepest first), then the bundle.
+          # This covers lief's embedded .so, capstone, cryptography's .so, etc.
+          find "$APP" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) | while read -r f; do
+              file "$f" 2>/dev/null | grep -q "Mach-O" || continue
+              codesign --force --sign - "$f" 2>/dev/null || true
+          done
           codesign --force --deep --sign - "$APP"
           codesign -dv "$APP" 2>&1 | head -n 12
 
