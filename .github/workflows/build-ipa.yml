@@ -322,14 +322,36 @@ jobs:
                          ?? candidates.last!
               }()
 
-              /// Path to the bundled py-site-packages dir (lief, capstone, …).
-              /// `nil` if the .app was built without bundling, in which case
-              /// the host Python's site-packages will be used.
-              static let bundledSitePackages: String? = {
-                  guard let r = Bundle.main.resourcePath else { return nil }
-                  let p = "\(r)/py-site-packages"
-                  return FileManager.default.fileExists(atPath: p) ? p : nil
-              }()
+              /// Search for a usable site-packages dir (lief, capstone, …).
+              /// Returns the first path that actually contains lief.
+              static func resolveSitePackages() -> String? {
+                  let fm = FileManager.default
+                  var candidates: [String] = []
+                  // 1. bundled with the .app
+                  if let r = Bundle.main.resourcePath {
+                      candidates.append("\(r)/py-site-packages")
+                  }
+                  // 2. explicit env override
+                  if let e = ProcessInfo.processInfo.environment["DYLIBTOOL_SITE"] {
+                      candidates.append(e)
+                  }
+                  // 3. ~/Library/Python/<ver>/lib/python/site-packages
+                  let home = NSHomeDirectory()
+                  let ver = ProcessInfo.processInfo.environment["PYTHON_VERSION"] ?? "3.11"
+                  candidates.append("\(home)/Library/Python/\(ver)/lib/python/site-packages")
+                  // 4. brew's site-packages (Apple Silicon)
+                  for p in [
+                      "/opt/homebrew/lib/python\(ver)/site-packages",
+                      "/usr/local/lib/python\(ver)/site-packages",
+                      "/Library/Frameworks/Python.framework/Versions/\(ver)/lib/python\(ver)/site-packages",
+                  ] {
+                      candidates.append(p)
+                  }
+                  for c in candidates {
+                      if fm.fileExists(atPath: "\(c)/lief/__init__.py") { return c }
+                  }
+                  return nil
+              }
 
               @discardableResult
               static func run(_ args: [String]) -> (Int32, String, String) {
@@ -337,7 +359,7 @@ jobs:
                   p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                   p.arguments = ["python3", scriptPath] + args
                   var env = ProcessInfo.processInfo.environment
-                  if let sp = bundledSitePackages {
+                  if let sp = resolveSitePackages() {
                       env["PYTHONPATH"] = sp
                   }
                   p.environment = env
@@ -753,6 +775,9 @@ jobs:
               exit 0
           fi
           ls -l "$SAMPLE"
+          # Use the same site-packages dir the .app will bundle. Without this,
+          # system python3 has no lief/capstone/cryptography installed.
+          export PYTHONPATH="$GITHUB_WORKSPACE/build-out/py-site-packages${PYTHONPATH:+:$PYTHONPATH}"
           python3 "$TOOL" info    "$SAMPLE" | head -n 8
           python3 "$TOOL" strings "$SAMPLE" | head -n 5
           python3 "$TOOL" search  "$SAMPLE" "mach" | head -n 5
