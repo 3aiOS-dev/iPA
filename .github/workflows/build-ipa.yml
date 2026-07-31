@@ -1,185 +1,478 @@
-name: Build YouTube Search Tweak (Theos)
+name: Dylib Injector for IPA (Build → Inject → Repack)
+
+# =============================================================================
+#   Builds a real .dylib from source, downloads / accepts a target IPA,
+#   injects the dylib into the main executable's load commands
+#   (LC_LOAD_DYLIB), patches Info.plist as needed, re-signs everything
+#   with ldid (ad-hoc), and re-packages a fresh, installable IPA.
+#
+#   Tools used (all installed inside the runner):
+#     - xcode-select / swiftc         (Xcode toolchain)
+#     - ldid                         (ad-hoc / fake codesign)
+#     - insert_dylib  (optool fork)   (LC_LOAD_DYLIB injector)
+#     - install_name_tool            (Apple built-in, load-command editor)
+#     - optool                       (fallback LC_LOAD_DYLIB injector)
+#     - zip / unzip                  (IPA packaging)
+#     - python3 + biplist / plistlib (Info.plist binary & XML editing)
+#     - jq, curl, file, otool         (verification)
+#
+#   Inputs (env, with sensible defaults so the workflow runs out-of-the-box):
+#     TARGET_IPA_URL   - public URL of the .ipa to inject into
+#     NEW_BUNDLE_ID    - new bundle id (default: com.injected.app)
+#     NEW_APP_NAME     - new display name (default: Injected)
+#     DYLIB_NAME       - logical name of the dylib (default: hook)
+#     DYLIB_BUNDLE_ID  - bundle id the dylib reports at runtime
+#
+#   Triggers: push to main, or manual run.
+# =============================================================================
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      target_ipa_url:
+        description: "Public URL of the .ipa to inject into"
+        required: false
+        default: "https://example.com/TargetApp.ipa"
+      new_bundle_id:
+        description: "New bundle id"
+        required: false
+        default: "com.injected.app"
+      new_app_name:
+        description: "New display name"
+        required: false
+        default: "Injected"
+
+env:
+  TARGET_IPA_URL:  ${{ github.event.inputs.target_ipa_url  || 'https://example.com/TargetApp.ipa' }}
+  NEW_BUNDLE_ID:   ${{ github.event.inputs.new_bundle_id   || 'com.injected.app' }}
+  NEW_APP_NAME:    ${{ github.event.inputs.new_app_name    || 'Injected' }}
+  DYLIB_NAME:      "hook"
+  DYLIB_BUNDLE_ID: "com.injected.hook"
 
 jobs:
-  build:
+  build-and-inject:
+    name: Build dylib, inject into IPA, repack
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
+
+      # -----------------------------------------------------------------------
+      # 1. CHECKOUT
+      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------- إعداد Xcode ----------
-      - name: Setup Xcode
+      # -----------------------------------------------------------------------
+      # 2. TOOLCHAIN
+      # -----------------------------------------------------------------------
+      - name: Select Xcode & verify toolchain
         run: |
-          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          set -euxo pipefail
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer || \
+            sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
           xcode-select -p
+          xcrun --sdk iphoneos --show-sdk-path
           swift --version
+          xcrun --sdk iphoneos -f clang
+          xcrun --sdk iphoneos -f ldid || true   # system ldid is fine
 
-      # ---------- تثبيت أدوات البناء ----------
-      - name: Install build tools
+      # -----------------------------------------------------------------------
+      # 3. INSTALL REQUIRED TOOLS
+      # -----------------------------------------------------------------------
+      - name: Install required tools (brew + python deps)
         run: |
-          brew install ldid dpkg xz git
+          set -euxo pipefail
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
 
-      # ---------- استنساخ Theos وتهيئة Submodules ----------
-      - name: Setup Theos
+          # System / package tools
+          brew install ldid jq python@3.11 zlib 2>/dev/null || true
+
+          # Apple built-ins we rely on (verify, do not brew-install)
+          for t in clang clang++ swiftc ar otool install_name_tool codesign zip unzip; do
+            if ! xcrun --sdk iphoneos -f "$t" >/dev/null 2>&1 \
+               && ! command -v "$t" >/dev/null 2>&1; then
+              echo "::error::Missing required tool: $t"
+              exit 1
+            fi
+          done
+
+          command -v ldid  && ldid  -h 2>&1 | head -1 || true
+          command -v jq    && jq    --version           || true
+          command -v zip   && zip   -v 2>&1 | head -1   || true
+          command -v unzip && unzip -v 2>&1 | head -1   || true
+
+      - name: Install dylib injector (insert_dylib / optool)
         run: |
-          git clone --depth 1 https://github.com/theos/theos.git $HOME/theos
-          cd $HOME/theos
-          git submodule update --init --recursive
-          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          set -euxo pipefail
+          mkdir -p tools && cd tools
 
-      # ---------- إنشاء ملفات الت tweak ----------
-      - name: Create tweak source files
+          # ---- insert_dylib (stefanesser / tyilo fork) ------------------------
+          # Source repo: https://github.com/tyilo/insert_dylib
+          if [ ! -x insert_dylib ]; then
+            git clone --depth=1 https://github.com/tyilo/insert_dylib.git
+            cd insert_dylib
+            xcrun --sdk macosx -f clang >/dev/null
+            xcrun --sdk macosx clang -O2 -framework Foundation -o ../insert_dylib insert_dylib.c
+            cd ..
+          fi
+          chmod +x insert_dylib
+          ./insert_dylib --help 2>&1 | head -5 || true
+
+          # ---- optool (alexzielenski / theiostream fork) ----------------------
+          if [ ! -d optool ]; then
+            git clone --depth=1 --recursive https://github.com/alexzielenski/optool.git
+            cd optool
+            xcrun --sdk macosx clang++ -O2 -std=c++14 \
+              -framework Foundation -I . \
+              -o ../optool optool.cpp DSCDTector.cpp
+            cd ..
+          fi
+          chmod +x optool
+          ./optool 2>&1 | head -3 || true
+
+          cd ..
+          ls -lh tools/
+
+      - name: Install python helpers (biplist, plistlib is stdlib)
         run: |
-          mkdir -p YouTubeSearchTweak
-          cd YouTubeSearchTweak
+          set -euxo pipefail
+          python3 -m pip install --quiet --break-system-packages \
+            biplist colorama requests
+          python3 -c "import biplist, plistlib, requests; print('py ok')"
 
-          # ---- Makefile (مع تحديد الـ ARCH والـ SDK) ----
-          cat > Makefile << 'EOF'
-          include $(THEOS)/makefiles/common.mk
+      # -----------------------------------------------------------------------
+      # 4. DOWNLOAD TARGET IPA
+      # -----------------------------------------------------------------------
+      - name: Download target IPA
+        run: |
+          set -euxo pipefail
+          mkdir -p work && cd work
+          if [[ "${TARGET_IPA_URL}" == *example.com* ]]; then
+            echo "::warning::TARGET_IPA_URL is a placeholder. Set a real URL via workflow_dispatch input."
+            echo "::warning::Generating a minimal stub IPA so the pipeline can still validate end-to-end."
+            # Build a tiny valid stub IPA containing a real arm64 Mach-O we can inject into.
+            mkdir -p stub/Payload/Stub.app
+            cat > stub/Payload/Stub.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Stub</string>
+            <key>CFBundleDisplayName</key><string>Stub</string>
+            <key>CFBundleIdentifier</key><string>com.example.stub</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleExecutable</key><string>Stub</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>MinimumOSVersion</key><string>15.0</string>
+          </dict>
+          </plist>
+          PLIST
+            SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+            cat > stub.m <<'SRC'
+          #import <UIKit/UIKit.h>
+          @interface StubAppDelegate : UIResponder <UIApplicationDelegate>
+          @property (strong, nonatomic) UIWindow *window;
+          @end
+          @implementation StubAppDelegate
+          - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
+            self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+            UIViewController *vc = [UIViewController new];
+            vc.view.backgroundColor = [UIColor systemBlueColor];
+            UILabel *l = [UILabel new];
+            l.text = @"Original";
+            l.textColor = [UIColor whiteColor];
+            l.translatesAutoresizingMaskIntoConstraints = NO;
+            [vc.view addSubview:l];
+            [NSLayoutConstraint activateConstraints:@[
+              [l.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+              [l.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
+            ]];
+            self.window.rootViewController = vc;
+            [self.window makeKeyAndVisible];
+            return YES;
+          }
+          @end
+          int main(int argc, char * argv[]) {
+            @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass([StubAppDelegate class])); }
+          }
+          SRC
+            xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" \
+              -fobjc-arc -framework UIKit -framework Foundation \
+              -mios-version-min=15.0 -O2 \
+              -o stub/Payload/Stub.app/Stub stub.m
+            file stub/Payload/Stub.app/Stub
+            cp stub/Payload/Stub.app/Info.plist stub/Info.plist
+            (cd stub && zip -qr ../TargetApp.ipa Payload)
+            ls -lh TargetApp.ipa
+          else
+            curl -fL --retry 3 -o TargetApp.ipa "${TARGET_IPA_URL}"
+            ls -lh TargetApp.ipa
+            file TargetApp.ipa
+            unzip -l TargetApp.ipa | head
+          fi
 
-          TWEAK_NAME = YouTubeSearch
-          YouTubeSearch_FILES = Tweak.xm
-          YouTubeSearch_CFLAGS = -fobjc-arc
-          YouTubeSearch_LDFLAGS = -lobjc
+      # -----------------------------------------------------------------------
+      # 5. WRITE DYLIB SOURCE (real, working Objective-C constructor)
+      # -----------------------------------------------------------------------
+      - name: Write dylib source code
+        run: |
+          set -euxo pipefail
+          mkdir -p dylib_src && cd dylib_src
 
-          # تحديد الـ ARCH والهدف لتجنب تحذيرات arm64e
-          ARCHS = arm64
-          TARGET = iphone:clang:16.0:14.0
-
-          include $(THEOS_MAKE_PATH)/tweak.mk
-          EOF
-
-          # ---- control ----
-          mkdir -p layout/DEBIAN
-          cat > layout/DEBIAN/control << 'EOF'
-          Package: com.yourname.youtube-search
-          Name: YouTube Search
-          Version: 1.0
-          Architecture: iphoneos-arm
-          Description: Adds a floating button to search YouTube from any app.
-          Maintainer: Your Name <you@example.com>
-          Author: Your Name
-          Section: Tweaks
-          EOF
-
-          # ---- Tweak.xm ----
-          cat > Tweak.xm << 'EOF'
-          %config(DEBUG=0)
+          cat > hook.m <<'OBJC'
+          // hook.m - real dylib that runs on load via __attribute__((constructor))
+          // and reports itself. Swizzles +BundleIdentifier to prove injection.
+          #import <Foundation/Foundation.h>
+          #import <objc/runtime.h>
           #import <UIKit/UIKit.h>
 
-          @interface UIWindow (Additions)
-          - (void)addFloatingButtonIfNeeded;
-          @end
+          static NSString *gInjectedBundleId = nil;
 
-          @implementation UIWindow (Additions)
-
-          - (void)addFloatingButtonIfNeeded {
-              static dispatch_once_t onceToken;
-              dispatch_once(&onceToken, ^{
-                  if (self != [UIApplication sharedApplication].keyWindow) return;
-
-                  UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-                  button.frame = CGRectMake(20, 100, 55, 55);
-                  [button setTitle:@"🔍" forState:UIControlStateNormal];
-                  button.titleLabel.font = [UIFont systemFontOfSize:28];
-                  button.backgroundColor = [UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.9];
-                  button.layer.cornerRadius = 27.5;
-                  button.layer.masksToBounds = YES;
-                  button.layer.shadowColor = [UIColor blackColor].CGColor;
-                  button.layer.shadowOpacity = 0.4;
-                  button.layer.shadowRadius = 5;
-                  button.layer.shadowOffset = CGSizeMake(0, 2);
-                  [button addTarget:self action:@selector(searchButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-
-                  UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-                  [button addGestureRecognizer:pan];
-
-                  [self addSubview:button];
-              });
+          __attribute__((constructor(101)))
+          static void hook_ctor(int argc, const char **argv, const char **envp) {
+              NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
+              NSString *bid = info[@"CFBundleIdentifier"] ?: @"<unknown>";
+              gInjectedBundleId = [NSString stringWithFormat:@"%@+hook(%@)", bid, @"$DYLIB_BUNDLE_ID"];
+              NSLog(@"[hook] injected into %@ at %s", bid, __FILE__);
           }
 
-          - (void)searchButtonTapped {
-              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"YouTube Search"
-                                                                             message:@"أدخل كلمة البحث"
-                                                                      preferredStyle:UIAlertControllerStyleAlert];
-              [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                  textField.placeholder = @"بحث...";
-                  textField.clearButtonMode = UITextFieldViewModeWhileEditing;
-              }];
-
-              UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil];
-              UIAlertAction *search = [UIAlertAction actionWithTitle:@"بحث" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                  NSString *query = alert.textFields.firstObject.text;
-                  if (query.length == 0) return;
-
-                  NSString *encoded = [query stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-
-                  NSString *urlString = [NSString stringWithFormat:@"youtube://search?q=%@", encoded];
-                  NSURL *url = [NSURL URLWithString:urlString];
-                  UIApplication *app = [UIApplication sharedApplication];
-
-                  if ([app canOpenURL:url]) {
-                      [app openURL:url options:@{} completionHandler:nil];
-                  } else {
-                      NSString *webURL = [NSString stringWithFormat:@"https://www.youtube.com/results?search_query=%@", encoded];
-                      [app openURL:[NSURL URLWithString:webURL] options:@{} completionHandler:nil];
-                  }
-              }];
-
-              [alert addAction:cancel];
-              [alert addAction:search];
-
-              UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
-              if (rootVC) {
-                  [rootVC presentViewController:alert animated:YES completion:nil];
-              } else {
-                  [[UIApplication sharedApplication].keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
-              }
+          // Method swizzling example: NSBundle.bundleIdentifier -> returns a tagged value
+          static NSString *(*orig_bundleIdentifier)(id, SEL) = NULL;
+          static NSString *swizzled_bundleIdentifier(id self, SEL _cmd) {
+              NSString *real = orig_bundleIdentifier ? orig_bundleIdentifier(self, _cmd) : nil;
+              if (gInjectedBundleId) return [gInjectedBundleId stringByReplacingOccurrencesOfString:@"+hook(" withString:@"+hook(real="];
+              return real;
           }
 
-          - (void)handlePan:(UIPanGestureRecognizer *)gesture {
-              UIButton *button = (UIButton *)gesture.view;
-              UIView *superview = button.superview;
-
-              if (gesture.state == UIGestureRecognizerStateChanged) {
-                  CGPoint translation = [gesture translationInView:superview];
-                  button.center = CGPointMake(button.center.x + translation.x,
-                                              button.center.y + translation.y);
-                  [gesture setTranslation:CGPointZero inView:superview];
-              }
+          __attribute__((constructor(102)))
+          static void hook_swizzle(int argc, const char **argv, const char **envp) {
+              Method m = class_getInstanceMethod([NSBundle class], @selector(bundleIdentifier));
+              if (!m) return;
+              orig_bundleIdentifier = (NSString *(*)(id, SEL))method_getImplementation(m);
+              method_setImplementation(m, (IMP)swizzled_bundleIdentifier);
           }
+          OBJC
+          echo "hook.m written."
 
-          @end
-
-          %hook UIWindow
-          - (void)layoutSubviews {
-              %orig;
-              [self addFloatingButtonIfNeeded];
-          }
-          %end
-          EOF
-
-      # ---------- البناء ----------
-      - name: Build tweak
+      # -----------------------------------------------------------------------
+      # 6. BUILD THE DYLIB (arm64 iphoneos)
+      # -----------------------------------------------------------------------
+      - name: Build dylib (arm64, iphoneos)
         run: |
-          cd YouTubeSearchTweak
-          export THEOS=$HOME/theos
-          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          make clean
-          make package
+          set -euxo pipefail
+          cd dylib_src
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 
-      # ---------- رفع المخرجات ----------
-      - name: Upload artifact
+          # Compile to .o
+          xcrun --sdk iphoneos clang \
+            -arch arm64 -isysroot "$SDK" \
+            -fobjc-arc -fvisibility=hidden \
+            -mios-version-min=15.0 -O2 \
+            -dynamiclib -install_name @rpath/hook.dylib \
+            -current_version 1.0 -compatibility_version 1.0 \
+            -framework Foundation -framework UIKit -framework ObjectiveC \
+            -o hook.dylib \
+            -Wl,-undefined,dynamic_lookup \
+            hook.m
+
+          file hook.dylib
+          otool -L hook.dylib
+          otool -l hook.dylib | grep -E "LC_ID_DYLIB|LC_LOAD_DYLIB" -A2 || true
+          echo "Dylib built:"
+          ls -lh hook.dylib
+
+      - name: Sign dylib (ad-hoc, since we'll re-sign the whole app later)
+        run: |
+          set -euxo pipefail
+          cd dylib_src
+          # ldid with no entitlements + empty signing
+          ldid -S hook.dylib
+          file hook.dylib
+          otool -l hook.dylib | grep -A2 LC_CODE_SIGNATURE | head -20 || true
+
+      # -----------------------------------------------------------------------
+      # 7. UNPACK TARGET IPA
+      # -----------------------------------------------------------------------
+      - name: Unpack target IPA
+        run: |
+          set -euxo pipefail
+          cd work
+          rm -rf unpacked
+          mkdir unpacked
+          unzip -q TargetApp.ipa -d unpacked
+          ls unpacked
+          ls unpacked/Payload
+          # Find the .app bundle
+          APP_DIR=$(ls -d unpacked/Payload/*.app | head -1)
+          echo "APP_DIR=$APP_DIR" >> $GITHUB_ENV
+          EXEC_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Info.plist")
+          echo "EXEC_NAME=$EXEC_NAME" >> $GITHUB_ENV
+          echo "Found app: $APP_DIR"
+          echo "Executable: $EXEC_NAME"
+          file "$APP_DIR/$EXEC_NAME"
+          otool -L "$APP_DIR/$EXEC_NAME" | head -20
+
+      # -----------------------------------------------------------------------
+      # 8. PATCH Info.plist (bundle id, display name, no embedded provisioning)
+      # -----------------------------------------------------------------------
+      - name: Patch Info.plist
+        run: |
+          set -euxo pipefail
+          cd work
+          APP_DIR="$APP_DIR"
+          PLIST="$APP_DIR/Info.plist"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${NEW_BUNDLE_ID}" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${NEW_BUNDLE_ID}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName ${NEW_APP_NAME}" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${NEW_APP_NAME}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${NEW_APP_NAME}" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${NEW_APP_NAME}" "$PLIST"
+
+          # Strip embedded.mobileprovision if present (we ship ad-hoc)
+          if [ -f "$APP_DIR/embedded.mobileprovision" ]; then
+            rm -f "$APP_DIR/embedded.mobileprovision"
+            echo "Removed embedded.mobileprovision"
+          fi
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleResourceSpecification" "$PLIST" 2>/dev/null || true
+
+          echo "----- Patched Info.plist -----"
+          /usr/libexec/PlistBuddy -c "Print" "$PLIST"
+
+      # -----------------------------------------------------------------------
+      # 9. COPY DYLIB INTO APP BUNDLE & PATCH INSTALL NAME
+      # -----------------------------------------------------------------------
+      - name: Copy dylib into app bundle & normalize install name
+        run: |
+          set -euxo pipefail
+          cd work
+          APP_DIR="$APP_DIR"
+          cp -X ../dylib_src/hook.dylib "$APP_DIR/hook.dylib"
+          chmod 755 "$APP_DIR/hook.dylib"
+          xattr -cr "$APP_DIR/hook.dylib"
+
+          # Normalize install name to @executable_path/hook.dylib (so it lives next to the exe)
+          install_name_tool -id "@executable_path/hook.dylib" "$APP_DIR/hook.dylib"
+          otool -L "$APP_DIR/hook.dylib"
+
+      # -----------------------------------------------------------------------
+      # 10. INJECT LC_LOAD_DYLIB INTO MAIN EXECUTABLE
+      # -----------------------------------------------------------------------
+      - name: Inject LC_LOAD_DYLIB into main executable
+        run: |
+          set -euxo pipefail
+          cd work
+          APP_DIR="$APP_DIR"
+          BIN="$APP_DIR/$EXEC_NAME"
+          DYLIB_PATH="@executable_path/hook.dylib"
+
+          echo "Before injection:"
+          otool -l "$BIN" | grep -E "LC_LOAD" -A2 || true
+          otool -L "$BIN" | head
+
+          # Primary: insert_dylib (idempotent: --inplace @executable_path/hook.dylib "$BIN")
+          if ../tools/insert_dylib --inplace "$DYLIB_PATH" "$BIN" 2>&1 | tee /tmp/insert.log; then
+            echo "insert_dylib succeeded"
+          else
+            echo "insert_dylib failed, falling back to optool"
+            ../tools/optool install -c load -p "$DYLIB_PATH" -t "$BIN" || {
+              echo "Both injectors failed"; exit 1;
+            }
+          fi
+
+          # Idempotency: if the load command is already present, don't add it again.
+          if ! otool -l "$BIN" | grep -q "$DYLIB_PATH"; then
+            echo "WARNING: load command not found in otool output, double-checking with strings"
+            strings "$BIN" | grep -F "$DYLIB_PATH" || {
+              echo "ERROR: dylib path not present in binary"; exit 1;
+            }
+          fi
+
+          echo "After injection:"
+          otool -L "$BIN" | head -20
+          otool -l "$BIN" | grep -A2 LC_LOAD_DYLIB | head -10
+
+      # -----------------------------------------------------------------------
+      # 11. RE-SIGN EXECUTABLE + DYLIB (ldid ad-hoc, in the right order)
+      # -----------------------------------------------------------------------
+      - name: Re-sign binary & dylib (ad-hoc)
+        run: |
+          set -euxo pipefail
+          cd work
+          APP_DIR="$APP_DIR"
+          BIN="$APP_DIR/$EXEC_NAME"
+          DYLIB="$APP_DIR/hook.dylib"
+
+          # Sign nested dylib first, then the main executable, then any embedded frameworks.
+          find "$APP_DIR" -name "*.dylib" -o -name "*.framework" -o -name "*.appex" | while read -r p; do
+            echo "Signing nested: $p"
+            ldid -S "$p" 2>&1 | sed 's/^/  /' || true
+          done
+          ldid -S "$DYLIB"
+          ldid -S "$BIN"
+          echo "Signed. Verifying:"
+          codesign -dv "$APP_DIR" 2>&1 | head -5 || true
+          otool -l "$BIN" | grep -A2 LC_CODE_SIGNATURE | head -10
+
+      # -----------------------------------------------------------------------
+      # 12. RE-PACKAGE IPA
+      # -----------------------------------------------------------------------
+      - name: Re-package as IPA
+        run: |
+          set -euxo pipefail
+          cd work
+          APP_DIR="$APP_DIR"
+
+          # Sanitize: no .DS_Store / ._* files / no xattrs
+          xattr -cr "$APP_DIR"
+          find "$APP_DIR" -name ".DS_Store" -delete
+          find "$APP_DIR" -name "._*" -delete
+
+          OUT="../artifacts/${NEW_APP_NAME}-Injected.ipa"
+          mkdir -p ../artifacts
+          rm -f "$OUT"
+          export COPYFILE_DISABLE=1
+          (cd unpacked && zip -qr "$OUT" Payload)
+
+          echo "IPA written to $OUT"
+          ls -lh "$OUT"
+          unzip -l "$OUT" | head -30
+
+          # Self-test: ensure the dylib path is reachable from the executable in the IPA
+          mkdir -p /tmp/ipaverify && rm -rf /tmp/ipaverify/*
+          unzip -q "$OUT" -d /tmp/ipaverify
+          BIN_IN_IPA=$(ls /tmp/ipaverify/Payload/*.app/$(basename "$EXEC_NAME"))
+          echo "Verifying $BIN_IN_IPA"
+          otool -L "$BIN_IN_IPA" | head
+          otool -l "$BIN_IN_IPA" | grep -A2 LC_LOAD_DYLIB | head -10
+          if ! otool -L "$BIN_IN_IPA" | grep -q "hook.dylib"; then
+            echo "ERROR: hook.dylib not referenced in the packaged IPA's binary"
+            exit 1
+          fi
+          echo "Verification OK."
+
+      # -----------------------------------------------------------------------
+      # 13. UPLOAD ARTIFACT
+      # -----------------------------------------------------------------------
+      - name: Upload injected IPA
         uses: actions/upload-artifact@v4
         with:
-          name: YouTubeSearchTweak
-          path: YouTubeSearchTweak/*.deb
+          name: ${{ env.NEW_APP_NAME }}-Injected-IPA
+          path: artifacts/*.ipa
           retention-days: 90
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Dylib injection summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Target IPA: ${TARGET_IPA_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "- New bundle id: ${NEW_BUNDLE_ID}" >> $GITHUB_STEP_SUMMARY
+          echo "- New display name: ${NEW_APP_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dylib: hook.dylib (arm64, iphoneos, LC_LOAD_DYLIB injected)" >> $GITHUB_STEP_SUMMARY
+          echo "- Signing: ldid ad-hoc" >> $GITHUB_STEP_SUMMARY
+          echo "- Tools: insert_dylib → optool fallback, install_name_tool, ldid, otool" >> $GITHUB_STEP_SUMMARY
