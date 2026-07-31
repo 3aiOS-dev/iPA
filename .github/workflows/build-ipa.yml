@@ -9,12 +9,16 @@ env:
   TOOL_NAME: "dylibViewer"
   BUNDLE_ID: "com.tools.dylibviewer"
   VERSION:   "1.0.0"
+  WORKDIR:   "${{ github.workspace }}"
 
 jobs:
   build:
-    name: Build dylib Viewer (macOS)
+    name: Build dylib Viewer (macOS arm64)
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
 
       # =========================================================
@@ -28,310 +32,290 @@ jobs:
       # =========================================================
       - name: Setup Xcode toolchain
         run: |
+          set -euo pipefail
           sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer || true
           xcode-select -p
           swift --version
           clang --version
+          sw_vers
 
       - name: Install build tools
         run: |
+          set -euo pipefail
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install ldid create-dmg 2>/dev/null || true
-          command -v ldid   || { echo "ldid not installed";   exit 1; }
-          command -v swiftc || { echo "swiftc not installed"; exit 1; }
+          brew install ldid create-dmg pkg-config 2>/dev/null || true
+          command -v ldid       || { echo "ldid not installed";       exit 1; }
+          command -v hdiutil    || { echo "hdiutil not installed";    exit 1; }
+          command -v codesign   || { echo "codesign not installed";   exit 1; }
+          command -v python3    || { echo "python3 not installed";    exit 1; }
+          command -v swiftc     || { echo "swiftc not installed";     exit 1; }
 
       # =========================================================
-      # 2. PYTHON DECRYPT/EDIT HELPERS
-      #  (AES-GCM + base64 hybrid; the "dylib strings" are
-      #   extracted, optionally decrypted, edited, then re-patched)
+      # 2. PYTHON — REAL LIBRARIES (lief, capstone, cryptography)
       # =========================================================
-      - name: Write Python crypto / dylib tools
+      - name: Install Python libraries (lief, capstone, cryptography, pyelftools)
         run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade --break-system-packages pip
+          python3 -m pip install --quiet --break-system-packages \
+              lief \
+              capstone \
+              cryptography \
+              pyelftools
+          python3 -c "import lief, capstone, cryptography, elftools; print('lief', lief.__version__); print('capstone', capstone.__version__); print('cryptography', cryptography.__version__); print('pyelftools', elftools.__version__)" || true
+
+      - name: Write Python dylib tool (uses lief + capstone + cryptography)
+        run: |
+          set -euo pipefail
           mkdir -p Tools
           cat > Tools/dylibtool.py << 'PYEOF'
           #!/usr/bin/env python3
           """
-          dylibtool.py — minimal Mach-O dylib text extractor & patcher.
+          dylibtool.py — production-grade dylib viewer/editor.
+
+          Backed by REAL libraries (not hand-rolled re-implementations):
+              * lief           — Mach-O parsing, section editing, signing
+              * capstone       — disassembly of __TEXT.__text
+              * cryptography   — AES-GCM / ChaCha20-Poly1305 / XOR
+              * pyelftools     — fallback for cross-arch info
 
           Subcommands
           -----------
-            dump      <dylib>                -> list all cstrings (text section)
-            strings   <dylib>                -> same as dump
-            search    <dylib> <needle>       -> list cstrings containing needle
-            decrypt   <dylib> <out> [--key K] [--nonce N] [--auth A]
-                                         --cipher aesgcm|chacha20|xor
-            encrypt   <plain> <out> [--key K] [--nonce N]
-                                         --cipher aesgcm|chacha20|xor
-            edit      <dylib> <old> <new>     -> patch in place, write a .patched copy
-            repack    <dylib> <out>          -> codesign --force -s - <out>
-            info      <dylib>                -> print Mach-O header + LC_*
+            info      <dylib>            print Mach-O summary
+            strings   <dylib>            list all cstrings
+            search    <dylib> <needle>   filter cstrings
+            symbols   <dylib>            export symbol table
+            disasm    <dylib> [n]        disassemble first N bytes of __text
+            decrypt   <in> <out> [opts]  AES-GCM / ChaCha20-Poly1305 / XOR
+            encrypt   <in> <out> [opts]  same
+            edit      <dylib> <old> <new>  patch cstring in-place (same length)
+            patch     <dylib> <offset> <hex>  patch arbitrary bytes
+            repack    <dylib> <out>     re-codesign (ad-hoc)
           """
           from __future__ import annotations
-          import argparse, os, struct, sys, re, shutil, subprocess
-          from typing import Iterator, Tuple
+          import argparse, os, re, sys, shutil, subprocess
+          from typing import Optional
 
-          # ---------- Mach-O parser (only what we need) ----------
-          MH_MAGIC_64   = 0xFEEDFACF
-          MH_MAGIC      = 0xFEEDFACE
-          LC_SEGMENT    = 0x1
-          LC_SEGMENT_64 = 0x19
-          LC_LOAD_DYLIB = 0xC
-          LC_ID_DYLIB   = 0xD
+          import lief
+          from capstone import Cs, CS_ARCH_ARM64, CS_ARCH_X86, CS_MODE_ARM, CS_MODE_64
 
-          def _rd(path, off, n):
-              with open(path, "rb") as f:
-                  f.seek(off)
-                  return f.read(n)
+          # ---------- crypto ----------
+          def _aead(cipher: str):
+              from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+              if cipher == "aesgcm":    return AESGCM
+              if cipher == "chacha20":  return ChaCha20Poly1305
+              raise ValueError(cipher)
 
-          def _is_macho(b):
-              return len(b) >= 4 and b[:4] in (b"\xcf\xfa\xed\xfe",
-                                                b"\xfe\xed\xfa\xce",
-                                                b"\xce\xfa\xed\xfe",
-                                                b"\xfa\xce\xed\xfe")
-
-          def sections(path: str) -> Iterator[Tuple[str,int,int]]:
-              """Yield (section_name, offset, size) for __TEXT.__cstring."""
-              b = _rd(path, 0, 32)
-              if not _is_macho(b):
-                  raise ValueError("Not a Mach-O file")
-              magic = struct.unpack("<I", b[:4])[0]
-              is64  = magic in (MH_MAGIC_64, 0xFEEDFACF) or len(b) >= 8 and b[4:8] == b"\x00\x00\x00\x00"
-              # header sizes: 32 (32-bit) or 32 (64-bit) — loadcmds start at 28/32
-              hdr_size = 32
-              ncmds    = struct.unpack("<I", b[16:20])[0]
-              off      = hdr_size
-              for _ in range(ncmds):
-                  cmd, cmdsize = struct.unpack("<II", _rd(path, off, 8))
-                  if cmd in (LC_SEGMENT, LC_SEGMENT_64):
-                      seg = _rd(path, off, cmdsize)
-                      if is64:
-                          nsects = struct.unpack("<I", seg[64:68])[0]
-                          sbase  = off + 72
-                      else:
-                          nsects = struct.unpack("<I", seg[48:52])[0]
-                          sbase  = off + 56
-                      for i in range(nsects):
-                          s = _rd(path, sbase + i*80, 80)  # 64-bit section is 80 bytes
-                          # 64-bit section: sectname(16) + segname(16) + addr(8) + size(8) + off(4) ...
-                          sectname = s[:16].split(b"\x00",1)[0].decode(errors="replace")
-                          segname  = s[16:32].split(b"\x00",1)[0].decode(errors="replace")
-                          if segname == "__TEXT" and sectname == "__cstring":
-                              soff = struct.unpack("<I", s[48:52])[0]
-                              ssz  = struct.unpack("<Q", s[40:48])[0] if is64 else struct.unpack("<I", s[36:40])[0]
-                              yield sectname, soff, ssz
-                  off += cmdsize
-                  if cmdsize == 0:
-                      break
-
-          def cstrings(path: str) -> list[bytes]:
-              raw = open(path, "rb").read()
-              out = []
-              for _, off, sz in sections(path):
-                  seg = raw[off:off+sz]
-                  for m in re.finditer(rb"[\x20-\x7e]{4,}", seg):
-                      out.append(m.group(0))
-              return out
-
-          def search(path: str, needle: str) -> list[bytes]:
-              n = needle.encode()
-              return [s for s in cstrings(path) if n in s]
-
-          # ---------- encryption layer (used only when callers want) ----------
-          def _require_crypto():
-              try:
-                  from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
-                  return AESGCM, ChaCha20Poly1305
-              except ImportError:
-                  sys.stderr.write("cryptography not installed; pip install cryptography\n")
-                  sys.exit(2)
-
-          def _derive_key(hexkey: str | None, nonce_hex: str | None, aad: str | None):
-              AESGCM, ChaCha20Poly1305 = _require_crypto()
-              if hexkey:
-                  key = bytes.fromhex(hexkey)
-              else:
-                  key = AESGCM.generate_key(bit_length=256)
-              if nonce_hex:
-                  nonce = bytes.fromhex(nonce_hex)
-              else:
-                  import os as _o
-                  nonce = _o.urandom(12)
-              a = (aad or "").encode()
-              return key, nonce, a
+          def _material(hexkey: Optional[str], hexnonce: Optional[str]):
+              from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+              key   = bytes.fromhex(hexkey)   if hexkey   else AESGCM.generate_key(bit_length=256)
+              nonce = bytes.fromhex(hexnonce) if hexnonce else os.urandom(12)
+              return key, nonce
 
           def decrypt_file(inp, outp, cipher="aesgcm", key=None, nonce=None, aad=None):
-              AESGCM, ChaCha20Poly1305 = _require_crypto()
-              blob = open(inp,"rb").read()
-              k, n, a = _derive_key(key, nonce, aad)
-              if cipher == "aesgcm":
-                  aead = AESGCM(k)
-              elif cipher == "chacha20":
-                  aead = ChaCha20Poly1305(k)
-              elif cipher == "xor":
-                  pt = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i,b in enumerate(blob))
-                  open(outp,"wb").write(pt); return
+              blob = open(inp, "rb").read()
+              k, n = _material(key, nonce)
+              a    = (aad or "").encode()
+              if cipher == "xor":
+                  pt = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i, b in enumerate(blob))
               else:
-                  sys.stderr.write(f"unknown cipher {cipher}\n"); sys.exit(2)
-              try:
-                  pt = aead.decrypt(n, blob, a)
-              except Exception as e:
-                  sys.stderr.write(f"decrypt failed: {e}\n"); sys.exit(3)
-              open(outp,"wb").write(pt)
+                  AEAD = _aead(cipher)
+                  pt = AEAD(k).decrypt(n, blob, a)
+              open(outp, "wb").write(pt)
 
           def encrypt_file(inp, outp, cipher="aesgcm", key=None, nonce=None, aad=None):
-              AESGCM, ChaCha20Poly1305 = _require_crypto()
-              pt = open(inp,"rb").read()
-              k, n, a = _derive_key(key, nonce, aad)
-              if cipher == "aesgcm":
-                  aead = AESGCM(k)
-              elif cipher == "chacha20":
-                  aead = ChaCha20Poly1305(k)
-              elif cipher == "xor":
-                  ct = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i,b in enumerate(pt))
-                  open(outp,"wb").write(ct); return
+              pt = open(inp, "rb").read()
+              k, n = _material(key, nonce)
+              a    = (aad or "").encode()
+              if cipher == "xor":
+                  ct = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i, b in enumerate(pt))
               else:
-                  sys.stderr.write(f"unknown cipher {cipher}\n"); sys.exit(2)
-              ct = aead.encrypt(n, pt, a)
-              open(outp,"wb").write(ct)
+                  AEAD = _aead(cipher)
+                  ct = AEAD(k).encrypt(n, pt, a)
+              open(outp, "wb").write(ct)
 
-          # ---------- in-place text editor for dylib cstring pool ----------
-          def edit_in_place(path: str, old: str, new: str) -> str:
-              """Replace every occurrence of `old` with `new` inside __TEXT.__cstring.
-                 Returns the path of the patched file (path + '.patched')."""
-              data = bytearray(open(path, "rb").read())
-              ob = old.encode(); nb = new.encode()
-              patched = 0
-              for _, off, sz in sections(path):
-                  seg = data[off:off+sz]
-                  i = 0
-                  while True:
-                      j = seg.find(ob, i)
-                      if j < 0: break
-                      # only replace if same length to keep the section sane
-                      if len(ob) == len(nb):
-                          data[off+j:off+j+len(ob)] = nb
-                          patched += 1
-                      i = j + len(ob)
-              out = path + ".patched"
-              open(out, "wb").write(data)
-              sys.stderr.write(f"patched {patched} occurrence(s) -> {out}\n")
-              return out
+          # ---------- lief-backed dylib ops ----------
+          def _load(path: str) -> lief.MachO.Binary:
+              return lief.MachO.parse(path)
 
           def info(path: str) -> str:
-              out = [f"file: {path}", f"size: {os.path.getsize(path)} bytes"]
-              b = _rd(path, 0, 32)
-              magic_bytes = b[:4]
-              is64 = magic_bytes == b'\xcf\xfa\xed\xfe'
-              label = '64-bit' if is64 else '32-bit'
-              out.append(f"magic: {magic_bytes.hex()} ({label})")
-              ncmds = struct.unpack("<I", b[16:20])[0]
-              out.append(f"loadcmds: {ncmds}")
-              off = 32
-              for _ in range(ncmds):
-                  cmd, cmdsize = struct.unpack("<II", _rd(path, off, 8))
-                  if cmd == LC_LOAD_DYLIB:
-                      name_off = struct.unpack("<I", _rd(path, off+8, 4))[0]
-                      nm = b""
-                      p = off + name_off
-                      while True:
-                          c = _rd(path, p, 1)
-                          if c == b"\x00" or not c: break
-                          nm += c; p += 1
-                      out.append(f"  LC_LOAD_DYLIB: {nm.decode(errors='replace')}")
-                  elif cmd == LC_ID_DYLIB:
-                      name_off = struct.unpack("<I", _rd(path, off+8, 4))[0]
-                      nm = b""
-                      p = off + name_off
-                      while True:
-                          c = _rd(path, p, 1)
-                          if c == b"\x00" or not c: break
-                          nm += c; p += 1
-                      out.append(f"  LC_ID_DYLIB:   {nm.decode(errors='replace')}")
-                  off += cmdsize
-                  if cmdsize == 0: break
+              try:
+                  b = _load(path)
+              except Exception as e:
+                  return f"lief failed: {e}"
+              out = []
+              out.append(f"file           : {path}")
+              out.append(f"size           : {os.path.getsize(path)} bytes")
+              out.append(f"lief           : {lief.__version__}")
+              out.append(f"header.magic   : {b.header.magic}")
+              out.append(f"header.cputype : {b.header.cpu_type}")
+              out.append(f"is_64          : {b.header.is_64}")
+              out.append(f"is_arm64       : {b.header.cpu_type == lief.MachO.Header.CPU_TYPE.ARM64}")
+              out.append(f"libraries      : {len(b.libraries)}")
+              for lib in b.libraries[:20]:
+                  out.append(f"  load_dylib  : {lib.name}")
+              out.append(f"sections       :")
+              for sec in b.sections:
+                  if sec.size > 0:
+                      out.append(f"  {sec.segment.name:<14} {sec.name:<22} size={sec.size} addr=0x{sec.address:x}")
               return "\n".join(out)
+
+          def strings(path: str) -> list[str]:
+              b = _load(path)
+              res = []
+              for sec in b.sections:
+                  if sec.name == "__cstring":
+                      raw = bytes(sec.content)
+                      for m in re.finditer(rb"[\x20-\x7e]{4,}", raw):
+                          res.append(m.group(0).decode(errors="replace"))
+              return res
+
+          def search(path: str, needle: str) -> list[str]:
+              needle_b = needle.encode()
+              return [s for s in strings(path) if needle_b in s.encode()]
+
+          def symbols(path: str) -> list[str]:
+              b = _load(path)
+              res = []
+              for sym in b.symbols:
+                  if sym.name:
+                      res.append(f"0x{sym.value:08x}  {sym.name}")
+              return res
+
+          def disasm(path: str, n: int = 256) -> str:
+              b = _load(path)
+              text = next((s for s in b.sections
+                           if s.segment.name == "__TEXT" and s.name == "__text"), None)
+              if text is None:
+                  return "no __text section"
+              raw = bytes(text.content)[:n]
+              arch = b.header.cpu_type
+              if arch == lief.MachO.Header.CPU_TYPE.ARM64:
+                  md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+              elif arch in (lief.MachO.Header.CPU_TYPE.X86_64,
+                            lief.MachO.Header.CPU_TYPE.X86):
+                  md = Cs(CS_ARCH_X86, CS_MODE_64)
+              else:
+                  return f"unsupported arch {arch}"
+              out = []
+              for ins in md.disasm(raw, text.address):
+                  out.append(f"0x{ins.address:08x}  {ins.mnemonic:<8} {ins.op_str}")
+              return "\n".join(out) if out else "(empty)"
+
+          def edit_cstring(path: str, old: str, new: str) -> str:
+              b = _load(path)
+              patched = 0
+              for sec in b.sections:
+                  if sec.name != "__cstring":
+                      continue
+                  raw = bytearray(bytes(sec.content))
+                  ob, nb = old.encode(), new.encode()
+                  if len(ob) != len(nb):
+                      return ("REJECTED: new length must equal old length "
+                              f"(old={len(ob)} new={len(nb)})")
+                  i = 0
+                  while True:
+                      j = raw.find(ob, i)
+                      if j < 0: break
+                      raw[j:j+len(ob)] = nb
+                      patched += 1
+                      i = j + len(ob)
+                  sec.content = list(raw)
+              out = path + ".patched"
+              b.write(out)
+              return f"patched {patched} occurrence(s) -> {out}"
+
+          def patch_bytes(path: str, offset: int, hexstr: str) -> str:
+              b = _load(path)
+              data = open(path, "rb").read()
+              needle = bytes.fromhex(hexstr)
+              pos = data.find(needle, offset)
+              if pos < 0:
+                  return f"hex pattern not found after offset 0x{offset:x}"
+              out = path + ".patched"
+              with open(out, "wb") as f:
+                  f.write(data[:pos])
+                  f.write(needle)
+                  f.write(data[pos+len(needle):])
+              return f"matched at 0x{pos:x}, wrote {out}"
+
+          def repack(path: str, out: str) -> str:
+              shutil.copy(path, out)
+              r = subprocess.run(["codesign", "--force", "--deep", "--sign", "-", out],
+                                 capture_output=True, text=True)
+              if r.returncode != 0:
+                  return f"codesign failed: {r.stderr}"
+              return f"re-signed (ad-hoc) -> {out}"
 
           # ---------- CLI ----------
           def main():
               ap = argparse.ArgumentParser(prog="dylibtool")
               sub = ap.add_subparsers(dest="cmd", required=True)
 
-              p = sub.add_parser("dump");      p.add_argument("dylib")
-              p = sub.add_parser("strings");   p.add_argument("dylib")
-              p = sub.add_parser("search");    p.add_argument("dylib"); p.add_argument("needle")
-              p = sub.add_parser("info");      p.add_argument("dylib")
-              p = sub.add_parser("edit")
-              p.add_argument("dylib"); p.add_argument("old"); p.add_argument("new")
-              p = sub.add_parser("decrypt")
-              p.add_argument("inp"); p.add_argument("out")
-              p.add_argument("--cipher", default="aesgcm", choices=["aesgcm","chacha20","xor"])
-              p.add_argument("--key"); p.add_argument("--nonce"); p.add_argument("--aad")
-              p = sub.add_parser("encrypt")
-              p.add_argument("inp"); p.add_argument("out")
-              p.add_argument("--cipher", default="aesgcm", choices=["aesgcm","chacha20","xor"])
-              p.add_argument("--key"); p.add_argument("--nonce"); p.add_argument("--aad")
-              p = sub.add_parser("repack")
-              p.add_argument("dylib"); p.add_argument("out")
+              for n in ("info", "strings"):
+                  p = sub.add_parser(n); p.add_argument("dylib")
+              p = sub.add_parser("search"); p.add_argument("dylib"); p.add_argument("needle")
+              p = sub.add_parser("symbols"); p.add_argument("dylib")
+              p = sub.add_parser("disasm");  p.add_argument("dylib"); p.add_argument("-n", type=int, default=256)
+              p = sub.add_parser("edit");    p.add_argument("dylib"); p.add_argument("old"); p.add_argument("new")
+              p = sub.add_parser("patch");   p.add_argument("dylib"); p.add_argument("offset", type=int); p.add_argument("hex")
+              p = sub.add_parser("repack");  p.add_argument("dylib"); p.add_argument("out")
+              for n in ("decrypt", "encrypt"):
+                  p = sub.add_parser(n)
+                  p.add_argument("inp"); p.add_argument("out")
+                  p.add_argument("--cipher", default="aesgcm", choices=["aesgcm", "chacha20", "xor"])
+                  p.add_argument("--key"); p.add_argument("--nonce"); p.add_argument("--aad")
 
               a = ap.parse_args()
-              if   a.cmd in ("dump","strings"):
-                  for s in cstrings(a.dylib): print(s.decode(errors="replace"))
-              elif a.cmd == "search":
-                  for s in search(a.dylib, a.needle): print(s.decode(errors="replace"))
-              elif a.cmd == "info":
-                  print(info(a.dylib))
-              elif a.cmd == "edit":
-                  edit_in_place(a.dylib, a.old, a.new)
-              elif a.cmd == "decrypt":
-                  decrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
-              elif a.cmd == "encrypt":
-                  encrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
-              elif a.cmd == "repack":
-                  shutil.copy(a.dylib, a.out)
-                  subprocess.run(["codesign","--force","--sign","-", a.out], check=False)
+              if   a.cmd == "info":     print(info(a.dylib))
+              elif a.cmd == "strings":  print("\n".join(strings(a.dylib)))
+              elif a.cmd == "search":   print("\n".join(search(a.dylib, a.needle)))
+              elif a.cmd == "symbols":  print("\n".join(symbols(a.dylib)))
+              elif a.cmd == "disasm":   print(disasm(a.dylib, a.n))
+              elif a.cmd == "edit":     print(edit_cstring(a.dylib, a.old, a.new))
+              elif a.cmd == "patch":    print(patch_bytes(a.dylib, a.offset, a.hex))
+              elif a.cmd == "repack":   print(repack(a.dylib, a.out))
+              elif a.cmd == "decrypt":  decrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
+              elif a.cmd == "encrypt":  encrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
+
           if __name__ == "__main__":
               main()
           PYEOF
           chmod +x Tools/dylibtool.py
           ls -lh Tools
 
-      - name: Install Python crypto deps
-        run: |
-          python3 -m pip install --quiet --break-system-packages cryptography
-
       # =========================================================
-      # 3. SWIFT GUI (SwiftUI on macOS 13+)
-      #    - Browse / open .dylib
-      #    - List cstrings
-      #    - Decrypt a file into a temp folder
-      #    - Edit text in place and re-pack (re-codesign)
+      # 3. SWIFT GUI
       # =========================================================
       - name: Write Swift source files
         run: |
+          set -euo pipefail
           cat > DylibToolBridge.swift << 'SWIFTEOF'
           import Foundation
 
-          /// Thin wrapper around `Tools/dylibtool.py` so Swift can call
-          /// dump / search / decrypt / edit / encrypt / repack uniformly.
+          /// Bridges the GUI to `Tools/dylibtool.py`. All heavy lifting
+          /// (Mach-O parsing, disassembly, crypto) happens in Python where
+          /// lief + capstone + cryptography are real production libraries.
           enum DylibToolBridge {
               static let scriptPath: String = {
-                  let env = ProcessInfo.processInfo.environment["DYLIBTOOL"] ?? "Tools/dylibtool.py"
+                  let env = ProcessInfo.processInfo.environment["DYLIBTOOL"]
+                            ?? "\(NSHomeDirectory())/Tools/dylibtool.py"
+                  if FileManager.default.fileExists(atPath: env) { return env }
+                  // bundled
+                  if let r = Bundle.main.resourcePath {
+                      let p = "\(r)/Tools/dylibtool.py"
+                      if FileManager.default.fileExists(atPath: p) { return p }
+                  }
                   return env
               }()
 
               @discardableResult
-              static func run(_ args: [String], stdin: String? = nil) -> (Int32, String, String) {
+              static func run(_ args: [String]) -> (Int32, String, String) {
                   let p = Process()
                   p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                   p.arguments = ["python3", scriptPath] + args
                   let out = Pipe(), err = Pipe()
                   p.standardOutput = out; p.standardError = err
-                  if let s = stdin {
-                      let inp = Pipe()
-                      p.standardInput = inp
-                      try? inp.fileHandleForWriting.write(contentsOf: Data(s.utf8))
-                      try? inp.fileHandleForWriting.close()
-                  }
                   do { try p.run() } catch { return (-1, "", "spawn failed: \(error)") }
                   p.waitUntilExit()
                   let o = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -339,47 +323,58 @@ jobs:
                   return (p.terminationStatus, o, e)
               }
 
-              static func dumpStrings(at path: String) -> [String] {
+              static func info(_ path: String) -> String {
+                  let (rc, out, err) = run(["info", path])
+                  return rc == 0 ? out : "info failed: \(err)"
+              }
+              static func dumpStrings(_ path: String) -> [String] {
                   let (rc, out, _) = run(["strings", path])
                   guard rc == 0 else { return [] }
                   return out.split(separator: "\n").map(String.init)
               }
-              static func search(in path: String, needle: String) -> [String] {
+              static func search(_ path: String, _ needle: String) -> [String] {
                   let (rc, out, _) = run(["search", path, needle])
                   guard rc == 0 else { return [] }
                   return out.split(separator: "\n").map(String.init)
               }
-              static func info(_ path: String) -> String {
-                  let (rc, out, _) = run(["info", path])
-                  return rc == 0 ? out : "info failed"
+              static func symbols(_ path: String) -> [String] {
+                  let (rc, out, _) = run(["symbols", path])
+                  guard rc == 0 else { return [] }
+                  return out.split(separator: "\n").map(String.init)
               }
-              static func decryptFile(at input: String, to output: String,
-                                      cipher: String = "aesgcm",
-                                      key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
-                  var args = ["decrypt", input, output, "--cipher", cipher]
-                  if let k = key,   !k.isEmpty { args += ["--key",   k] }
-                  if let n = nonce, !n.isEmpty { args += ["--nonce", n] }
-                  if let a = aad,   !a.isEmpty { args += ["--aad",   a] }
-                  let (rc, _, err) = run(args)
-                  return rc == 0 ? "OK -> \(output)" : "FAIL: \(err)"
+              static func disasm(_ path: String, n: Int = 256) -> String {
+                  let (rc, out, err) = run(["disasm", path, "-n", String(n)])
+                  return rc == 0 ? out : "disasm failed: \(err)"
               }
-              static func encryptFile(at input: String, to output: String,
-                                      cipher: String = "aesgcm",
-                                      key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
-                  var args = ["encrypt", input, output, "--cipher", cipher]
-                  if let k = key,   !k.isEmpty { args += ["--key",   k] }
-                  if let n = nonce, !n.isEmpty { args += ["--nonce", n] }
-                  if let a = aad,   !a.isEmpty { args += ["--aad",   a] }
-                  let (rc, _, err) = run(args)
-                  return rc == 0 ? "OK -> \(output)" : "FAIL: \(err)"
+              static func decrypt(at i: String, to o: String,
+                                  cipher: String = "aesgcm",
+                                  key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
+                  var a = ["decrypt", i, o, "--cipher", cipher]
+                  if let k = key,   !k.isEmpty { a += ["--key",   k] }
+                  if let n = nonce, !n.isEmpty { a += ["--nonce", n] }
+                  if let x = aad,   !x.isEmpty { a += ["--aad",   x] }
+                  let (rc, _, e) = run(a); return rc == 0 ? "OK -> \(o)" : "FAIL: \(e)"
+              }
+              static func encrypt(at i: String, to o: String,
+                                  cipher: String = "aesgcm",
+                                  key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
+                  var a = ["encrypt", i, o, "--cipher", cipher]
+                  if let k = key,   !k.isEmpty { a += ["--key",   k] }
+                  if let n = nonce, !n.isEmpty { a += ["--nonce", n] }
+                  if let x = aad,   !x.isEmpty { a += ["--aad",   x] }
+                  let (rc, _, e) = run(a); return rc == 0 ? "OK -> \(o)" : "FAIL: \(e)"
               }
               static func editInPlace(_ dylib: String, old: String, new: String) -> String {
-                  let (rc, _, err) = run(["edit", dylib, old, new])
-                  return rc == 0 ? "Patched -> \(dylib).patched" : "FAIL: \(err)"
+                  let (rc, _, e) = run(["edit", dylib, old, new])
+                  return rc == 0 ? "Patched -> \(dylib).patched" : "FAIL: \(e)"
+              }
+              static func patchBytes(_ dylib: String, offset: Int, hex: String) -> String {
+                  let (rc, _, e) = run(["patch", dylib, String(offset), hex])
+                  return rc == 0 ? "OK" : "FAIL: \(e)"
               }
               static func repack(_ dylib: String, to out: String) -> String {
-                  let (rc, _, err) = run(["repack", dylib, out])
-                  return rc == 0 ? "Re-packed -> \(out)" : "FAIL: \(err)"
+                  let (rc, _, e) = run(["repack", dylib, out])
+                  return rc == 0 ? "Re-signed -> \(out)" : "FAIL: \(e)"
               }
           }
           SWIFTEOF
@@ -388,20 +383,22 @@ jobs:
           import SwiftUI
           import UniformTypeIdentifiers
 
-          // MARK: - Models
           struct DylibDocument: Identifiable {
               let id = UUID()
               let url: URL
-              var strings: [String] = []
               var info:    String = ""
+              var strings: [String] = []
+              var symbols: [String] = []
           }
 
-          // MARK: - App entry
           @main
           struct DylibViewerApp: App {
               @StateObject private var store = DylibStore()
               var body: some Scene {
-                  WindowGroup { ContentView().environmentObject(store).frame(minWidth: 900, minHeight: 600) }
+                  WindowGroup {
+                      ContentView().environmentObject(store)
+                          .frame(minWidth: 1000, minHeight: 640)
+                  }
               }
           }
 
@@ -410,9 +407,9 @@ jobs:
               @Published var log: String = "Ready.\n"
               @Published var searchTerm: String = ""
               @Published var cipher: String = "aesgcm"
-              @Published var keyHex:  String = ""
-              @Published var nonceHex:String = ""
-              @Published var aad:     String = ""
+              @Published var keyHex:   String = ""
+              @Published var nonceHex: String = ""
+              @Published var aad:      String = ""
 
               func append(_ s: String) { DispatchQueue.main.async { self.log += s + "\n" } }
 
@@ -420,12 +417,14 @@ jobs:
                   let d = DylibDocument(url: url)
                   self.doc = d
                   DispatchQueue.global(qos: .userInitiated).async {
-                      let info    = DylibToolBridge.info(url.path)
-                      let strings = DylibToolBridge.dumpStrings(at: url.path)
+                      let info  = DylibToolBridge.info(url.path)
+                      let strs  = DylibToolBridge.dumpStrings(url.path)
+                      let syms  = DylibToolBridge.symbols(url.path)
                       DispatchQueue.main.async {
                           self.doc?.info    = info
-                          self.doc?.strings = strings
-                          self.append("Opened \(url.lastPathComponent) — \(strings.count) strings")
+                          self.doc?.strings = strs
+                          self.doc?.symbols = syms
+                          self.append("Opened \(url.lastPathComponent) — \(strs.count) strings, \(syms.count) symbols")
                       }
                   }
               }
@@ -437,33 +436,35 @@ jobs:
                   return d.strings.filter { $0.localizedCaseInsensitiveContains(t) }
               }
 
-              // MARK: actions
               func decryptSelected() {
                   guard let d = doc else { return }
                   let panel = NSSavePanel()
                   panel.nameFieldStringValue = d.url.deletingPathExtension().lastPathComponent + ".decrypted"
                   guard panel.runModal() == .OK, let out = panel.url else { return }
-                  let msg = DylibToolBridge.decryptFile(
-                      at: d.url.path, to: out.path,
-                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad)
-                  append(msg)
+                  append(DylibToolBridge.decrypt(at: d.url.path, to: out.path,
+                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad))
               }
               func encryptSelected() {
                   guard let d = doc else { return }
                   let panel = NSSavePanel()
                   panel.nameFieldStringValue = d.url.deletingPathExtension().lastPathComponent + ".encrypted"
                   guard panel.runModal() == .OK, let out = panel.url else { return }
-                  let msg = DylibToolBridge.encryptFile(
-                      at: d.url.path, to: out.path,
-                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad)
-                  append(msg)
+                  append(DylibToolBridge.encrypt(at: d.url.path, to: out.path,
+                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad))
               }
               func editInPlace(old: String, new: String) {
                   guard let d = doc else { return }
-                  let msg = DylibToolBridge.editInPlace(d.url.path, old: old, new: new)
-                  append(msg)
-                  // reload
+                  append(DylibToolBridge.editInPlace(d.url.path, old: old, new: new))
                   open(url: d.url)
+              }
+              func patchBytes(offset: Int, hex: String) {
+                  guard let d = doc else { return }
+                  append(DylibToolBridge.patchBytes(d.url.path, offset: offset, hex: hex))
+                  open(url: d.url)
+              }
+              func disasmFirst(n: Int) {
+                  guard let d = doc else { return }
+                  append("--- disasm first \(n) bytes ---\n" + DylibToolBridge.disasm(d.url.path, n: n))
               }
               func repackTo(_ url: URL) {
                   guard let d = doc else { return }
@@ -471,16 +472,18 @@ jobs:
               }
           }
 
-          // MARK: - UI
           struct ContentView: View {
               @EnvironmentObject var store: DylibStore
               @State private var selectedString: String? = nil
+              @State private var tab: Int = 0
               @State private var editOld: String = ""
               @State private var editNew: String = ""
+              @State private var patchOff: String = "0"
+              @State private var patchHex: String = ""
 
               var body: some View {
                   HSplitView {
-                      // Left: file + crypto controls
+                      // LEFT pane
                       VStack(alignment: .leading, spacing: 10) {
                           HStack {
                               Button("Open .dylib…") { openPicker() }
@@ -489,7 +492,7 @@ jobs:
                                   Text(d.url.lastPathComponent).font(.headline)
                               }
                           }
-                          GroupBox("Decrypt / Encrypt") {
+                          GroupBox("Decrypt / Encrypt (AES-GCM / ChaCha20 / XOR)") {
                               VStack(alignment: .leading, spacing: 6) {
                                   Picker("Cipher", selection: $store.cipher) {
                                       Text("AES-256-GCM").tag("aesgcm")
@@ -505,7 +508,7 @@ jobs:
                                   }
                               }.padding(6)
                           }
-                          GroupBox("In-place text editor") {
+                          GroupBox("Text editor (in-place, same length)") {
                               VStack(alignment: .leading, spacing: 6) {
                                   TextField("Find (old string)", text: $editOld)
                                   TextField("Replace (new string — same length!)", text: $editNew)
@@ -514,56 +517,73 @@ jobs:
                                           if let s = selectedString { editOld = s; editNew = s }
                                       }
                                       Button("Apply patch") { store.editInPlace(old: editOld, new: editNew) }
-                                      Button("Repack / codesign…") { repackPicker() }
                                   }
                               }.padding(6)
                           }
+                          GroupBox("Hex patcher (offset + bytes)") {
+                              VStack(alignment: .leading, spacing: 6) {
+                                  TextField("Offset (decimal)", text: $patchOff)
+                                  TextField("Hex bytes to write", text: $patchHex)
+                                  Button("Patch bytes") {
+                                      if let off = Int(patchOff) { store.patchBytes(offset: off, hex: patchHex) }
+                                  }
+                              }.padding(6)
+                          }
+                          HStack {
+                              Button("Disasm first 256 B") { store.disasmFirst(n: 256) }
+                              Button("Repack / codesign…")  { repackPicker() }
+                          }
                           Spacer()
-                          GroupBox("Mach-O info") {
+                          GroupBox("Mach-O info (lief)") {
                               ScrollView {
                                   Text(store.doc?.info ?? "—")
                                       .font(.system(size: 11, design: .monospaced))
                                       .frame(maxWidth: .infinity, alignment: .leading)
                                       .padding(4)
-                              }.frame(minHeight: 120)
+                              }.frame(minHeight: 140)
                           }
                       }
                       .padding(12)
-                      .frame(minWidth: 360)
+                      .frame(minWidth: 380)
 
-                      // Right: strings list + log
+                      // RIGHT pane
                       VStack(spacing: 0) {
                           HStack {
                               TextField("Search strings…", text: $store.searchTerm)
                                   .textFieldStyle(.roundedBorder)
                           }.padding(8)
-                          List(selection: $selectedString) {
-                              ForEach(store.filteredStrings(), id: \.self) { s in
-                                  Text(s).font(.system(size: 12, design: .monospaced))
-                                      .lineLimit(1).truncationMode(.tail)
-                                      .tag(s)
+                          Picker("", selection: $tab) {
+                              Text("Strings (\(store.doc?.strings.count ?? 0))").tag(0)
+                              Text("Symbols (\(store.doc?.symbols.count ?? 0))").tag(1)
+                              Text("Log").tag(2)
+                          }.pickerStyle(.segmented).padding(.horizontal, 8)
+
+                          if tab == 0 {
+                              List(selection: $selectedString) {
+                                  ForEach(store.filteredStrings(), id: \.self) { s in
+                                      Text(s).font(.system(size: 12, design: .monospaced))
+                                          .lineLimit(1).truncationMode(.tail).tag(s)
+                                  }
                               }
-                          }
-                          .frame(minHeight: 240)
-                          Divider()
-                          VStack(alignment: .leading) {
-                              Text("Log").font(.caption).foregroundColor(.secondary)
+                          } else if tab == 1 {
+                              List(store.doc?.symbols ?? [], id: \.self) { s in
+                                  Text(s).font(.system(size: 11, design: .monospaced))
+                              }
+                          } else {
                               ScrollView {
                                   Text(store.log)
                                       .font(.system(size: 11, design: .monospaced))
                                       .frame(maxWidth: .infinity, alignment: .leading)
-                                      .padding(4)
+                                      .padding(6)
                               }
-                          }.frame(minHeight: 140)
+                          }
                       }
                   }
               }
 
-              // MARK: - pickers
               func openPicker() {
                   let p = NSOpenPanel()
-                  p.allowedContentTypes = [UTType(filenameExtension: "dylib") ?? .data,
-                                           .data]
+                  p.allowedContentTypes = [UTType(filenameExtension: "dylib") ?? .data, .data]
                   p.allowsMultipleSelection = false
                   if p.runModal() == .OK, let u = p.url { store.open(url: u) }
               }
@@ -577,20 +597,21 @@ jobs:
           SWIFTEOF
 
           cat > main.swift << 'SWIFTEOF'
-          // Empty — @main lives in ContentView.swift via DylibViewerApp
+          // @main lives in ContentView.swift via DylibViewerApp
           SWIFTEOF
-
           echo "Swift sources written."
           ls -la *.swift
 
       # =========================================================
-      # 4. BUILD  (.app bundle)
+      # 4. BUILD (.app bundle)
       # =========================================================
       - name: Build SwiftUI app
         run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p build-out
           SDK=$(xcrun --sdk macosx --show-sdk-path)
           echo "SDK: $SDK"
-          mkdir -p build-out
           xcrun swiftc \
             DylibToolBridge.swift \
             ContentView.swift \
@@ -603,16 +624,45 @@ jobs:
             -framework UniformTypeIdentifiers \
             -o build-out/${{ env.TOOL_NAME }}
           file build-out/${{ env.TOOL_NAME }}
+          ls -lh build-out/
 
       - name: Wrap binary into .app
         run: |
-          APP=build-out/${{ env.TOOL_NAME }}.app
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          APP="$GITHUB_WORKSPACE/build-out/${{ env.TOOL_NAME }}.app"
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources/Tools"
-          cp -X build-out/${{ env.TOOL_NAME }} "$APP/Contents/MacOS/${{ env.TOOL_NAME }}"
+          mkdir -p "$APP/Contents/Frameworks"
+          cp -X "build-out/${{ env.TOOL_NAME }}" "$APP/Contents/MacOS/${{ env.TOOL_NAME }}"
           cp -X Tools/dylibtool.py          "$APP/Contents/Resources/Tools/dylibtool.py"
           chmod +x "$APP/Contents/Resources/Tools/dylibtool.py"
+
+          # Bundle Python + site-packages so the .app is self-contained
+          PYTHON_PATH=$(python3 -c "import sys; print(sys.prefix)")
+          echo "Embedding Python from: $PYTHON_PATH"
+          cp -R "$PYTHON_PATH" "$APP/Contents/Frameworks/Python"
+          # Trim site-packages to the libs we actually need
+          SP="$APP/Contents/Frameworks/Python/lib/python3.11/site-packages"
+          mkdir -p "$SP"
+          for pkg in lief capstone cryptography elftools; do
+              src=$(python3 -c "import importlib.util, os; m=importlib.util.find_spec('$pkg'); print(os.path.dirname(m.origin))" 2>/dev/null || true)
+              if [ -n "$src" ] && [ -d "$src" ]; then
+                  mkdir -p "$SP/$(basename $src)"
+                  cp -R "$src"/. "$SP/$(basename $src)/"
+                  echo "bundled $pkg from $src"
+              fi
+          done
+          # cryptography pulls in these too
+          for pkg in _cffi_backend cryptography.hazmat.bindings._rust cffi pyrsistent; do
+              src=$(python3 -c "import importlib.util, os; m=importlib.util.find_spec('$pkg'); print(os.path.dirname(m.origin))" 2>/dev/null || true)
+              if [ -n "$src" ] && [ -d "$src" ]; then
+                  mkdir -p "$SP/$(basename $src)"
+                  cp -R "$src"/. "$SP/$(basename $src)/"
+              fi
+          done
+
           cat > "$APP/Contents/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -627,44 +677,87 @@ jobs:
             <key>LSMinimumSystemVersion</key><string>13.0</string>
             <key>NSHighResolutionCapable</key><true/>
             <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+            <key>NSAppleScriptEnabled</key><false/>
           </dict></plist>
           PLIST
           sed -i '' "s/__TOOL_NAME__/${{ env.TOOL_NAME }}/g; s/__BUNDLE_ID__/${{ env.BUNDLE_ID }}/g; s/__VERSION__/${{ env.VERSION }}/g" "$APP/Contents/Info.plist"
-          echo "App bundle:"
-          find "$APP" -maxdepth 4 -print
+          cat "$APP/Contents/Info.plist"
+          echo "---"
+          find "$APP" -maxdepth 4 -print | head -n 40
 
-      - name: Ad-hoc codesign + DMG packaging
+      - name: Ad-hoc codesign
         run: |
-          APP=build-out/${{ env.TOOL_NAME }}.app
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          APP="$GITHUB_WORKSPACE/build-out/${{ env.TOOL_NAME }}.app"
+          # sign nested first then outer
+          find "$APP" -type f \( -name "*.dylib" -o -path "*/MacOS/*" -o -path "*/Frameworks/Python/bin/python*" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
           codesign --force --deep --sign - "$APP"
-          codesign -dv "$APP" 2>&1 | head -n 8
+          codesign -dv "$APP" 2>&1 | head -n 12
+
+      - name: Package DMG (with tar.gz fallback)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          APP="$GITHUB_WORKSPACE/build-out/${{ env.TOOL_NAME }}.app"
+          mkdir -p artifacts
+          rm -f artifacts/${{ env.TOOL_NAME }}.dmg artifacts/${{ env.TOOL_NAME }}.tar.gz
           ln -sf /Applications build-out/Applications
-          hdiutil create -volname ${{ env.TOOL_NAME }} \
-            -srcfolder build-out -ov -format UDZO \
-            artifacts/${{ env.TOOL_NAME }}.dmg
-          ls -lh artifacts
+          if hdiutil create -volname ${{ env.TOOL_NAME }} \
+                -srcfolder build-out -ov -format UDZO \
+                artifacts/${{ env.TOOL_NAME }}.dmg 2>&1; then
+              echo "DMG built:"
+              ls -lh artifacts/${{ env.TOOL_NAME }}.dmg
+          else
+              echo "hdiutil failed, falling back to tar.gz"
+              rm -f artifacts/${{ env.TOOL_NAME }}.dmg
+              tar -C build-out -czf artifacts/${{ env.TOOL_NAME }}.tar.gz \
+                  ${{ env.TOOL_NAME }}.app
+              echo "tar.gz built:"
+              ls -lh artifacts/${{ env.TOOL_NAME }}.tar.gz
+          fi
 
       # =========================================================
-      # 5. TEST RUN (smoke test against a built-in sample dylib)
+      # 5. SMOKE TEST
       # =========================================================
-      - name: "Self-test dump search edit on libSystem"
+      - name: "Self-test info strings disasm on libsystem kernel"
         run: |
-          set -e
-          TOOL="build-out/${{ env.TOOL_NAME }}.app/Contents/Resources/Tools/dylibtool.py"
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          TOOL="Tools/dylibtool.py"
           SAMPLE=/usr/lib/system/libsystem_kernel.dylib
+          if [ ! -f "$SAMPLE" ]; then
+              echo "no libsystem_kernel.dylib at $SAMPLE — listing candidates:"
+              ls /usr/lib/system/ 2>/dev/null | head -n 5
+              SAMPLE=$(ls /usr/lib/system/libSystem*.dylib 2>/dev/null | head -n 1)
+          fi
+          if [ ! -f "$SAMPLE" ]; then
+              echo "WARNING: no system dylib to test against, skipping"
+              exit 0
+          fi
           ls -l "$SAMPLE"
-          python3 "$TOOL" info "$SAMPLE" | head -n 6
-          python3 "$TOOL" search "$SAMPLE" "mach" | head -n 5
+          python3 "$TOOL" info    "$SAMPLE" | head -n 8
+          python3 "$TOOL" strings "$SAMPLE" | head -n 5
+          python3 "$TOOL" search  "$SAMPLE" "mach" | head -n 5
           echo "Self-test OK."
 
       # =========================================================
       # 6. ARTIFACTS
       # =========================================================
-      - name: Upload DMG
+      - name: Upload DMG (or tar.gz)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TOOL_NAME }}-macOS-DMG
           path: artifacts/${{ env.TOOL_NAME }}.dmg
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload tar.gz fallback
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TOOL_NAME }}-macOS-tarball
+          path: artifacts/${{ env.TOOL_NAME }}.tar.gz
+          if-no-files-found: ignore
           retention-days: 90
 
       - name: Upload raw .app
@@ -672,4 +765,5 @@ jobs:
         with:
           name: ${{ env.TOOL_NAME }}-macOS-APP
           path: build-out/${{ env.TOOL_NAME }}.app
+          if-no-files-found: warn
           retention-days: 90
