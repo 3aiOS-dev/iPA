@@ -145,39 +145,79 @@ jobs:
               open(outp, "wb").write(ct)
 
           # ---------- lief-backed dylib ops ----------
-          def _load(path: str) -> lief.MachO.Binary:
-              return lief.MachO.parse(path)
+          def _load(path: str):
+              """
+              Parse a Mach-O file. Returns the first Binary from a FatBinary,
+              or the Binary itself for a thin one. Lief's `parse()` returns
+              a FatBinary for fat files (multi-arch), and a Binary for thin.
+              """
+              obj = lief.MachO.parse(path)
+              # FatBinary exposes `.at(idx)` / iterable of Binary
+              if isinstance(obj, lief.MachO.FatBinary):
+                  # Prefer arm64 if present, else x86_64, else first
+                  for b in obj:
+                      if b.header.cpu_type == lief.MachO.Header.CPU_TYPE.ARM64:
+                          return b
+                  for b in obj:
+                      if b.header.cpu_type == lief.MachO.Header.CPU_TYPE.X86_64:
+                          return b
+                  return obj.at(0)
+              return obj
+
+          def _iter_binaries(path: str):
+              """Yield every Binary inside a fat file, or just the single Binary."""
+              obj = lief.MachO.parse(path)
+              if isinstance(obj, lief.MachO.FatBinary):
+                  for b in obj:
+                      yield b
+              else:
+                  yield obj
 
           def info(path: str) -> str:
               try:
-                  b = _load(path)
+                  obj = lief.MachO.parse(path)
               except Exception as e:
                   return f"lief failed: {e}"
               out = []
               out.append(f"file           : {path}")
               out.append(f"size           : {os.path.getsize(path)} bytes")
               out.append(f"lief           : {lief.__version__}")
-              out.append(f"header.magic   : {b.header.magic}")
-              out.append(f"header.cputype : {b.header.cpu_type}")
-              out.append(f"is_64          : {b.header.is_64}")
-              out.append(f"is_arm64       : {b.header.cpu_type == lief.MachO.Header.CPU_TYPE.ARM64}")
-              out.append(f"libraries      : {len(b.libraries)}")
-              for lib in b.libraries[:20]:
-                  out.append(f"  load_dylib  : {lib.name}")
-              out.append(f"sections       :")
-              for sec in b.sections:
-                  if sec.size > 0:
-                      out.append(f"  {sec.segment.name:<14} {sec.name:<22} size={sec.size} addr=0x{sec.address:x}")
+              if isinstance(obj, lief.MachO.FatBinary):
+                  out.append(f"format         : FAT ({len(obj)} slices)")
+                  for i, b in enumerate(obj):
+                      out.append(f"--- slice {i} ---")
+                      out.append(f"  cputype      : {b.header.cpu_type}")
+                      out.append(f"  is_64        : {b.header.is_64}")
+                      out.append(f"  libraries    : {len(b.libraries)}")
+                      for lib in b.libraries[:20]:
+                          out.append(f"    load_dylib: {lib.name}")
+                      out.append(f"  sections     :")
+                      for sec in b.sections:
+                          if sec.size > 0:
+                              out.append(f"    {sec.segment.name:<14} {sec.name:<22} size={sec.size} addr=0x{sec.address:x}")
+              else:
+                  b = obj
+                  out.append(f"format         : thin")
+                  out.append(f"cputype        : {b.header.cpu_type}")
+                  out.append(f"is_64          : {b.header.is_64}")
+                  out.append(f"is_arm64       : {b.header.cpu_type == lief.MachO.Header.CPU_TYPE.ARM64}")
+                  out.append(f"libraries      : {len(b.libraries)}")
+                  for lib in b.libraries[:20]:
+                      out.append(f"  load_dylib  : {lib.name}")
+                  out.append(f"sections       :")
+                  for sec in b.sections:
+                      if sec.size > 0:
+                          out.append(f"  {sec.segment.name:<14} {sec.name:<22} size={sec.size} addr=0x{sec.address:x}")
               return "\n".join(out)
 
           def strings(path: str) -> list[str]:
-              b = _load(path)
               res = []
-              for sec in b.sections:
-                  if sec.name == "__cstring":
-                      raw = bytes(sec.content)
-                      for m in re.finditer(rb"[\x20-\x7e]{4,}", raw):
-                          res.append(m.group(0).decode(errors="replace"))
+              for b in _iter_binaries(path):
+                  for sec in b.sections:
+                      if sec.name == "__cstring":
+                          raw = bytes(sec.content)
+                          for m in re.finditer(rb"[\x20-\x7e]{4,}", raw):
+                              res.append(m.group(0).decode(errors="replace"))
               return res
 
           def search(path: str, needle: str) -> list[str]:
@@ -185,35 +225,51 @@ jobs:
               return [s for s in strings(path) if needle_b in s.encode()]
 
           def symbols(path: str) -> list[str]:
-              b = _load(path)
               res = []
-              for sym in b.symbols:
-                  if sym.name:
-                      res.append(f"0x{sym.value:08x}  {sym.name}")
+              for b in _iter_binaries(path):
+                  for sym in b.symbols:
+                      if sym.name:
+                          res.append(f"0x{sym.value:08x}  {sym.name}")
               return res
 
           def disasm(path: str, n: int = 256) -> str:
-              b = _load(path)
-              text = next((s for s in b.sections
-                           if s.segment.name == "__TEXT" and s.name == "__text"), None)
-              if text is None:
-                  return "no __text section"
-              raw = bytes(text.content)[:n]
-              arch = b.header.cpu_type
-              if arch == lief.MachO.Header.CPU_TYPE.ARM64:
-                  md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
-              elif arch in (lief.MachO.Header.CPU_TYPE.X86_64,
-                            lief.MachO.Header.CPU_TYPE.X86):
-                  md = Cs(CS_ARCH_X86, CS_MODE_64)
-              else:
-                  return f"unsupported arch {arch}"
               out = []
-              for ins in md.disasm(raw, text.address):
-                  out.append(f"0x{ins.address:08x}  {ins.mnemonic:<8} {ins.op_str}")
+              for idx, b in enumerate(_iter_binaries(path)):
+                  text = next((s for s in b.sections
+                               if s.segment.name == "__TEXT" and s.name == "__text"), None)
+                  if text is None:
+                      out.append(f"--- slice {idx}: no __text section ---")
+                      continue
+                  raw = bytes(text.content)[:n]
+                  arch = b.header.cpu_type
+                  if arch == lief.MachO.Header.CPU_TYPE.ARM64:
+                      md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+                  elif arch in (lief.MachO.Header.CPU_TYPE.X86_64,
+                                lief.MachO.Header.CPU_TYPE.X86):
+                      md = Cs(CS_ARCH_X86, CS_MODE_64)
+                  else:
+                      out.append(f"--- slice {idx}: unsupported arch {arch} ---")
+                      continue
+                  out.append(f"--- slice {idx} disasm ({arch}) ---")
+                  for ins in md.disasm(raw, text.address):
+                      out.append(f"0x{ins.address:08x}  {ins.mnemonic:<8} {ins.op_str}")
               return "\n".join(out) if out else "(empty)"
 
           def edit_cstring(path: str, old: str, new: str) -> str:
-              b = _load(path)
+              # lief.Binary.write() can only emit a single (thin) binary. If
+              # the source is fat, edit the first matching arm64 / x86_64
+              # slice in place; otherwise the caller should supply a thin dylib.
+              obj = lief.MachO.parse(path)
+              if isinstance(obj, lief.MachO.FatBinary):
+                  # Edit the host slice (arm64 preferred) and write it thin.
+                  b = None
+                  for cand in obj:
+                      if cand.header.cpu_type == lief.MachO.Header.CPU_TYPE.ARM64:
+                          b = cand; break
+                  if b is None:
+                      b = obj.at(0)
+              else:
+                  b = obj
               patched = 0
               for sec in b.sections:
                   if sec.name != "__cstring":
