@@ -1,4 +1,4 @@
-name: Quick Launcher (SwiftUI) - Deep Link Edition
+name: dylib Viewer & Editor - Decrypt, Edit, Repack
 
 "on":
   push:
@@ -6,398 +6,670 @@ name: Quick Launcher (SwiftUI) - Deep Link Edition
   workflow_dispatch:
 
 env:
-  NEW_BUNDLE_ID: "com.yourname.quicklauncher"
-  NEW_APP_NAME:  "Quick Launcher"
+  TOOL_NAME: "dylibViewer"
+  BUNDLE_ID: "com.tools.dylibviewer"
+  VERSION:   "1.0.0"
 
 jobs:
   build:
+    name: Build dylib Viewer (macOS)
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
 
+      # =========================================================
+      # 0. CHECKOUT
+      # =========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Xcode
+      # =========================================================
+      # 1. TOOLCHAIN
+      # =========================================================
+      - name: Setup Xcode toolchain
         run: |
-          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer || true
           xcode-select -p
           swift --version
+          clang --version
 
-      - name: Install required tools
+      - name: Install build tools
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install ldid zip 2>/dev/null || true
-          command -v ldid || { echo "ldid not installed"; exit 1; }
-          command -v zip  || { echo "zip not installed"; exit 1; }
+          brew install ldid create-dmg 2>/dev/null || true
+          command -v ldid   || { echo "ldid not installed";   exit 1; }
+          command -v swiftc || { echo "swiftc not installed"; exit 1; }
 
       # =========================================================
-      # ICONS - generated locally (no third-party logos/assets used)
+      # 2. PYTHON DECRYPT/EDIT HELPERS
+      #  (AES-GCM + base64 hybrid; the "dylib strings" are
+      #   extracted, optionally decrypted, edited, then re-patched)
       # =========================================================
-      - name: Generate app icon
+      - name: Write Python crypto / dylib tools
         run: |
-          mkdir -p Resources
-          python3 -m pip install --quiet --break-system-packages Pillow
-          python3 << 'PYEOF'
-          from PIL import Image, ImageDraw, ImageFont
-          import os
+          mkdir -p Tools
+          cat > Tools/dylibtool.py << 'PYEOF'
+          #!/usr/bin/env python3
+          """
+          dylibtool.py — minimal Mach-O dylib text extractor & patcher.
 
-          def gradient(w, h, c1, c2):
-              img = Image.new("RGB", (w, h), c1)
-              d = ImageDraw.Draw(img)
-              for i in range(h):
-                  t = i / max(1, h - 1)
-                  r = int(c1[0] + (c2[0]-c1[0])*t)
-                  g = int(c1[1] + (c2[1]-c1[1])*t)
-                  b = int(c1[2] + (c2[2]-c1[2])*t)
-                  d.line([(0, i), (w, i)], fill=(r, g, b))
-              return img
+          Subcommands
+          -----------
+            dump      <dylib>                -> list all cstrings (text section)
+            strings   <dylib>                -> same as dump
+            search    <dylib> <needle>       -> list cstrings containing needle
+            decrypt   <dylib> <out> [--key K] [--nonce N] [--auth A]
+                                         --cipher aesgcm|chacha20|xor
+            encrypt   <plain> <out> [--key K] [--nonce N]
+                                         --cipher aesgcm|chacha20|xor
+            edit      <dylib> <old> <new>     -> patch in place, write a .patched copy
+            repack    <dylib> <out>          -> codesign --force -s - <out>
+            info      <dylib>                -> print Mach-O header + LC_*
+          """
+          from __future__ import annotations
+          import argparse, os, struct, sys, re, shutil, subprocess
+          from typing import Iterator, Tuple
 
-          def find_font(size):
-              for p in [
-                  "/System/Library/Fonts/Helvetica.ttc",
-                  "/System/Library/Fonts/SFNSDisplay.ttf",
-                  "/Library/Fonts/Arial Bold.ttf",
-              ]:
-                  if os.path.exists(p):
-                      try: return ImageFont.truetype(p, size)
-                      except: pass
-              return ImageFont.load_default()
+          # ---------- Mach-O parser (only what we need) ----------
+          MH_MAGIC_64   = 0xFEEDFACF
+          MH_MAGIC      = 0xFEEDFACE
+          LC_SEGMENT    = 0x1
+          LC_SEGMENT_64 = 0x19
+          LC_LOAD_DYLIB = 0xC
+          LC_ID_DYLIB   = 0xD
 
-          img = gradient(1024, 1024, (60, 90, 220), (20, 30, 90))
-          d = ImageDraw.Draw(img)
-          d.rounded_rectangle((260, 380, 764, 644), radius=40, fill=(255, 255, 255))
-          font = find_font(120)
-          bbox = d.textbbox((0,0), "QL", font=font)
-          w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
-          d.text((512 - w/2, 512 - h/2), "QL", font=font, fill=(30, 40, 100))
-          img.save("Resources/AppIcon1024x1024.png")
+          def _rd(path, off, n):
+              with open(path, "rb") as f:
+                  f.seek(off)
+                  return f.read(n)
 
-          for size, name in [(120,"AppIcon60x60@2x.png"), (180,"AppIcon60x60@3x.png"),
-                              (152,"AppIcon76x76@2x~ipad.png"), (167,"AppIcon83.5x83.5@2x~ipad.png")]:
-              img.resize((size, size)).save(f"Resources/{name}")
-          print("Icons generated.")
+          def _is_macho(b):
+              return len(b) >= 4 and b[:4] in (b"\xcf\xfa\xed\xfe",
+                                                b"\xfe\xed\xfa\xce",
+                                                b"\xce\xfa\xed\xfe",
+                                                b"\xfa\xce\xed\xfe")
+
+          def sections(path: str) -> Iterator[Tuple[str,int,int]]:
+              """Yield (section_name, offset, size) for __TEXT.__cstring."""
+              b = _rd(path, 0, 32)
+              if not _is_macho(b):
+                  raise ValueError("Not a Mach-O file")
+              magic = struct.unpack("<I", b[:4])[0]
+              is64  = magic in (MH_MAGIC_64, 0xFEEDFACF) or len(b) >= 8 and b[4:8] == b"\x00\x00\x00\x00"
+              # header sizes: 32 (32-bit) or 32 (64-bit) — loadcmds start at 28/32
+              hdr_size = 32
+              ncmds    = struct.unpack("<I", b[16:20])[0]
+              off      = hdr_size
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack("<II", _rd(path, off, 8))
+                  if cmd in (LC_SEGMENT, LC_SEGMENT_64):
+                      seg = _rd(path, off, cmdsize)
+                      if is64:
+                          nsects = struct.unpack("<I", seg[64:68])[0]
+                          sbase  = off + 72
+                      else:
+                          nsects = struct.unpack("<I", seg[48:52])[0]
+                          sbase  = off + 56
+                      for i in range(nsects):
+                          s = _rd(path, sbase + i*80, 80)  # 64-bit section is 80 bytes
+                          # 64-bit section: sectname(16) + segname(16) + addr(8) + size(8) + off(4) ...
+                          sectname = s[:16].split(b"\x00",1)[0].decode(errors="replace")
+                          segname  = s[16:32].split(b"\x00",1)[0].decode(errors="replace")
+                          if segname == "__TEXT" and sectname == "__cstring":
+                              soff = struct.unpack("<I", s[48:52])[0]
+                              ssz  = struct.unpack("<Q", s[40:48])[0] if is64 else struct.unpack("<I", s[36:40])[0]
+                              yield sectname, soff, ssz
+                  off += cmdsize
+                  if cmdsize == 0:
+                      break
+
+          def cstrings(path: str) -> list[bytes]:
+              raw = open(path, "rb").read()
+              out = []
+              for _, off, sz in sections(path):
+                  seg = raw[off:off+sz]
+                  for m in re.finditer(rb"[\x20-\x7e]{4,}", seg):
+                      out.append(m.group(0))
+              return out
+
+          def search(path: str, needle: str) -> list[bytes]:
+              n = needle.encode()
+              return [s for s in cstrings(path) if n in s]
+
+          # ---------- encryption layer (used only when callers want) ----------
+          def _require_crypto():
+              try:
+                  from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+                  return AESGCM, ChaCha20Poly1305
+              except ImportError:
+                  sys.stderr.write("cryptography not installed; pip install cryptography\n")
+                  sys.exit(2)
+
+          def _derive_key(hexkey: str | None, nonce_hex: str | None, aad: str | None):
+              AESGCM, ChaCha20Poly1305 = _require_crypto()
+              if hexkey:
+                  key = bytes.fromhex(hexkey)
+              else:
+                  key = AESGCM.generate_key(bit_length=256)
+              if nonce_hex:
+                  nonce = bytes.fromhex(nonce_hex)
+              else:
+                  import os as _o
+                  nonce = _o.urandom(12)
+              a = (aad or "").encode()
+              return key, nonce, a
+
+          def decrypt_file(inp, outp, cipher="aesgcm", key=None, nonce=None, aad=None):
+              AESGCM, ChaCha20Poly1305 = _require_crypto()
+              blob = open(inp,"rb").read()
+              k, n, a = _derive_key(key, nonce, aad)
+              if cipher == "aesgcm":
+                  aead = AESGCM(k)
+              elif cipher == "chacha20":
+                  aead = ChaCha20Poly1305(k)
+              elif cipher == "xor":
+                  pt = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i,b in enumerate(blob))
+                  open(outp,"wb").write(pt); return
+              else:
+                  sys.stderr.write(f"unknown cipher {cipher}\n"); sys.exit(2)
+              try:
+                  pt = aead.decrypt(n, blob, a)
+              except Exception as e:
+                  sys.stderr.write(f"decrypt failed: {e}\n"); sys.exit(3)
+              open(outp,"wb").write(pt)
+
+          def encrypt_file(inp, outp, cipher="aesgcm", key=None, nonce=None, aad=None):
+              AESGCM, ChaCha20Poly1305 = _require_crypto()
+              pt = open(inp,"rb").read()
+              k, n, a = _derive_key(key, nonce, aad)
+              if cipher == "aesgcm":
+                  aead = AESGCM(k)
+              elif cipher == "chacha20":
+                  aead = ChaCha20Poly1305(k)
+              elif cipher == "xor":
+                  ct = bytes(b ^ (k[i % len(k)] ^ n[i % len(n)]) for i,b in enumerate(pt))
+                  open(outp,"wb").write(ct); return
+              else:
+                  sys.stderr.write(f"unknown cipher {cipher}\n"); sys.exit(2)
+              ct = aead.encrypt(n, pt, a)
+              open(outp,"wb").write(ct)
+
+          # ---------- in-place text editor for dylib cstring pool ----------
+          def edit_in_place(path: str, old: str, new: str) -> str:
+              """Replace every occurrence of `old` with `new` inside __TEXT.__cstring.
+                 Returns the path of the patched file (path + '.patched')."""
+              data = bytearray(open(path, "rb").read())
+              ob = old.encode(); nb = new.encode()
+              patched = 0
+              for _, off, sz in sections(path):
+                  seg = data[off:off+sz]
+                  i = 0
+                  while True:
+                      j = seg.find(ob, i)
+                      if j < 0: break
+                      # only replace if same length to keep the section sane
+                      if len(ob) == len(nb):
+                          data[off+j:off+j+len(ob)] = nb
+                          patched += 1
+                      i = j + len(ob)
+              out = path + ".patched"
+              open(out, "wb").write(data)
+              sys.stderr.write(f"patched {patched} occurrence(s) -> {out}\n")
+              return out
+
+          def info(path: str) -> str:
+              out = [f"file: {path}", f"size: {os.path.getsize(path)} bytes"]
+              b = _rd(path, 0, 32)
+              magic_bytes = b[:4]
+              is64 = magic_bytes == b'\xcf\xfa\xed\xfe'
+              label = '64-bit' if is64 else '32-bit'
+              out.append(f"magic: {magic_bytes.hex()} ({label})")
+              ncmds = struct.unpack("<I", b[16:20])[0]
+              out.append(f"loadcmds: {ncmds}")
+              off = 32
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack("<II", _rd(path, off, 8))
+                  if cmd == LC_LOAD_DYLIB:
+                      name_off = struct.unpack("<I", _rd(path, off+8, 4))[0]
+                      nm = b""
+                      p = off + name_off
+                      while True:
+                          c = _rd(path, p, 1)
+                          if c == b"\x00" or not c: break
+                          nm += c; p += 1
+                      out.append(f"  LC_LOAD_DYLIB: {nm.decode(errors='replace')}")
+                  elif cmd == LC_ID_DYLIB:
+                      name_off = struct.unpack("<I", _rd(path, off+8, 4))[0]
+                      nm = b""
+                      p = off + name_off
+                      while True:
+                          c = _rd(path, p, 1)
+                          if c == b"\x00" or not c: break
+                          nm += c; p += 1
+                      out.append(f"  LC_ID_DYLIB:   {nm.decode(errors='replace')}")
+                  off += cmdsize
+                  if cmdsize == 0: break
+              return "\n".join(out)
+
+          # ---------- CLI ----------
+          def main():
+              ap = argparse.ArgumentParser(prog="dylibtool")
+              sub = ap.add_subparsers(dest="cmd", required=True)
+
+              p = sub.add_parser("dump");      p.add_argument("dylib")
+              p = sub.add_parser("strings");   p.add_argument("dylib")
+              p = sub.add_parser("search");    p.add_argument("dylib"); p.add_argument("needle")
+              p = sub.add_parser("info");      p.add_argument("dylib")
+              p = sub.add_parser("edit")
+              p.add_argument("dylib"); p.add_argument("old"); p.add_argument("new")
+              p = sub.add_parser("decrypt")
+              p.add_argument("inp"); p.add_argument("out")
+              p.add_argument("--cipher", default="aesgcm", choices=["aesgcm","chacha20","xor"])
+              p.add_argument("--key"); p.add_argument("--nonce"); p.add_argument("--aad")
+              p = sub.add_parser("encrypt")
+              p.add_argument("inp"); p.add_argument("out")
+              p.add_argument("--cipher", default="aesgcm", choices=["aesgcm","chacha20","xor"])
+              p.add_argument("--key"); p.add_argument("--nonce"); p.add_argument("--aad")
+              p = sub.add_parser("repack")
+              p.add_argument("dylib"); p.add_argument("out")
+
+              a = ap.parse_args()
+              if   a.cmd in ("dump","strings"):
+                  for s in cstrings(a.dylib): print(s.decode(errors="replace"))
+              elif a.cmd == "search":
+                  for s in search(a.dylib, a.needle): print(s.decode(errors="replace"))
+              elif a.cmd == "info":
+                  print(info(a.dylib))
+              elif a.cmd == "edit":
+                  edit_in_place(a.dylib, a.old, a.new)
+              elif a.cmd == "decrypt":
+                  decrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
+              elif a.cmd == "encrypt":
+                  encrypt_file(a.inp, a.out, a.cipher, a.key, a.nonce, a.aad)
+              elif a.cmd == "repack":
+                  shutil.copy(a.dylib, a.out)
+                  subprocess.run(["codesign","--force","--sign","-", a.out], check=False)
+          if __name__ == "__main__":
+              main()
           PYEOF
-          ls -lh Resources
+          chmod +x Tools/dylibtool.py
+          ls -lh Tools
 
-      # =========================================================
-      # Info.plist
-      # =========================================================
-      - name: Write Info.plist
+      - name: Install Python crypto deps
         run: |
-          cat > Resources/Info.plist << 'PLISTEOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleName</key>
-              <string>${NEW_APP_NAME}</string>
-              <key>CFBundleDisplayName</key>
-              <string>${NEW_APP_NAME}</string>
-              <key>CFBundleIdentifier</key>
-              <string>${NEW_BUNDLE_ID}</string>
-              <key>CFBundleVersion</key>
-              <string>1.0</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleExecutable</key>
-              <string>QuickLauncher</string>
-              <key>CFBundleIconFile</key>
-              <string>AppIcon60x60@2x</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>UILaunchScreen</key>
-              <dict/>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-              </array>
-              <key>MinimumOSVersion</key>
-              <string>16.0</string>
-              <!--
-                These are the ONLY URL schemes this app needs to be able to *check and open*
-                other apps' official deep links (LSApplicationQueriesSchemes). This app does
-                NOT contain or host copies of Instagram/TikTok/Telegram/etc.
-              -->
-              <key>LSApplicationQueriesSchemes</key>
-              <array>
-                  <string>instagram</string>
-                  <string>tiktok</string>
-                  <string>tg</string>
-                  <string>figma</string>
-                  <string>canva</string>
-                  <string>pinterest</string>
-                  <string>behance</string>
-                  <string>dribbble</string>
-              </array>
-          </dict>
-          </plist>
-          PLISTEOF
-          # Substitute env vars manually (no envsubst dependency assumed)
-          sed -i '' "s/\${NEW_APP_NAME}/${NEW_APP_NAME}/g" Resources/Info.plist
-          sed -i '' "s/\${NEW_BUNDLE_ID}/${NEW_BUNDLE_ID}/g" Resources/Info.plist
-          cat Resources/Info.plist
+          python3 -m pip install --quiet --break-system-packages cryptography
 
       # =========================================================
-      # SWIFT SOURCE
+      # 3. SWIFT GUI (SwiftUI on macOS 13+)
+      #    - Browse / open .dylib
+      #    - List cstrings
+      #    - Decrypt a file into a temp folder
+      #    - Edit text in place and re-pack (re-codesign)
       # =========================================================
       - name: Write Swift source files
         run: |
-          cat > AppModel.swift << 'SWIFTEOF'
+          cat > DylibToolBridge.swift << 'SWIFTEOF'
           import Foundation
 
-          struct LauncherApp: Identifiable {
-              let id = UUID()
-              let name: String
-              let subtitle: String
-              /// Official URL scheme used to open the installed app (deep link only).
-              let scheme: String
-              /// Official App Store page, used as a safe fallback if the app isn't installed
-              /// or the scheme is unavailable/changed.
-              let appStoreURL: String
-              let symbol: String   // SF Symbol name (no third-party logos used)
-              let colorHex: String
+          /// Thin wrapper around `Tools/dylibtool.py` so Swift can call
+          /// dump / search / decrypt / edit / encrypt / repack uniformly.
+          enum DylibToolBridge {
+              static let scriptPath: String = {
+                  let env = ProcessInfo.processInfo.environment["DYLIBTOOL"] ?? "Tools/dylibtool.py"
+                  return env
+              }()
 
-              var schemeURL: URL? { URL(string: scheme) }
-              var storeURL: URL? { URL(string: appStoreURL) }
-          }
-
-          enum AppCatalog {
-              static let social: [LauncherApp] = [
-                  LauncherApp(name: "Instagram", subtitle: "Photos & Reels",
-                              scheme: "instagram://app",
-                              appStoreURL: "https://apps.apple.com/app/instagram/id389801252",
-                              symbol: "camera.fill", colorHex: "E1306C"),
-                  LauncherApp(name: "TikTok", subtitle: "Short videos",
-                              scheme: "tiktok://",
-                              appStoreURL: "https://apps.apple.com/app/tiktok/id835599320",
-                              symbol: "music.note", colorHex: "010101"),
-                  LauncherApp(name: "Telegram", subtitle: "Messaging",
-                              scheme: "tg://",
-                              appStoreURL: "https://apps.apple.com/app/telegram-messenger/id686449807",
-                              symbol: "paperplane.fill", colorHex: "2AABEE"),
-              ]
-
-              static let design: [LauncherApp] = [
-                  LauncherApp(name: "Figma", subtitle: "UI Design",
-                              scheme: "figma://",
-                              appStoreURL: "https://apps.apple.com/app/figma/id1152214172",
-                              symbol: "square.on.square", colorHex: "A259FF"),
-                  LauncherApp(name: "Canva", subtitle: "Graphic design",
-                              scheme: "canva://",
-                              appStoreURL: "https://apps.apple.com/app/canva/id897446215",
-                              symbol: "paintpalette.fill", colorHex: "00C4CC"),
-                  LauncherApp(name: "Pinterest", subtitle: "Inspiration",
-                              scheme: "pinterest://",
-                              appStoreURL: "https://apps.apple.com/app/pinterest/id429047995",
-                              symbol: "pin.fill", colorHex: "E60023"),
-                  LauncherApp(name: "Behance", subtitle: "Portfolios",
-                              scheme: "behance://",
-                              appStoreURL: "https://apps.apple.com/app/behance/id474139006",
-                              symbol: "rectangle.stack.fill", colorHex: "1769FF"),
-                  LauncherApp(name: "Dribbble", subtitle: "Design shots",
-                              scheme: "dribbble://",
-                              appStoreURL: "https://apps.apple.com/app/dribbble/id489210681",
-                              symbol: "basketball.fill", colorHex: "EA4C89"),
-              ]
-          }
-          SWIFTEOF
-
-          cat > OpenAppHelper.swift << 'SWIFTEOF'
-          import UIKit
-
-          enum OpenAppHelper {
-              /// Tries to open the app's official deep link. If that fails (app not
-              /// installed, scheme unavailable, or blocked), falls back to the app's
-              /// official App Store page. Never bundles or launches any local copy.
-              static func open(_ app: LauncherApp) {
-                  if let schemeURL = app.schemeURL, UIApplication.shared.canOpenURL(schemeURL) {
-                      UIApplication.shared.open(schemeURL, options: [:]) { success in
-                          if !success { openStore(app) }
-                      }
-                  } else {
-                      openStore(app)
+              @discardableResult
+              static func run(_ args: [String], stdin: String? = nil) -> (Int32, String, String) {
+                  let p = Process()
+                  p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                  p.arguments = ["python3", scriptPath] + args
+                  let out = Pipe(), err = Pipe()
+                  p.standardOutput = out; p.standardError = err
+                  if let s = stdin {
+                      let inp = Pipe()
+                      p.standardInput = inp
+                      try? inp.fileHandleForWriting.write(contentsOf: Data(s.utf8))
+                      try? inp.fileHandleForWriting.close()
                   }
+                  do { try p.run() } catch { return (-1, "", "spawn failed: \(error)") }
+                  p.waitUntilExit()
+                  let o = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                  let e = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                  return (p.terminationStatus, o, e)
               }
 
-              private static func openStore(_ app: LauncherApp) {
-                  guard let storeURL = app.storeURL else { return }
-                  UIApplication.shared.open(storeURL, options: [:], completionHandler: nil)
+              static func dumpStrings(at path: String) -> [String] {
+                  let (rc, out, _) = run(["strings", path])
+                  guard rc == 0 else { return [] }
+                  return out.split(separator: "\n").map(String.init)
+              }
+              static func search(in path: String, needle: String) -> [String] {
+                  let (rc, out, _) = run(["search", path, needle])
+                  guard rc == 0 else { return [] }
+                  return out.split(separator: "\n").map(String.init)
+              }
+              static func info(_ path: String) -> String {
+                  let (rc, out, _) = run(["info", path])
+                  return rc == 0 ? out : "info failed"
+              }
+              static func decryptFile(at input: String, to output: String,
+                                      cipher: String = "aesgcm",
+                                      key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
+                  var args = ["decrypt", input, output, "--cipher", cipher]
+                  if let k = key,   !k.isEmpty { args += ["--key",   k] }
+                  if let n = nonce, !n.isEmpty { args += ["--nonce", n] }
+                  if let a = aad,   !a.isEmpty { args += ["--aad",   a] }
+                  let (rc, _, err) = run(args)
+                  return rc == 0 ? "OK -> \(output)" : "FAIL: \(err)"
+              }
+              static func encryptFile(at input: String, to output: String,
+                                      cipher: String = "aesgcm",
+                                      key: String? = nil, nonce: String? = nil, aad: String? = nil) -> String {
+                  var args = ["encrypt", input, output, "--cipher", cipher]
+                  if let k = key,   !k.isEmpty { args += ["--key",   k] }
+                  if let n = nonce, !n.isEmpty { args += ["--nonce", n] }
+                  if let a = aad,   !a.isEmpty { args += ["--aad",   a] }
+                  let (rc, _, err) = run(args)
+                  return rc == 0 ? "OK -> \(output)" : "FAIL: \(err)"
+              }
+              static func editInPlace(_ dylib: String, old: String, new: String) -> String {
+                  let (rc, _, err) = run(["edit", dylib, old, new])
+                  return rc == 0 ? "Patched -> \(dylib).patched" : "FAIL: \(err)"
+              }
+              static func repack(_ dylib: String, to out: String) -> String {
+                  let (rc, _, err) = run(["repack", dylib, out])
+                  return rc == 0 ? "Re-packed -> \(out)" : "FAIL: \(err)"
               }
           }
           SWIFTEOF
 
           cat > ContentView.swift << 'SWIFTEOF'
           import SwiftUI
+          import UniformTypeIdentifiers
 
-          struct AppTile: View {
-              let app: LauncherApp
+          // MARK: - Models
+          struct DylibDocument: Identifiable {
+              let id = UUID()
+              let url: URL
+              var strings: [String] = []
+              var info:    String = ""
+          }
 
-              var body: some View {
-                  Button {
-                      OpenAppHelper.open(app)
-                  } label: {
-                      VStack(spacing: 10) {
-                          ZStack {
-                              RoundedRectangle(cornerRadius: 20)
-                                  .fill(Color(hex: app.colorHex))
-                                  .frame(width: 64, height: 64)
-                              Image(systemName: app.symbol)
-                                  .font(.system(size: 26, weight: .semibold))
-                                  .foregroundColor(.white)
-                          }
-                          Text(app.name)
-                              .font(.system(size: 13, weight: .semibold))
-                              .foregroundColor(.primary)
-                          Text(app.subtitle)
-                              .font(.system(size: 11))
-                              .foregroundColor(.secondary)
-                      }
-                      .frame(maxWidth: .infinity)
-                      .padding(.vertical, 14)
-                      .background(
-                          RoundedRectangle(cornerRadius: 18)
-                              .fill(Color(.secondarySystemBackground))
-                      )
-                  }
-                  .buttonStyle(.plain)
+          // MARK: - App entry
+          @main
+          struct DylibViewerApp: App {
+              @StateObject private var store = DylibStore()
+              var body: some Scene {
+                  WindowGroup { ContentView().environmentObject(store).frame(minWidth: 900, minHeight: 600) }
               }
           }
 
-          struct AppSection: View {
-              let title: String
-              let apps: [LauncherApp]
-              let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+          final class DylibStore: ObservableObject {
+              @Published var doc: DylibDocument? = nil
+              @Published var log: String = "Ready.\n"
+              @Published var searchTerm: String = ""
+              @Published var cipher: String = "aesgcm"
+              @Published var keyHex:  String = ""
+              @Published var nonceHex:String = ""
+              @Published var aad:     String = ""
 
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 12) {
-                      Text(title)
-                          .font(.system(size: 20, weight: .bold))
-                          .padding(.horizontal, 4)
-                      LazyVGrid(columns: columns, spacing: 14) {
-                          ForEach(apps) { app in
-                              AppTile(app: app)
-                          }
+              func append(_ s: String) { DispatchQueue.main.async { self.log += s + "\n" } }
+
+              func open(url: URL) {
+                  let d = DylibDocument(url: url)
+                  self.doc = d
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let info    = DylibToolBridge.info(url.path)
+                      let strings = DylibToolBridge.dumpStrings(at: url.path)
+                      DispatchQueue.main.async {
+                          self.doc?.info    = info
+                          self.doc?.strings = strings
+                          self.append("Opened \(url.lastPathComponent) — \(strings.count) strings")
                       }
                   }
               }
+
+              func filteredStrings() -> [String] {
+                  guard let d = doc else { return [] }
+                  let t = searchTerm.trimmingCharacters(in: .whitespaces)
+                  if t.isEmpty { return d.strings }
+                  return d.strings.filter { $0.localizedCaseInsensitiveContains(t) }
+              }
+
+              // MARK: actions
+              func decryptSelected() {
+                  guard let d = doc else { return }
+                  let panel = NSSavePanel()
+                  panel.nameFieldStringValue = d.url.deletingPathExtension().lastPathComponent + ".decrypted"
+                  guard panel.runModal() == .OK, let out = panel.url else { return }
+                  let msg = DylibToolBridge.decryptFile(
+                      at: d.url.path, to: out.path,
+                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad)
+                  append(msg)
+              }
+              func encryptSelected() {
+                  guard let d = doc else { return }
+                  let panel = NSSavePanel()
+                  panel.nameFieldStringValue = d.url.deletingPathExtension().lastPathComponent + ".encrypted"
+                  guard panel.runModal() == .OK, let out = panel.url else { return }
+                  let msg = DylibToolBridge.encryptFile(
+                      at: d.url.path, to: out.path,
+                      cipher: cipher, key: keyHex, nonce: nonceHex, aad: aad)
+                  append(msg)
+              }
+              func editInPlace(old: String, new: String) {
+                  guard let d = doc else { return }
+                  let msg = DylibToolBridge.editInPlace(d.url.path, old: old, new: new)
+                  append(msg)
+                  // reload
+                  open(url: d.url)
+              }
+              func repackTo(_ url: URL) {
+                  guard let d = doc else { return }
+                  append(DylibToolBridge.repack(d.url.path, to: url.path))
+              }
           }
 
+          // MARK: - UI
           struct ContentView: View {
-              var body: some View {
-                  NavigationView {
-                      ScrollView {
-                          VStack(alignment: .leading, spacing: 28) {
-                              AppSection(title: "Social", apps: AppCatalog.social)
-                              AppSection(title: "Design", apps: AppCatalog.design)
+              @EnvironmentObject var store: DylibStore
+              @State private var selectedString: String? = nil
+              @State private var editOld: String = ""
+              @State private var editNew: String = ""
 
-                              Text("Tapping a tile opens the official app if it's installed, or its App Store page if it isn't.")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(.secondary)
-                                  .padding(.horizontal, 4)
-                                  .padding(.top, 8)
+              var body: some View {
+                  HSplitView {
+                      // Left: file + crypto controls
+                      VStack(alignment: .leading, spacing: 10) {
+                          HStack {
+                              Button("Open .dylib…") { openPicker() }
+                              Spacer()
+                              if let d = store.doc {
+                                  Text(d.url.lastPathComponent).font(.headline)
+                              }
                           }
-                          .padding(16)
+                          GroupBox("Decrypt / Encrypt") {
+                              VStack(alignment: .leading, spacing: 6) {
+                                  Picker("Cipher", selection: $store.cipher) {
+                                      Text("AES-256-GCM").tag("aesgcm")
+                                      Text("ChaCha20-Poly1305").tag("chacha20")
+                                      Text("XOR (demo)").tag("xor")
+                                  }.pickerStyle(.segmented)
+                                  TextField("Key (hex, blank = random)", text: $store.keyHex)
+                                  TextField("Nonce (hex, blank = random)", text: $store.nonceHex)
+                                  TextField("AAD (optional)", text: $store.aad)
+                                  HStack {
+                                      Button("Decrypt file") { store.decryptSelected() }
+                                      Button("Encrypt file") { store.encryptSelected() }
+                                  }
+                              }.padding(6)
+                          }
+                          GroupBox("In-place text editor") {
+                              VStack(alignment: .leading, spacing: 6) {
+                                  TextField("Find (old string)", text: $editOld)
+                                  TextField("Replace (new string — same length!)", text: $editNew)
+                                  HStack {
+                                      Button("Use selected") {
+                                          if let s = selectedString { editOld = s; editNew = s }
+                                      }
+                                      Button("Apply patch") { store.editInPlace(old: editOld, new: editNew) }
+                                      Button("Repack / codesign…") { repackPicker() }
+                                  }
+                              }.padding(6)
+                          }
+                          Spacer()
+                          GroupBox("Mach-O info") {
+                              ScrollView {
+                                  Text(store.doc?.info ?? "—")
+                                      .font(.system(size: 11, design: .monospaced))
+                                      .frame(maxWidth: .infinity, alignment: .leading)
+                                      .padding(4)
+                              }.frame(minHeight: 120)
+                          }
                       }
-                      .navigationTitle("Quick Launcher")
+                      .padding(12)
+                      .frame(minWidth: 360)
+
+                      // Right: strings list + log
+                      VStack(spacing: 0) {
+                          HStack {
+                              TextField("Search strings…", text: $store.searchTerm)
+                                  .textFieldStyle(.roundedBorder)
+                          }.padding(8)
+                          List(selection: $selectedString) {
+                              ForEach(store.filteredStrings(), id: \.self) { s in
+                                  Text(s).font(.system(size: 12, design: .monospaced))
+                                      .lineLimit(1).truncationMode(.tail)
+                                      .tag(s)
+                              }
+                          }
+                          .frame(minHeight: 240)
+                          Divider()
+                          VStack(alignment: .leading) {
+                              Text("Log").font(.caption).foregroundColor(.secondary)
+                              ScrollView {
+                                  Text(store.log)
+                                      .font(.system(size: 11, design: .monospaced))
+                                      .frame(maxWidth: .infinity, alignment: .leading)
+                                      .padding(4)
+                              }
+                          }.frame(minHeight: 140)
+                      }
                   }
               }
-          }
 
-          extension Color {
-              init(hex: String) {
-                  var hex = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-                  hex = hex.replacingOccurrences(of: "#", with: "")
-                  var rgb: UInt64 = 0
-                  Scanner(string: hex).scanHexInt64(&rgb)
-                  let r = Double((rgb >> 16) & 0xFF) / 255
-                  let g = Double((rgb >> 8) & 0xFF) / 255
-                  let b = Double(rgb & 0xFF) / 255
-                  self.init(red: r, green: g, blue: b)
+              // MARK: - pickers
+              func openPicker() {
+                  let p = NSOpenPanel()
+                  p.allowedContentTypes = [UTType(filenameExtension: "dylib") ?? .data,
+                                           .data]
+                  p.allowsMultipleSelection = false
+                  if p.runModal() == .OK, let u = p.url { store.open(url: u) }
+              }
+              func repackPicker() {
+                  guard let d = store.doc else { return }
+                  let p = NSSavePanel()
+                  p.nameFieldStringValue = d.url.deletingPathExtension().lastPathComponent + ".repacked.dylib"
+                  if p.runModal() == .OK, let u = p.url { store.repackTo(u) }
               }
           }
           SWIFTEOF
 
-          cat > QuickLauncherApp.swift << 'SWIFTEOF'
-          import SwiftUI
-
-          @main
-          struct QuickLauncherApp: App {
-              var body: some Scene {
-                  WindowGroup {
-                      ContentView()
-                  }
-              }
-          }
+          cat > main.swift << 'SWIFTEOF'
+          // Empty — @main lives in ContentView.swift via DylibViewerApp
           SWIFTEOF
 
           echo "Swift sources written."
           ls -la *.swift
 
       # =========================================================
-      # BUILD
+      # 4. BUILD  (.app bundle)
       # =========================================================
-      - name: Build the app
+      - name: Build SwiftUI app
         run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
           echo "SDK: $SDK"
+          mkdir -p build-out
           xcrun swiftc \
-            AppModel.swift \
-            OpenAppHelper.swift \
+            DylibToolBridge.swift \
             ContentView.swift \
-            QuickLauncherApp.swift \
             -sdk "$SDK" \
-            -target arm64-apple-ios16.0 \
+            -target arm64-apple-macos13.0 \
             -O \
-            -module-name QuickLauncher \
+            -module-name ${{ env.TOOL_NAME }} \
             -framework SwiftUI \
-            -framework UIKit \
-            -framework Foundation \
-            -o QuickLauncher
-          file QuickLauncher
+            -framework AppKit \
+            -framework UniformTypeIdentifiers \
+            -o build-out/${{ env.TOOL_NAME }}
+          file build-out/${{ env.TOOL_NAME }}
 
-      # =========================================================
-      # PACKAGE IPA
-      # =========================================================
-      - name: Create IPA package
+      - name: Wrap binary into .app
         run: |
-          export COPYFILE_DISABLE=1
-          mkdir -p artifacts
-          rm -rf build-output
-          mkdir -p build-output/Payload/QuickLauncher.app
-          cp -X QuickLauncher                                  build-output/Payload/QuickLauncher.app/QuickLauncher
-          cp -X Resources/Info.plist                           build-output/Payload/QuickLauncher.app/Info.plist
-          cp -X Resources/AppIcon60x60@2x.png                  build-output/Payload/QuickLauncher.app/
-          cp -X Resources/AppIcon60x60@3x.png                  build-output/Payload/QuickLauncher.app/
-          cp -X Resources/AppIcon76x76@2x~ipad.png             build-output/Payload/QuickLauncher.app/
-          cp -X Resources/AppIcon83.5x83.5@2x~ipad.png         build-output/Payload/QuickLauncher.app/
-          cp -X Resources/AppIcon1024x1024.png                 build-output/Payload/QuickLauncher.app/
+          APP=build-out/${{ env.TOOL_NAME }}.app
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources/Tools"
+          cp -X build-out/${{ env.TOOL_NAME }} "$APP/Contents/MacOS/${{ env.TOOL_NAME }}"
+          cp -X Tools/dylibtool.py          "$APP/Contents/Resources/Tools/dylibtool.py"
+          chmod +x "$APP/Contents/Resources/Tools/dylibtool.py"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>__TOOL_NAME__</string>
+            <key>CFBundleDisplayName</key><string>__TOOL_NAME__</string>
+            <key>CFBundleIdentifier</key><string>__BUNDLE_ID__</string>
+            <key>CFBundleVersion</key><string>__VERSION__</string>
+            <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+            <key>CFBundleExecutable</key><string>__TOOL_NAME__</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+          </dict></plist>
+          PLIST
+          sed -i '' "s/__TOOL_NAME__/${{ env.TOOL_NAME }}/g; s/__BUNDLE_ID__/${{ env.BUNDLE_ID }}/g; s/__VERSION__/${{ env.VERSION }}/g" "$APP/Contents/Info.plist"
+          echo "App bundle:"
+          find "$APP" -maxdepth 4 -print
 
-          xattr -cr build-output
-          find build-output -name ".DS_Store" -delete
-          find build-output -name "._*" -delete
+      - name: Ad-hoc codesign + DMG packaging
+        run: |
+          APP=build-out/${{ env.TOOL_NAME }}.app
+          codesign --force --deep --sign - "$APP"
+          codesign -dv "$APP" 2>&1 | head -n 8
+          ln -sf /Applications build-out/Applications
+          hdiutil create -volname ${{ env.TOOL_NAME }} \
+            -srcfolder build-out -ov -format UDZO \
+            artifacts/${{ env.TOOL_NAME }}.dmg
+          ls -lh artifacts
 
-          ldid -S build-output/Payload/QuickLauncher.app/QuickLauncher
+      # =========================================================
+      # 5. TEST RUN (smoke test against a built-in sample dylib)
+      # =========================================================
+      - name: "Self-test dump search edit on libSystem"
+        run: |
+          set -e
+          TOOL="build-out/${{ env.TOOL_NAME }}.app/Contents/Resources/Tools/dylibtool.py"
+          SAMPLE=/usr/lib/system/libsystem_kernel.dylib
+          ls -l "$SAMPLE"
+          python3 "$TOOL" info "$SAMPLE" | head -n 6
+          python3 "$TOOL" search "$SAMPLE" "mach" | head -n 5
+          echo "Self-test OK."
 
-          rm -f artifacts/QuickLauncher.ipa
-          cd build-output && zip -r -X -q ../artifacts/QuickLauncher.ipa Payload && cd ..
-          ls -lh artifacts/QuickLauncher.ipa
-
-          if ! unzip -tq artifacts/QuickLauncher.ipa >/dev/null 2>&1; then
-            echo "Error: IPA file is corrupt or invalid."
-            exit 1
-          fi
-          if ! unzip -l artifacts/QuickLauncher.ipa | grep -q "Payload/QuickLauncher.app/QuickLauncher"; then
-            echo "Error: IPA does not contain a valid App Bundle"
-            exit 1
-          fi
-          echo "IPA: $(du -sh artifacts/QuickLauncher.ipa)"
-
-      - name: Upload artifact
+      # =========================================================
+      # 6. ARTIFACTS
+      # =========================================================
+      - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: QuickLauncher-IPA
-          path: artifacts/QuickLauncher.ipa
+          name: ${{ env.TOOL_NAME }}-macOS-DMG
+          path: artifacts/${{ env.TOOL_NAME }}.dmg
+          retention-days: 90
+
+      - name: Upload raw .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TOOL_NAME }}-macOS-APP
+          path: build-out/${{ env.TOOL_NAME }}.app
           retention-days: 90
