@@ -14,31 +14,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------- إعداد Xcode و SDK ----------
+      # ---------- إعداد Xcode ----------
       - name: Setup Xcode
         run: |
           sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
           xcode-select -p
           swift --version
 
-      # ---------- تثبيت dependencies الخاصة بـ Theos ----------
+      # ---------- تثبيت أدوات البناء ----------
       - name: Install build tools
         run: |
-          brew install ldid dpkg xz
-          # استنساخ Theos
-          git clone --depth 1 https://github.com/theos/theos.git $HOME/theos
-          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-          # تحديد SDK الخاص بـ iOS
-          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDKROOT=$SDKROOT" >> $GITHUB_ENV
+          brew install ldid dpkg xz git
 
-      # ---------- إنشاء ملفات مشروع tweak ----------
+      # ---------- استنساخ Theos وتهيئة Submodules ----------
+      - name: Setup Theos
+        run: |
+          git clone --depth 1 https://github.com/theos/theos.git $HOME/theos
+          cd $HOME/theos
+          git submodule update --init --recursive
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+
+      # ---------- إنشاء ملفات الت tweak ----------
       - name: Create tweak source files
         run: |
           mkdir -p YouTubeSearchTweak
           cd YouTubeSearchTweak
 
-          # ---- Makefile ----
+          # ---- Makefile (مع تحديد الـ ARCH والـ SDK) ----
           cat > Makefile << 'EOF'
           include $(THEOS)/makefiles/common.mk
 
@@ -47,10 +50,14 @@ jobs:
           YouTubeSearch_CFLAGS = -fobjc-arc
           YouTubeSearch_LDFLAGS = -lobjc
 
+          # تحديد الـ ARCH والهدف لتجنب تحذيرات arm64e
+          ARCHS = arm64
+          TARGET = iphone:clang:16.0:14.0
+
           include $(THEOS_MAKE_PATH)/tweak.mk
           EOF
 
-          # ---- control (معلومات الحزمة) ----
+          # ---- control ----
           mkdir -p layout/DEBIAN
           cat > layout/DEBIAN/control << 'EOF'
           Package: com.yourname.youtube-search
@@ -63,7 +70,7 @@ jobs:
           Section: Tweaks
           EOF
 
-          # ---- Tweak.xm (الكود الأساسي) ----
+          # ---- Tweak.xm ----
           cat > Tweak.xm << 'EOF'
           %config(DEBUG=0)
           #import <UIKit/UIKit.h>
@@ -75,12 +82,10 @@ jobs:
           @implementation UIWindow (Additions)
 
           - (void)addFloatingButtonIfNeeded {
-              // نضيف الزر للنافذة الرئيسية فقط، مرة واحدة
               static dispatch_once_t onceToken;
               dispatch_once(&onceToken, ^{
                   if (self != [UIApplication sharedApplication].keyWindow) return;
 
-                  // إنشاء الزر
                   UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
                   button.frame = CGRectMake(20, 100, 55, 55);
                   [button setTitle:@"🔍" forState:UIControlStateNormal];
@@ -94,7 +99,6 @@ jobs:
                   button.layer.shadowOffset = CGSizeMake(0, 2);
                   [button addTarget:self action:@selector(searchButtonTapped) forControlEvents:UIControlEventTouchUpInside];
 
-                  // جعله قابلاً للسحب
                   UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
                   [button addGestureRecognizer:pan];
 
@@ -103,7 +107,6 @@ jobs:
           }
 
           - (void)searchButtonTapped {
-              // نافذة منبثقة لإدخال النص
               UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"YouTube Search"
                                                                              message:@"أدخل كلمة البحث"
                                                                       preferredStyle:UIAlertControllerStyleAlert];
@@ -117,10 +120,8 @@ jobs:
                   NSString *query = alert.textFields.firstObject.text;
                   if (query.length == 0) return;
 
-                  // ترميز النص
                   NSString *encoded = [query stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
 
-                  // محاولة فتح تطبيق YouTube أولاً
                   NSString *urlString = [NSString stringWithFormat:@"youtube://search?q=%@", encoded];
                   NSURL *url = [NSURL URLWithString:urlString];
                   UIApplication *app = [UIApplication sharedApplication];
@@ -128,7 +129,6 @@ jobs:
                   if ([app canOpenURL:url]) {
                       [app openURL:url options:@{} completionHandler:nil];
                   } else {
-                      // الخيار الاحتياطي: فتح Safari
                       NSString *webURL = [NSString stringWithFormat:@"https://www.youtube.com/results?search_query=%@", encoded];
                       [app openURL:[NSURL URLWithString:webURL] options:@{} completionHandler:nil];
                   }
@@ -137,7 +137,6 @@ jobs:
               [alert addAction:cancel];
               [alert addAction:search];
 
-              // عرض النافذة المنبثقة
               UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
               if (rootVC) {
                   [rootVC presentViewController:alert animated:YES completion:nil];
@@ -160,7 +159,6 @@ jobs:
 
           @end
 
-          // ربط UIWindow لتشغيل الكود عند تخطيط النافذة
           %hook UIWindow
           - (void)layoutSubviews {
               %orig;
@@ -176,27 +174,12 @@ jobs:
           export THEOS=$HOME/theos
           export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           make clean
-          make
-
-      # ---------- تجميع الحزمة .deb ----------
-      - name: Package .deb
-        run: |
-          cd YouTubeSearchTweak
           make package
-          mkdir -p artifacts
-          # البحث عن ملف .deb الناتج
-          DEB_FILE=$(find . -name "*.deb" -type f | head -n 1)
-          if [ -z "$DEB_FILE" ]; then
-            echo "لم يتم العثور على ملف .deb"
-            exit 1
-          fi
-          cp "$DEB_FILE" artifacts/
-          echo "تم نسخ: $DEB_FILE"
 
       # ---------- رفع المخرجات ----------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: YouTubeSearchTweak
-          path: YouTubeSearchTweak/artifacts/*.deb
+          path: YouTubeSearchTweak/*.deb
           retention-days: 90
