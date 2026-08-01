@@ -1,29 +1,29 @@
-name: App Store Link Details Viewer (SwiftUI)
+name: AppPeek — App Store Lookup (SwiftUI)
 
-"on":
+on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
 env:
-  NEW_BUNDLE_ID: "com.vip21.store.pro"
-  NEW_APP_NAME:  "App Details Viewer"
+  NEW_BUNDLE_ID: "com.apppeek.lookup.app"
+  NEW_APP_NAME:  "AppPeek"
+  APP_VERSION:   "1.0.0"
+  BUILD_NUMBER:  "1"
 
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
 
-      - name: Maximize build resources (1TB+ capacity)
+      - name: Maximize build resources
         run: |
-          echo "=== Build capacity check ==="
+          echo "=== Disk ==="
           df -h
-          echo "=== macOS resource limits ==="
-          ulimit -a
-          echo "=== Available CPUs ==="
+          echo "=== CPU ==="
           sysctl -n hw.ncpu
-          echo "=== Available memory ==="
+          echo "=== Memory ==="
           sysctl -n hw.memsize
 
       - name: Checkout repository
@@ -43,66 +43,156 @@ jobs:
           command -v zip || { echo "zip not installed"; exit 1; }
 
       # =========================================================
-      # RESOURCES & ASSETS
+      # RESOURCES — app icon, splash, accent art (no remote URLs)
       # =========================================================
-      - name: Download project images
+      - name: Generate resource images
         run: |
           mkdir -p Resources
-          curl -L -o Resources/login_logo.png      "https://up6.cc/2026/07/178463790906632.png"
-          curl -L -o Resources/register_logo.png   "https://up6.cc/2026/07/178463790901181.png"
-          curl -L -o Resources/onboarding1.png    "https://up6.cc/2026/07/178463910434943.png"
-          curl -L -o Resources/onboarding2.png    "https://up6.cc/2026/07/178463910431782.png"
-          curl -L -o Resources/onboarding3.png    "https://up6.cc/2026/07/178463910425551.png"
-          curl -L -o Resources/banner1.jpg "https://up6.cc/2026/07/178550343873721.jpeg"
-          curl -L -o Resources/banner2.jpg "https://up6.cc/2026/07/178550352054431.jpeg"
-          file Resources/*.png Resources/*.jpg 2>/dev/null || true
-          ls -lh Resources
-
-      - name: Generate feature images
-        run: |
-          python3 -m pip install --quiet --break-system-packages Pillow 2>/dev/null || true
+          python3 -m pip install --quiet --break-system-packages Pillow
           python3 << 'PYEOF'
           from PIL import Image, ImageDraw, ImageFont
-          import os, random
+          import os, math
           os.makedirs("Resources", exist_ok=True)
-          random.seed(42)
 
-          def find_font(size):
-              for p in [
+          def find_font(size, bold=False):
+              candidates = [
                   "/System/Library/Fonts/Helvetica.ttc",
                   "/System/Library/Fonts/SFNSDisplay.ttf",
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                  "/Library/Fonts/Arial Bold.ttf",
-              ]:
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+              ]
+              for p in candidates:
                   if os.path.exists(p):
                       try: return ImageFont.truetype(p, size)
                       except: pass
               return ImageFont.load_default()
 
-          ico = Image.new("RGBA", (1024, 1024), (12, 50, 28, 255))
-          d = ImageDraw.Draw(ico)
-          d.rounded_rectangle((120, 120, 904, 904), radius=180, fill=(40, 160, 90))
-          d.text((260, 380), "AppInfo", font=find_font(200), fill=(255, 255, 255))
-          ico.convert("RGB").save("Resources/feature_app_icon.png", "PNG")
-          print("Feature images generated.")
-          PYEOF
+          def text_centered(d, txt, x, y, font, fill):
+              try:
+                  bbox = d.textbbox((0, 0), txt, font=font)
+                  w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
+              except AttributeError:
+                  w, h = d.textsize(txt, font=font)
+              d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
 
-      - name: Generate app icons
-        run: |
-          python3 -m pip install --quiet --break-system-packages Pillow
-          python3 << 'PYEOF'
-          from PIL import Image
-          src = Image.open("Resources/login_logo.png").convert("RGBA")
-          def make_icon(size, path):
-              bg = Image.new("RGBA", (size, size), (10, 50, 25, 255))
-              logo = src.resize((size, size))
-              bg.alpha_composite(logo)
-              bg.convert("RGB").save(path, "PNG")
-          make_icon(120,  "Resources/AppIcon60x60@2x.png")
-          make_icon(180,  "Resources/AppIcon60x60@3x.png")
-          make_icon(152,  "Resources/AppIcon76x76@2x~ipad.png")
-          make_icon(167,  "Resources/AppIcon83.5x83.5@2x~ipad.png")
-          make_icon(1024, "Resources/AppIcon1024x1024.png")
+          def save_png(path, img):
+              if img.mode == "RGBA":
+                  bg = Image.new("RGB", img.size, (255, 255, 255))
+                  bg.paste(img, mask=img.split()[-1])
+                  img = bg
+              img.save(path, "PNG", optimize=True)
+
+          # ---------- App icon (1024) ----------
+          SZ = 1024
+          icon = Image.new("RGBA", (SZ, SZ), (0, 0, 0, 0))
+          d = ImageDraw.Draw(icon)
+          # gradient background (indigo -> teal)
+          for y in range(SZ):
+              t = y / (SZ - 1)
+              r = int(99  + (16  - 99)  * t)
+              g = int(102 + (185 - 102) * t)
+              b = int(241 + (129 - 241) * t)
+              d.line([(0, y), (SZ, y)], fill=(r, g, b, 255))
+          # rounded mask
+          mask = Image.new("L", (SZ, SZ), 0)
+          md = ImageDraw.Draw(mask)
+          md.rounded_rectangle((0, 0, SZ - 1, SZ - 1), radius=225, fill=255)
+          icon.putalpha(mask)
+          d = ImageDraw.Draw(icon)
+          # inner search circle
+          d.ellipse((260, 260, 660, 660), outline=(255, 255, 255, 230), width=46)
+          d.ellipse((260, 260, 660, 660), outline=(255, 255, 255, 80), width=14)
+          # magnifier handle
+          d.line([(620, 620), (820, 820)], fill=(255, 255, 255, 240), width=58)
+          d.line([(620, 620), (820, 820)], fill=(255, 255, 255, 60),  width=20)
+          # small "A" inside circle
+          fA = find_font(260, bold=True)
+          text_centered(d, "A", 460, 460, fA, (255, 255, 255, 245))
+          save_png("Resources/AppIcon1024.png", icon)
+
+          # ---------- iOS app icon set ----------
+          for size, name in [
+              (120, "AppIcon60x60@2x.png"),
+              (180, "AppIcon60x60@3x.png"),
+              (152, "AppIcon76x76@2x~ipad.png"),
+              (167, "AppIcon83.5x83.5@2x~ipad.png"),
+          ]:
+              scaled = icon.resize((size, size))
+              save_png(f"Resources/{name}", scaled)
+
+          # ---------- Splash screen background ----------
+          splash = Image.new("RGB", (1290, 2796), (16, 185, 129))
+          sd = ImageDraw.Draw(splash)
+          for i in range(120):
+              t = i / 119
+              r = int(16  + (99  - 16)  * t)
+              g = int(185 + (102 - 185) * t)
+              b = int(129 + (241 - 129) * t)
+              sd.ellipse((i*30, i*30, 1290-i*30, 2796-i*30), outline=(r, g, b), width=2)
+          text_centered(sd, "AppPeek", 645, 1300, find_font(180, bold=True), (255, 255, 255))
+          text_centered(sd, "Look up any app", 645, 1500, find_font(64), (255, 255, 255))
+          save_png("Resources/splash_bg.png", splash)
+
+          # ---------- Onboarding illustrations (3) ----------
+          def onboarding(idx, title, subtitle, primary):
+              W, H = 900, 1400
+              img = Image.new("RGB", (W, H), (245, 247, 250))
+              d = ImageDraw.Draw(img)
+              d.rounded_rectangle((80, 200, W - 80, 900), radius=40, fill=primary)
+              # abstract icon per slide
+              if idx == 1:
+                  d.ellipse((290, 360, 610, 680), outline=(255, 255, 255), width=24)
+                  d.line([(610, 680), (760, 830)], fill=(255, 255, 255), width=36)
+              elif idx == 2:
+                  d.rounded_rectangle((300, 360, 600, 660), radius=20, outline=(255, 255, 255), width=24)
+                  d.line([(360, 460), (540, 460)], fill=(255, 255, 255), width=18)
+                  d.line([(360, 530), (500, 530)], fill=(255, 255, 255), width=18)
+                  d.line([(360, 600), (470, 600)], fill=(255, 255, 255), width=18)
+              else:
+                  d.polygon([(450, 360), (620, 600), (280, 600)], outline=(255, 255, 255), width=24)
+                  d.ellipse((420, 520, 480, 580), fill=(255, 255, 255))
+              text_centered(d, title,  W // 2, 1050, find_font(56, bold=True), (30, 41, 59))
+              text_centered(d, subtitle, W // 2, 1130, find_font(34), (100, 116, 139))
+              # dots
+              for i in range(3):
+                  cx = W // 2 - 60 + i * 60
+                  fill = (30, 41, 59) if i == idx - 1 else (180, 190, 200)
+                  d.ellipse((cx - 12, 1290, cx + 12, 1314), fill=fill)
+              return img
+
+          for i, (t, s, c) in enumerate([
+              ("Paste any App Store link", "Drop a link from the App Store — apps, games, anything.", (79, 70, 229)),
+              ("Instant details", "Name, icon, version, size, age rating, description.",    (16, 185, 129)),
+              ("Share & save", "Copy clean info or share it as a card with one tap.",         (236, 72, 153)),
+          ], start=1):
+              save_png(f"Resources/onboarding_{i}.png", onboarding(i, t, s, c))
+
+          # ---------- Empty state illustration ----------
+          empty = Image.new("RGB", (900, 1200), (248, 250, 252))
+          ed = ImageDraw.Draw(empty)
+          ed.rounded_rectangle((150, 200, 750, 800), radius=40, outline=(200, 210, 220), width=4)
+          ed.ellipse((320, 380, 580, 640), outline=(100, 116, 139), width=20)
+          ed.line([(580, 640), (720, 780)], fill=(100, 116, 139), width=36)
+          text_centered(ed, "No app loaded yet", 450, 900, find_font(48, bold=True), (30, 41, 59))
+          text_centered(ed, "Paste an App Store link above\nto see its details here.",
+                        450, 1000, find_font(36), (100, 116, 139))
+          save_png("Resources/empty_state.png", empty)
+
+          # ---------- Share card template ----------
+          card = Image.new("RGB", (1200, 630), (15, 23, 42))
+          cd = ImageDraw.Draw(card)
+          for x in range(0, 1200, 6):
+              cd.line([(x, 0), (x, 630)], fill=(30, 41, 59))
+          cd.rounded_rectangle((40, 40, 1160, 590), radius=30, outline=(99, 102, 241), width=4)
+          cd.rounded_rectangle((100, 130, 340, 370), radius=24, fill=(255, 255, 255))
+          text_centered(cd, "Aa", 220, 250, find_font(110, bold=True), (99, 102, 241))
+          cd.text((380, 170), "App Name", font=find_font(54, bold=True), fill=(255, 255, 255))
+          cd.text((380, 240), "Version 1.0.0  •  120 MB", font=find_font(34), fill=(203, 213, 225))
+          cd.text((380, 300), "Developer • Category", font=find_font(30), fill=(148, 163, 184))
+          cd.text((380, 350), "Rated 4.6 ★", font=find_font(30), fill=(250, 204, 21))
+          cd.text((100, 470), "Looked up with AppPeek", font=find_font(28), fill=(148, 163, 184))
+          save_png("Resources/share_card.png", card)
+
+          print("Resources generated.")
           PYEOF
           ls -lh Resources
 
@@ -113,356 +203,1213 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleDevelopmentRegion</key>     <string>ar</string>
-              <key>CFBundleExecutable</key>            <string>AppDetailsViewer</string>
+              <key>CFBundleDevelopmentRegion</key>     <string>en</string>
+              <key>CFBundleExecutable</key>            <string>AppPeek</string>
               <key>CFBundleIdentifier</key>            <string>${{ env.NEW_BUNDLE_ID }}</string>
               <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
-              <key>CFBundleName</key>                  <string>AppDetailsViewer</string>
-              <key>CFBundleDisplayName</key>            <string>جالب تفاصيل الآب ستور</string>
-              <key>CFBundlePackageType</key>            <string>APPL</string>
-              <key>CFBundleSignature</key>              <string>????</string>
-              <key>CFBundleShortVersionString</key>     <string>1.0</string>
-              <key>CFBundleVersion</key>                <string>1</string>
+              <key>CFBundleName</key>                  <string>AppPeek</string>
+              <key>CFBundleDisplayName</key>           <string>AppPeek</string>
+              <key>CFBundlePackageType</key>           <string>APPL</string>
+              <key>CFBundleSignature</key>             <string>????</string>
+              <key>CFBundleShortVersionString</key>    <string>${{ env.APP_VERSION }}</string>
+              <key>CFBundleVersion</key>               <string>${{ env.BUILD_NUMBER }}</string>
               <key>CFBundleSupportedPlatforms</key>
               <array><string>iPhoneOS</string></array>
-              <key>LSRequiresIPhoneOS</key>             <true/>
-              <key>MinimumOSVersion</key>               <string>16.0</string>
+              <key>LSRequiresIPhoneOS</key>            <true/>
+              <key>MinimumOSVersion</key>              <string>17.0</string>
               <key>UIDeviceFamily</key>
               <array><integer>1</integer><integer>2</integer></array>
               <key>UIRequiredDeviceCapabilities</key>
               <array><string>arm64</string></array>
               <key>UISupportedInterfaceOrientations</key>
               <array><string>UIInterfaceOrientationPortrait</string></array>
-              <key>UIUserInterfaceStyle</key>
-              <string>Light</string>
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+              </array>
+              <key>UILaunchScreen</key>
+              <dict>
+                  <key>UIColorName</key><string></string>
+              </dict>
+              <key>UIRequiresFullScreen</key>         <true/>
+              <key>UIStatusBarStyle</key>             <string>UIStatusBarStyleDefault</string>
+              <key>UIUserInterfaceStyle</key>         <string>Light</string>
+              <key>UIApplicationSceneManifest</key>
+              <dict>
+                  <key>UIApplicationSupportsMultipleScenes</key><false/>
+              </dict>
+              <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60@2x.png</string>
+                          <string>AppIcon60x60@3x.png</string>
+                          <string>AppIcon60x60</string>
+                      </array>
+                      <key>CFBundleIconName</key><string>AppIcon</string>
+                      <key>UIPrerenderedIcon</key><false/>
+                  </dict>
+              </dict>
+              <key>CFBundleIcons~ipad</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon76x76@2x~ipad.png</string>
+                          <string>AppIcon83.5x83.5@2x~ipad.png</string>
+                          <string>AppIcon60x60@2x.png</string>
+                          <string>AppIcon76x76</string>
+                          <string>AppIcon83.5x83.5</string>
+                          <string>AppIcon60x60</string>
+                      </array>
+                      <key>CFBundleIconName</key><string>AppIcon</string>
+                      <key>UIPrerenderedIcon</key><false/>
+                  </dict>
+              </dict>
               <key>NSAppTransportSecurity</key>
               <dict>
-                  <key>NSAllowsArbitraryLoads</key>
-                  <true/>
+                  <key>NSAllowsArbitraryLoads</key><true/>
               </dict>
           </dict>
           </plist>
           PEOF
 
       # =========================================================
-      # SOURCE CODE - Models & Helper Structures
+      # SOURCE — Constants & Theme
       # =========================================================
-      - name: Generate AppStoreLookup Models
+      - name: Generate code - Constants.swift
         run: |
-          cat > AppStoreModel.swift << 'VIPEOF'
-          import Foundation
+          cat > Constants.swift << 'CEOF'
+          import SwiftUI
 
-          struct AppStoreResponse: Codable {
-              let resultCount: Int
-              let results: [AppStoreItem]
+          enum AppConstants {
+              static let appVersion    = "1.0.0"
+              static let buildNumber   = "1"
+              static let storeName     = "AppPeek"
+              static let itunesLookup  = "https://itunes.apple.com/lookup"
+              static let recentKey     = "apppeek.recent.v1"
+              static let historyKey    = "apppeek.history.v1"
+              static let maxRecent     = 8
+              static let cacheBytes: Int = 64 * 1024 * 1024
           }
 
-          struct AppStoreItem: Codable, Identifiable {
+          // Single light palette, no dark mode support (per project policy).
+          func dyn(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+              Color(UIColor(red: light.0, green: light.1, blue: light.2, alpha: 1))
+          }
+
+          extension Color {
+              // Brand
+              static let apPrimary   = Color(red: 0.39, green: 0.40, blue: 0.95) // indigo
+              static let apSecondary = Color(red: 0.06, green: 0.73, blue: 0.51) // teal
+              static let apAccent    = Color(red: 0.93, green: 0.28, blue: 0.60) // pink
+
+              // Surfaces
+              static let apBackground = dyn((0.97, 0.98, 0.99), (0.05, 0.06, 0.09))
+              static let apCard       = dyn((1.00, 1.00, 1.00), (0.10, 0.12, 0.16))
+              static let apCardAlt    = dyn((0.95, 0.97, 1.00), (0.14, 0.16, 0.20))
+
+              // Text
+              static let apText       = dyn((0.12, 0.16, 0.23), (0.95, 0.97, 1.00))
+              static let apSubtext    = dyn((0.39, 0.45, 0.55), (0.65, 0.70, 0.80))
+              static let apDivider    = dyn((0.88, 0.91, 0.95), (0.20, 0.22, 0.27))
+
+              // Status
+              static let apSuccess = Color(red: 0.06, green: 0.72, blue: 0.51)
+              static let apWarning = Color(red: 0.96, green: 0.62, blue: 0.04)
+              static let apDanger  = Color(red: 0.94, green: 0.27, blue: 0.27)
+          }
+
+          extension Font {
+              static let apTitle    = Font.system(size: 28, weight: .bold,       design: .rounded)
+              static let apHeadline = Font.system(size: 20, weight: .semibold,  design: .rounded)
+              static let apBody     = Font.system(size: 16, weight: .regular,   design: .rounded)
+              static let apCaption  = Font.system(size: 13, weight: .medium,    design: .rounded)
+              static let apMono     = Font.system(size: 14, weight: .medium,    design: .monospaced)
+          }
+          CEOF
+
+      # =========================================================
+      # SOURCE — Models
+      # =========================================================
+      - name: Generate code - Models.swift
+        run: |
+          cat > Models.swift << 'MEOF'
+          import Foundation
+
+          // MARK: - iTunes Lookup API
+
+          struct ITunesLookupResponse: Decodable {
+              let resultCount: Int
+              let results: [ITunesApp]
+
+              enum CodingKeys: String, CodingKey {
+                  case resultCount = "resultCount"
+                  case results     = "results"
+              }
+          }
+
+          struct ITunesApp: Decodable, Identifiable, Hashable {
+              let trackId: Int
+              let trackName: String
+              let artistName: String?
+              let sellerName: String?
+              let bundleId: String
+              let version: String?
+              let releaseDate: String?
+              let currentVersionReleaseDate: String?
+              let fileSizeBytes: String?
+              let averageUserRating: Double?
+              let userRatingCount: Int?
+              let primaryGenreName: String?
+              let contentAdvisoryRating: String?
+              let minimumOsVersion: String?
+              let formattedPrice: String?
+              let currency: String?
+              let description: String?
+              let releaseNotes: String?
+              let artworkUrl100: String?
+              let artworkUrl512: String?
+              let screenshotUrls: [String]?
+              let ipadScreenshotUrls: [String]?
+              let trackViewUrl: String?
+              let sellerUrl: String?
+              let supportedDevices: [String]?
+
+              var id: Int { trackId }
+
+              enum CodingKeys: String, CodingKey {
+                  case trackId, trackName, artistName, sellerName, bundleId
+                  case version, releaseDate, currentVersionReleaseDate
+                  case fileSizeBytes, averageUserRating, userRatingCount
+                  case primaryGenreName, contentAdvisoryRating, minimumOsVersion
+                  case formattedPrice, currency, description, releaseNotes
+                  case artworkUrl100, artworkUrl512
+                  case screenshotUrls, ipadScreenshotUrls
+                  case trackViewUrl, sellerUrl, supportedDevices
+              }
+
+              init(from decoder: Decoder) throws {
+                  let c = try decoder.container(keyedBy: CodingKeys.self)
+                  self.trackId  = try c.decode(Int.self,    forKey: .trackId)
+                  self.trackName = try c.decode(String.self, forKey: .trackName)
+                  self.artistName  = try? c.decode(String.self, forKey: .artistName)
+                  self.sellerName  = try? c.decode(String.self, forKey: .sellerName)
+                  self.bundleId    = (try? c.decode(String.self, forKey: .bundleId)) ?? "unknown"
+                  self.version     = try? c.decode(String.self, forKey: .version)
+                  self.releaseDate = try? c.decode(String.self, forKey: .releaseDate)
+                  self.currentVersionReleaseDate = try? c.decode(String.self, forKey: .currentVersionReleaseDate)
+                  self.fileSizeBytes    = try? c.decode(String.self, forKey: .fileSizeBytes)
+                  self.averageUserRating = try? c.decode(Double.self, forKey: .averageUserRating)
+                  self.userRatingCount   = try? c.decode(Int.self,    forKey: .userRatingCount)
+                  self.primaryGenreName  = try? c.decode(String.self, forKey: .primaryGenreName)
+                  self.contentAdvisoryRating = try? c.decode(String.self, forKey: .contentAdvisoryRating)
+                  self.minimumOsVersion  = try? c.decode(String.self, forKey: .minimumOsVersion)
+                  self.formattedPrice    = try? c.decode(String.self, forKey: .formattedPrice)
+                  self.currency          = try? c.decode(String.self, forKey: .currency)
+                  self.description       = try? c.decode(String.self, forKey: .description)
+                  self.releaseNotes      = try? c.decode(String.self, forKey: .releaseNotes)
+                  self.artworkUrl100     = try? c.decode(String.self, forKey: .artworkUrl100)
+                  self.artworkUrl512     = try? c.decode(String.self, forKey: .artworkUrl512)
+                  self.screenshotUrls    = try? c.decode([String].self, forKey: .screenshotUrls)
+                  self.ipadScreenshotUrls = try? c.decode([String].self, forKey: .ipadScreenshotUrls)
+                  self.trackViewUrl      = try? c.decode(String.self, forKey: .trackViewUrl)
+                  self.sellerUrl         = try? c.decode(String.self, forKey: .sellerUrl)
+                  self.supportedDevices  = try? c.decode([String].self, forKey: .supportedDevices)
+              }
+
+              var bestArtwork: String? { artworkUrl512 ?? artworkUrl100 }
+              var displayPrice: String { (formattedPrice?.isEmpty == false ? formattedPrice! : (priceIsFree ? "Free" : "—")) }
+              var priceIsFree: Bool { (formattedPrice ?? "").lowercased().contains("free") }
+
+              var fileSizeFormatted: String {
+                  guard let s = fileSizeBytes, let bytes = Double(s) else { return "—" }
+                  let f = ByteCountFormatter()
+                  f.allowedUnits = [.useKB, .useMB, .useGB]
+                  f.countStyle = .file
+                  return f.string(fromByteCount: Int64(bytes))
+              }
+
+              var releaseDateFormatted: String? {
+                  [releaseDate, currentVersionReleaseDate]
+                      .compactMap { $0 }
+                      .first
+                      .flatMap { Self.parseISO($0) }
+              }
+              var releaseDateShort: String? {
+                  releaseDateFormatted.map { DateFormatter.short.string(from: $0) }
+              }
+
+              static func parseISO(_ s: String) -> Date? {
+                  let f = ISO8601DateFormatter()
+                  f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                  if let d = f.date(from: s) { return d }
+                  f.formatOptions = [.withInternetDateTime]
+                  return f.date(from: s)
+              }
+          }
+
+          extension DateFormatter {
+              static let short: DateFormatter = {
+                  let f = DateFormatter()
+                  f.dateStyle = .medium
+                  f.timeStyle = .none
+                  return f
+              }()
+          }
+
+          // MARK: - Local models
+
+          struct AppSnapshot: Codable, Identifiable, Hashable {
               var id: Int { trackId }
               let trackId: Int
               let trackName: String
-              let version: String
-              let artworkUrl512: String?
-              let artworkUrl100: String?
-              let description: String?
-              let sellerName: String?
-              let primaryGenreName: String?
-              let averageUserRating: Double?
-              let userRatingCount: Int?
-              let fileSizeBytes: String?
-              let formattedPrice: String?
+              let artistName: String?
+              let bundleId: String
+              let version: String?
+              let artworkUrl: String?
+              let lookedUpAt: Date
+          }
 
-              var iconURL: String {
-                  return artworkUrl512 ?? artworkUrl100 ?? ""
-              }
+          enum LookupError: LocalizedError {
+              case invalidURL
+              case invalidInput
+              case notFound
+              case network(String)
+              case decoding(String)
 
-              var formattedSize: String {
-                  guard let sizeStr = fileSizeBytes, let bytes = Int64(sizeStr) else { return "غير معروف" }
-                  let formatter = ByteCountFormatter()
-                  formatter.allowedUnits = [.useMB, .useGB]
-                  formatter.countStyle = .file
-                  return formatter.string(fromByteCount: bytes)
+              var errorDescription: String? {
+                  switch self {
+                  case .invalidURL:   return "The link is not a valid App Store URL."
+                  case .invalidInput: return "Paste a link like https://apps.apple.com/... or just an app id like id123456789."
+                  case .notFound:     return "We couldn't find that app. Double-check the link."
+                  case .network(let m): return "Network error: \(m)"
+                  case .decoding(let m): return "Couldn't read the response: \(m)"
+                  }
               }
           }
-          VIPEOF
+          MEOF
 
-      - name: Generate AppStoreFetcher Service
+      # =========================================================
+      # SOURCE — Link Parser
+      # =========================================================
+      - name: Generate code - LinkParser.swift
         run: |
-          cat > AppStoreFetcher.swift << 'VIPEOF'
+          cat > LinkParser.swift << 'LEOF'
           import Foundation
 
-          @MainActor
-          class AppStoreFetcher: ObservableObject {
-              @Published var appItem: AppStoreItem?
-              @Published var isLoading: Bool = false
-              @Published var errorMessage: String?
+          enum LinkParser {
+              /// Accepts an App Store URL, a short link, or a raw id, returns numeric app id.
+              static func extractAppID(from input: String) -> String? {
+                  let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !trimmed.isEmpty else { return nil }
 
-              func fetchDetails(from urlString: String) async {
-                  isLoading = true
-                  errorMessage = nil
-                  appItem = nil
+                  // Direct numeric id (with or without id prefix)
+                  if let id = matchLeadingId(trimmed) { return id }
+                  if trimmed.allSatisfy({ $0.isNumber }) { return trimmed }
 
-                  let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard !trimmed.isEmpty else {
-                      errorMessage = "يرجى إدخال رابط تطبيق App Store"
-                      isLoading = false
-                      return
+                  // https://apps.apple.com/us/app/name/id123456789
+                  if let id = regexFirst(trimmed, pattern: #"/id(\d+)"#) { return id }
+                  // https://apps.apple.com/app/id123456789
+                  if let id = regexFirst(trimmed, pattern: #"[?&]id=(\d+)"#) { return id }
+                  // https://itunes.apple.com/.../id123456789?...
+                  if let id = regexFirst(trimmed, pattern: #"/id(\d+)(?:[/?#]|$)"#) { return id }
+                  // short links (itun.es) — we still need to resolve, but try numeric extract
+                  if let id = regexFirst(trimmed, pattern: #"(\d{6,})"#) { return id }
+
+                  return nil
+              }
+
+              private static func matchLeadingId(_ s: String) -> String? {
+                  // "id123456789" or "id123456789?foo=bar"
+                  let pattern = #"^id(\d+)(?:[/?#].*)?$"#
+                  return regexFirst(s, pattern: pattern)
+              }
+
+              private static func regexFirst(_ s: String, pattern: String) -> String? {
+                  guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+                  let range = NSRange(s.startIndex..<s.endIndex, in: s)
+                  guard let m = re.firstMatch(in: s, options: [], range: range), m.numberOfRanges >= 2,
+                        let r = Range(m.range(at: 1), in: s) else { return nil }
+                  return String(s[r])
+              }
+          }
+          LEOF
+
+      # =========================================================
+      # SOURCE — LookupService (iTunes API)
+      # =========================================================
+      - name: Generate code - LookupService.swift
+        run: |
+          cat > LookupService.swift << 'LEOF'
+          import Foundation
+
+          actor LookupService {
+              static let shared = LookupService()
+              private let session: URLSession
+
+              init() {
+                  let cfg = URLSessionConfiguration.default
+                  cfg.timeoutIntervalForRequest = 15
+                  cfg.timeoutIntervalForResource = 30
+                  cfg.waitsForConnectivity = true
+                  self.session = URLSession(configuration: cfg)
+              }
+
+              func lookup(appID: String, country: String = "us") async throws -> ITunesApp {
+                  guard !appID.isEmpty, appID.allSatisfy({ $0.isNumber }) else {
+                      throw LookupError.invalidInput
                   }
+                  var comps = URLComponents(string: AppConstants.itunesLookup)!
+                  comps.queryItems = [
+                      URLQueryItem(name: "id", value: appID),
+                      URLQueryItem(name: "country", value: country)
+                  ]
+                  guard let url = comps.url else { throw LookupError.invalidURL }
 
-                  // Extractor logic for App Store ID (e.g. id123456789)
-                  var appId: String?
-                  if let range = trimmed.range(of: #"id\d+"#, options: .regularExpression) {
-                      appId = String(trimmed[range]).replacingOccurrences(of: "id", with: "")
-                  } else if CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: trimmed)) {
-                      appId = trimmed
-                  }
+                  var req = URLRequest(url: url)
+                  req.setValue("AppPeek/1.0", forHTTPHeaderField: "User-Agent")
 
-                  guard let id = appId else {
-                      errorMessage = "عذراً، لم نتمكن من العثور على معرّف التطبيق (App ID) في الرابط المدخل"
-                      isLoading = false
-                      return
-                  }
-
-                  let countryCode = extractCountryCode(from: trimmed) ?? "us"
-                  let apiUrlString = "https://itunes.apple.com/lookup?id=\(id)&country=\(countryCode)"
-
-                  guard let apiUrl = URL(string: apiUrlString) else {
-                      errorMessage = "رابط البحث غير صالح"
-                      isLoading = false
-                      return
+                  let data: Data
+                  do {
+                      let (d, resp) = try await session.data(for: req)
+                      guard let http = resp as? HTTPURLResponse else {
+                          throw LookupError.network("Invalid response")
+                      }
+                      guard (200..<300).contains(http.statusCode) else {
+                          throw LookupError.network("HTTP \(http.statusCode)")
+                      }
+                      data = d
+                  } catch let e as LookupError {
+                      throw e
+                  } catch {
+                      throw LookupError.network(error.localizedDescription)
                   }
 
                   do {
-                      let (data, response) = try await URLSession.shared.data(from: apiUrl)
-                      if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-                          errorMessage = "فشل الإتصال بالخادم (رمز \(httpResponse.statusCode))"
-                          isLoading = false
-                          return
-                      }
-
-                      let decoded = try JSONDecoder().decode(AppStoreResponse.self, from: data)
-                      if let firstResult = decoded.results.first {
-                          self.appItem = firstResult
-                      } else {
-                          self.errorMessage = "لم يتم العثور على تفاصيل التطبيق في متجر App Store"
-                      }
+                      let decoded = try JSONDecoder().decode(ITunesLookupResponse.self, from: data)
+                      guard let first = decoded.results.first else { throw LookupError.notFound }
+                      return first
+                  } catch let e as LookupError {
+                      throw e
                   } catch {
-                      self.errorMessage = "خطأ في تحليل البيانات: \(error.localizedDescription)"
+                      throw LookupError.decoding(error.localizedDescription)
                   }
-
-                  isLoading = false
-              }
-
-              private func extractCountryCode(from url: String) -> String? {
-                  let pattern = #"apps\.apple\.com/([a-z]{2})/"#
-                  if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-                     let match = regex.firstMatch(in: url, options: [], range: NSRange(location: 0, length: url.utf16.count)) {
-                      if let range = Range(match.range(at: 1), in: url) {
-                          return String(url[range])
-                      }
-                  }
-                  return nil
               }
           }
-          VIPEOF
+          LEOF
 
-      - name: Generate Main App View
+      # =========================================================
+      # SOURCE — HistoryStore
+      # =========================================================
+      - name: Generate code - HistoryStore.swift
         run: |
-          cat > MainAppView.swift << 'VIPEOF'
+          cat > HistoryStore.swift << 'HEOF'
+          import Foundation
           import SwiftUI
 
-          struct MainAppView: View {
-              @StateObject private var fetcher = AppStoreFetcher()
-              @State private var inputURL: String = ""
+          @MainActor
+          final class HistoryStore: ObservableObject {
+              static let shared = HistoryStore()
+
+              @Published private(set) var recent: [AppSnapshot] = []
+              private let key = AppConstants.historyKey
+              private let d = UserDefaults.standard
+
+              private init() { load() }
+
+              func record(_ app: ITunesApp) {
+                  let snap = AppSnapshot(
+                      trackId: app.trackId,
+                      trackName: app.trackName,
+                      artistName: app.artistName,
+                      bundleId: app.bundleId,
+                      version: app.version,
+                      artworkUrl: app.bestArtwork,
+                      lookedUpAt: Date()
+                  )
+                  recent.removeAll { $0.trackId == snap.trackId }
+                  recent.insert(snap, at: 0)
+                  if recent.count > AppConstants.maxRecent {
+                      recent = Array(recent.prefix(AppConstants.maxRecent))
+                  }
+                  save()
+              }
+
+              func clear() {
+                  recent.removeAll()
+                  save()
+              }
+
+              private func load() {
+                  guard let data = d.data(forKey: key),
+                        let decoded = try? JSONDecoder().decode([AppSnapshot].self, from: data) else { return }
+                  recent = decoded
+              }
+              private func save() {
+                  if let data = try? JSONEncoder().encode(recent) {
+                      d.set(data, forKey: key)
+                  }
+              }
+          }
+          HEOF
+
+      # =========================================================
+      # SOURCE — ImageLoader (async image with simple in-memory cache)
+      # =========================================================
+      - name: Generate code - ImageLoader.swift
+        run: |
+          cat > ImageLoader.swift << 'IEOF'
+          import SwiftUI
+          import UIKit
+
+          @MainActor
+          final class ImageLoader: ObservableObject {
+              @Published var image: UIImage?
+              private var task: URLSessionDataTask?
+              private static var cache = NSCache<NSString, UIImage>()
+              private var currentURL: URL?
+
+              init() {
+                  Self.cache.totalCostLimit = AppConstants.cacheBytes
+              }
+
+              func load(_ urlString: String?) {
+                  currentURL = nil
+                  image = nil
+                  task?.cancel()
+                  guard let s = urlString, let url = URL(string: s) else { return }
+                  currentURL = url
+                  if let cached = Self.cache.object(forKey: s as NSString) {
+                      self.image = cached
+                      return
+                  }
+                  task = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+                      guard let self, let data, let img = UIImage(data: data), url == self.currentURL else { return }
+                      Self.cache.setObject(img, forKey: s as NSString, cost: data.count)
+                      Task { @MainActor in self.image = img }
+                  }
+                  task?.resume()
+              }
+          }
+
+          struct CachedImage: View {
+              @StateObject private var loader = ImageLoader()
+              let url: String?
+              var contentMode: ContentMode = .fill
+              var placeholderColor: Color = .apCardAlt
 
               var body: some View {
-                  NavigationView {
+                  ZStack {
+                      placeholderColor
+                      if let img = loader.image {
+                          Image(uiImage: img)
+                              .resizable()
+                              .aspectRatio(contentMode: contentMode)
+                              .transition(.opacity)
+                      }
+                  }
+                  .onAppear { loader.load(url) }
+                  .onChange(of: url) { _, new in loader.load(new) }
+              }
+          }
+          IEOF
+
+      # =========================================================
+      # SOURCE — Components
+      # =========================================================
+      - name: Generate code - Components.swift
+        run: |
+          cat > Components.swift << 'CEOF'
+          import SwiftUI
+
+          struct APPrimaryButtonStyle: ButtonStyle {
+              var enabled: Bool = true
+              func makeBody(configuration: Configuration) -> some View {
+                  configuration.label
+                      .font(.apHeadline)
+                      .frame(maxWidth: .infinity, minHeight: 52)
+                      .foregroundColor(.white)
+                      .background(
+                          LinearGradient(
+                              colors: enabled
+                                  ? [Color.apPrimary, Color.apSecondary]
+                                  : [Color.apSubtext.opacity(0.5), Color.apSubtext.opacity(0.3)],
+                              startPoint: .topLeading, endPoint: .bottomTrailing
+                          )
+                      )
+                      .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                      .shadow(color: enabled ? Color.apPrimary.opacity(0.25) : .clear,
+                              radius: 12, y: 6)
+                      .scaleEffect(configuration.isPressed ? 0.97 : 1)
+                      .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+              }
+          }
+
+          struct APSecondaryButtonStyle: ButtonStyle {
+              func makeBody(configuration: Configuration) -> some View {
+                  configuration.label
+                      .font(.apHeadline)
+                      .frame(maxWidth: .infinity, minHeight: 48)
+                      .foregroundColor(.apPrimary)
+                      .background(Color.apCard)
+                      .overlay(
+                          RoundedRectangle(cornerRadius: 14, style: .continuous)
+                              .stroke(Color.apPrimary, lineWidth: 1.5)
+                      )
+                      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                      .opacity(configuration.isPressed ? 0.7 : 1)
+              }
+          }
+
+          struct APInfoRow: View {
+              let icon: String
+              let title: String
+              let value: String
+              var body: some View {
+                  HStack(spacing: 14) {
                       ZStack {
-                          Color(red: 0.95, green: 0.97, blue: 0.96).edgesIgnoringSafeArea(.all)
+                          RoundedRectangle(cornerRadius: 10, style: .continuous)
+                              .fill(Color.apPrimary.opacity(0.10))
+                          Image(systemName: icon)
+                              .font(.system(size: 16, weight: .semibold))
+                              .foregroundColor(.apPrimary)
+                      }
+                      .frame(width: 38, height: 38)
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(title)
+                              .font(.apCaption)
+                              .foregroundColor(.apSubtext)
+                          Text(value)
+                              .font(.apBody)
+                              .foregroundColor(.apText)
+                              .lineLimit(2)
+                      }
+                      Spacer(minLength: 0)
+                  }
+                  .padding(.vertical, 6)
+              }
+          }
+
+          struct APChip: View {
+              let text: String
+              var icon: String? = nil
+              var color: Color = .apPrimary
+              var body: some View {
+                  HStack(spacing: 6) {
+                      if let icon { Image(systemName: icon).font(.system(size: 11, weight: .bold)) }
+                      Text(text).font(.apCaption)
+                  }
+                  .padding(.horizontal, 10)
+                  .padding(.vertical, 5)
+                  .background(color.opacity(0.12))
+                  .foregroundColor(color)
+                  .clipShape(Capsule())
+              }
+          }
+          CEOF
+
+      # =========================================================
+      # SOURCE — Views
+      # =========================================================
+      - name: Generate code - Views.swift
+        run: |
+          cat > Views.swift << 'VEOF'
+          import SwiftUI
+          import UIKit
+
+          // MARK: - Root
+          struct RootView: View {
+              @StateObject private var history = HistoryStore.shared
+              @State private var linkInput: String = ""
+              @State private var app: ITunesApp?
+              @State private var isLoading = false
+              @State private var errorMessage: String?
+              @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "apppeek.onboarded.v1")
+              @State private var showHistory = false
+              @State private var showShare = false
+
+              var body: some View {
+                  NavigationStack {
+                      ZStack {
+                          LinearGradient(
+                              colors: [Color.apBackground, Color.apCardAlt.opacity(0.5)],
+                              startPoint: .top, endPoint: .bottom
+                          )
+                          .ignoresSafeArea()
 
                           ScrollView {
-                              VStack(spacing: 24) {
-                                  // Header Card
-                                  VStack(spacing: 8) {
-                                      Image(systemName: "link.circle.fill")
-                                          .font(.system(size: 60))
-                                          .foregroundColor(Color(red: 0.16, green: 0.62, blue: 0.36))
-                                      Text("جالب معلومات الآب ستور")
-                                          .font(.system(size: 24, weight: .bold))
-                                          .foregroundColor(Color(red: 0.08, green: 0.20, blue: 0.12))
-                                      Text("ضع أي رابط لتطبيق من App Store لعرض اسمه وأيقونته وإصداره فوراً")
-                                          .font(.system(size: 14))
-                                          .foregroundColor(.gray)
-                                          .multilineTextAlignment(.center)
-                                          .padding(.horizontal, 16)
+                              VStack(spacing: 20) {
+                                  header
+                                  inputCard
+                                  if let app { resultCard(app) }
+                                  else { emptyState }
+                                  if !history.recent.isEmpty && app == nil {
+                                      historySection
                                   }
-                                  .padding(.top, 20)
-
-                                  // Input Section
-                                  VStack(spacing: 14) {
-                                      HStack {
-                                          TextField("ضع رابط App Store هنا...", text: $inputURL)
-                                              .font(.system(size: 14))
-                                              .autocapitalization(.none)
-                                              .disableAutocorrection(true)
-
-                                          if !inputURL.isEmpty {
-                                              Button {
-                                                  inputURL = ""
-                                              } label: {
-                                                  Image(systemName: "xmark.circle.fill")
-                                                      .foregroundColor(.gray)
-                                              }
-                                          }
-                                      }
-                                      .padding()
-                                      .background(Color.white)
-                                      .cornerRadius(12)
-                                      .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 2)
-
-                                      Button {
-                                          Task {
-                                              await fetcher.fetchDetails(from: inputURL)
-                                          }
-                                      } label: {
-                                          HStack {
-                                              if fetcher.isLoading {
-                                                  ProgressView()
-                                                      .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                              } else {
-                                                  Image(systemName: "magnifyingglass")
-                                                  Text("جلب التفاصيل")
-                                                      .font(.system(size: 16, weight: .bold))
-                                              }
-                                          }
-                                          .foregroundColor(.white)
-                                          .frame(maxWidth: .infinity)
-                                          .frame(height: 50)
-                                          .background(Color(red: 0.16, green: 0.62, blue: 0.36))
-                                          .cornerRadius(12)
-                                      }
-                                      .disabled(fetcher.isLoading)
-                                  }
-                                  .padding(.horizontal, 20)
-
-                                  // Error Display
-                                  if let error = fetcher.errorMessage {
-                                      HStack {
-                                          Image(systemName: "exclamationmark.triangle.fill")
-                                              .foregroundColor(.red)
-                                          Text(error)
-                                              .font(.system(size: 14))
-                                              .foregroundColor(.red)
-                                      }
-                                      .padding()
-                                      .background(Color.red.opacity(0.1))
-                                      .cornerRadius(10)
-                                      .padding(.horizontal, 20)
-                                  }
-
-                                  // App Result Card
-                                  if let app = fetcher.appItem {
-                                      VStack(spacing: 20) {
-                                          // App Icon, Name, and Version
-                                          HStack(spacing: 16) {
-                                              AsyncImage(url: URL(string: app.iconURL)) { image in
-                                                  image
-                                                      .resizable()
-                                                      .aspectRatio(contentMode: .fill)
-                                              } placeholder: {
-                                                  RoundedRectangle(cornerRadius: 20)
-                                                      .fill(Color.gray.opacity(0.2))
-                                                      .overlay(ProgressView())
-                                              }
-                                              .frame(width: 90, height: 90)
-                                              .cornerRadius(20)
-                                              .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
-
-                                              VStack(alignment: .leading, spacing: 6) {
-                                                  Text(app.trackName)
-                                                      .font(.system(size: 18, weight: .bold))
-                                                      .foregroundColor(Color(red: 0.08, green: 0.20, blue: 0.12))
-                                                      .lineLimit(2)
-
-                                                  HStack {
-                                                      Text("الإصدار:")
-                                                          .font(.system(size: 13, weight: .semibold))
-                                                          .foregroundColor(.gray)
-                                                      Text(app.version)
-                                                          .font(.system(size: 13, weight: .bold))
-                                                          .foregroundColor(Color(red: 0.16, green: 0.62, blue: 0.36))
-                                                  }
-
-                                                  if let seller = app.sellerName {
-                                                      Text(seller)
-                                                          .font(.system(size: 12))
-                                                          .foregroundColor(.secondary)
-                                                          .lineLimit(1)
-                                                  }
-                                              }
-                                              Spacer()
-                                          }
-
-                                          Divider()
-
-                                          // Additional Metadata Grid
-                                          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                                              InfoTile(title: "الفئة", value: app.primaryGenreName ?? "-")
-                                              InfoTile(title: "الحجم", value: app.formattedSize)
-                                              InfoTile(title: "السعر", value: app.formattedPrice ?? "مجاني")
-                                              InfoTile(title: "التقييم", value: String(format: "%.1f ★", app.averageUserRating ?? 0.0))
-                                          }
-
-                                          if let desc = app.description {
-                                              VStack(alignment: .leading, spacing: 8) {
-                                                  Text("الوصف:")
-                                                      .font(.system(size: 14, weight: .bold))
-                                                  Text(desc)
-                                                      .font(.system(size: 13))
-                                                      .foregroundColor(.secondary)
-                                                      .lineLimit(5)
-                                              }
-                                              .frame(maxWidth: .infinity, alignment: .leading)
-                                          }
-                                      }
-                                      .padding(20)
-                                      .background(Color.white)
-                                      .cornerRadius(18)
-                                      .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
-                                      .padding(.horizontal, 20)
-                                  }
-
-                                  Spacer()
+                                  Spacer(minLength: 24)
+                              }
+                              .padding(.horizontal, 18)
+                              .padding(.top, 8)
+                          }
+                      }
+                      .navigationTitle("AppPeek")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .topBarTrailing) {
+                              Button { showHistory = true } label: {
+                                  Image(systemName: "clock.arrow.circlepath")
                               }
                           }
                       }
-                      .navigationBarHidden(true)
+                      .sheet(isPresented: $showOnboarding) {
+                          OnboardingView { showOnboarding = false }
+                      }
+                      .sheet(isPresented: $showHistory) {
+                          HistoryView { picked in
+                              showHistory = false
+                              Task { await fetch(byID: String(picked.trackId)) }
+                          }
+                      }
+                      .sheet(isPresented: $showShare) {
+                          if let app { ShareCardView(app: app) }
+                      }
+                      .alert("Couldn't load app", isPresented: Binding(
+                          get: { errorMessage != nil },
+                          set: { if !$0 { errorMessage = nil } }
+                      )) {
+                          Button("OK", role: .cancel) { errorMessage = nil }
+                      } message: {
+                          Text(errorMessage ?? "")
+                      }
                   }
+              }
+
+              // MARK: Header
+              private var header: some View {
+                  HStack(spacing: 10) {
+                      ZStack {
+                          Circle().fill(LinearGradient(colors: [.apPrimary, .apSecondary],
+                                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+                          Image(systemName: "magnifyingglass.circle.fill")
+                              .font(.system(size: 24, weight: .bold))
+                              .foregroundColor(.white)
+                      }
+                      .frame(width: 38, height: 38)
+
+                      VStack(alignment: .leading, spacing: 0) {
+                          Text("AppPeek")
+                              .font(.apHeadline)
+                              .foregroundColor(.apText)
+                          Text("v\(AppConstants.appVersion) • Build \(AppConstants.buildNumber)")
+                              .font(.system(size: 11, weight: .medium))
+                              .foregroundColor(.apSubtext)
+                      }
+                      Spacer()
+                  }
+              }
+
+              // MARK: Input card
+              private var inputCard: some View {
+                  VStack(alignment: .leading, spacing: 12) {
+                      Text("Paste an App Store link")
+                          .font(.apHeadline)
+                          .foregroundColor(.apText)
+
+                      HStack(spacing: 10) {
+                          Image(systemName: "link")
+                              .foregroundColor(.apSubtext)
+                          TextField("https://apps.apple.com/us/app/…", text: $linkInput, axis: .vertical)
+                              .lineLimit(1...3)
+                              .textInputAutocapitalization(.never)
+                              .autocorrectionDisabled()
+                              .font(.apBody)
+                              .foregroundColor(.apText)
+                              .submitLabel(.search)
+                              .onSubmit(performLookup)
+                      }
+                      .padding(.horizontal, 14)
+                      .padding(.vertical, 12)
+                      .background(Color.apCard)
+                      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                      .overlay(
+                          RoundedRectangle(cornerRadius: 14, style: .continuous)
+                              .stroke(Color.apDivider, lineWidth: 1)
+                      )
+
+                      HStack(spacing: 10) {
+                          Button(action: performLookup) {
+                              HStack {
+                                  if isLoading { ProgressView().tint(.white) }
+                                  else { Image(systemName: "magnifyingglass") }
+                                  Text(isLoading ? "Looking up…" : "Look up")
+                              }
+                          }
+                          .buttonStyle(APPrimaryButtonStyle(enabled: !isLoading && !linkInput.trimmingCharacters(in: .whitespaces).isEmpty))
+                          .disabled(isLoading || linkInput.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                          Button {
+                              if let pasted = UIPasteboard.general.string { linkInput = pasted }
+                          } label: {
+                              Image(systemName: "doc.on.clipboard")
+                          }
+                          .buttonStyle(APSecondaryButtonStyle())
+                          .frame(width: 56)
+                      }
+                  }
+                  .padding(16)
+                  .background(Color.apCard.opacity(0.6))
+                  .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+              }
+
+              // MARK: Empty state
+              private var emptyState: some View {
+                  VStack(spacing: 16) {
+                      Image("empty_state", bundle: nil)
+                          .resizable()
+                          .scaledToFit()
+                          .frame(maxWidth: 280)
+                          .opacity(0.95)
+                      Text("Paste a link above to peek at any app")
+                          .font(.apBody)
+                          .foregroundColor(.apSubtext)
+                          .multilineTextAlignment(.center)
+                  }
+                  .frame(maxWidth: .infinity)
+                  .padding(.vertical, 24)
+              }
+
+              // MARK: Result
+              private func resultCard(_ app: ITunesApp) -> some View {
+                  VStack(alignment: .leading, spacing: 16) {
+                      HStack(alignment: .top, spacing: 14) {
+                          CachedImage(url: app.bestArtwork, contentMode: .fill)
+                              .frame(width: 96, height: 96)
+                              .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                              .overlay(
+                                  RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                      .stroke(Color.apDivider, lineWidth: 1)
+                              )
+                              .shadow(color: Color.black.opacity(0.08), radius: 8, y: 4)
+
+                          VStack(alignment: .leading, spacing: 6) {
+                              Text(app.trackName)
+                                  .font(.apTitle)
+                                  .foregroundColor(.apText)
+                                  .lineLimit(2)
+                              if let dev = app.artistName ?? app.sellerName {
+                                  Text(dev)
+                                      .font(.apBody)
+                                      .foregroundColor(.apSubtext)
+                                      .lineLimit(1)
+                              }
+                              HStack(spacing: 6) {
+                                  APChip(text: app.displayPrice, icon: "tag.fill", color: .apSecondary)
+                                  if let cat = app.primaryGenreName {
+                                      APChip(text: cat, icon: "square.stack.3d.up.fill", color: .apPrimary)
+                                  }
+                              }
+                          }
+                          Spacer(minLength: 0)
+                      }
+
+                      Divider().background(Color.apDivider)
+
+                      VStack(spacing: 4) {
+                          APInfoRow(icon: "number",            title: "App ID",        value: "\(app.trackId)")
+                          APInfoRow(icon: "barcode",           title: "Bundle ID",     value: app.bundleId)
+                          APInfoRow(icon: "v.circle.fill",     title: "Version",       value: app.version ?? "—")
+                          APInfoRow(icon: "internaldrive",     title: "Size",          value: app.fileSizeFormatted)
+                          if let minOS = app.minimumOsVersion {
+                              APInfoRow(icon: "iphone",         title: "Min iOS",       value: "iOS \(minOS)")
+                          }
+                          if let d = app.releaseDateShort {
+                              APInfoRow(icon: "calendar",       title: "Updated",       value: d)
+                          }
+                          if let rating = app.contentAdvisoryRating {
+                              APInfoRow(icon: "person.2.fill",  title: "Age Rating",    value: rating)
+                          }
+                          if let r = app.averageUserRating, let cnt = app.userRatingCount {
+                              APInfoRow(icon: "star.fill",     title: "User Rating",
+                                        value: String(format: "%.2f ★  (%@)", r, Self.prettyCount(cnt)))
+                          }
+                      }
+
+                      if let notes = app.releaseNotes, !notes.isEmpty {
+                          VStack(alignment: .leading, spacing: 6) {
+                              Text("What's new")
+                                  .font(.apCaption)
+                                  .foregroundColor(.apSubtext)
+                              Text(notes)
+                                  .font(.apBody)
+                                  .foregroundColor(.apText)
+                          }
+                          .padding(.top, 4)
+                      }
+
+                      HStack(spacing: 10) {
+                          Button { showShare = true } label: {
+                              HStack { Image(systemName: "square.and.arrow.up"); Text("Share") }
+                          }
+                          .buttonStyle(APPrimaryButtonStyle())
+
+                          Button {
+                              UIPasteboard.general.string =
+                                  "\(app.trackName) — v\(app.version ?? "?")  •  \(app.bundleId)"
+                              HapticManager.shared.success()
+                          } label: {
+                              HStack { Image(systemName: "doc.on.doc"); Text("Copy") }
+                          }
+                          .buttonStyle(APSecondaryButtonStyle())
+                      }
+                  }
+                  .padding(16)
+                  .background(Color.apCard)
+                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                  .overlay(
+                      RoundedRectangle(cornerRadius: 22, style: .continuous)
+                          .stroke(Color.apDivider, lineWidth: 1)
+                  )
+                  .shadow(color: Color.black.opacity(0.06), radius: 18, y: 6)
+              }
+
+              // MARK: History
+              private var historySection: some View {
+                  VStack(alignment: .leading, spacing: 12) {
+                      HStack {
+                          Text("Recent lookups")
+                              .font(.apHeadline)
+                              .foregroundColor(.apText)
+                          Spacer()
+                          Button("Clear") { history.clear() }
+                              .font(.apCaption)
+                              .foregroundColor(.apPrimary)
+                      }
+                      ScrollView(.horizontal, showsIndicators: false) {
+                          HStack(spacing: 12) {
+                              ForEach(history.recent) { snap in
+                                  Button {
+                                      Task { await fetch(byID: String(snap.trackId)) }
+                                  } label: {
+                                      VStack(spacing: 6) {
+                                          CachedImage(url: snap.artworkUrl, contentMode: .fill)
+                                              .frame(width: 60, height: 60)
+                                              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                          Text(snap.trackName)
+                                              .font(.system(size: 12, weight: .medium))
+                                              .foregroundColor(.apText)
+                                              .lineLimit(1)
+                                              .frame(width: 70)
+                                      }
+                                  }
+                                  .buttonStyle(.plain)
+                              }
+                          }
+                      }
+                  }
+                  .padding(.top, 4)
+              }
+
+              // MARK: Logic
+              private func performLookup() {
+                  let raw = linkInput
+                  guard let id = LinkParser.extractAppID(from: raw) else {
+                      errorMessage = "We couldn't find an app ID in that link. Try pasting the full App Store URL."
+                      return
+                  }
+                  Task { await fetch(byID: id) }
+              }
+
+              private func fetch(byID id: String) async {
+                  isLoading = true
+                  errorMessage = nil
+                  defer { isLoading = false }
+                  do {
+                      let result = try await LookupService.shared.lookup(appID: id)
+                      await MainActor.run {
+                          self.app = result
+                          self.linkInput = ""
+                          HistoryStore.shared.record(result)
+                          HapticManager.shared.success()
+                      }
+                  } catch {
+                      await MainActor.run {
+                          self.errorMessage = error.localizedDescription
+                          HapticManager.shared.error()
+                      }
+                  }
+              }
+
+              static func prettyCount(_ n: Int) -> String {
+                  if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+                  if n >= 1_000     { return String(format: "%.1fK", Double(n) / 1_000) }
+                  return "\(n)"
               }
           }
 
-          struct InfoTile: View {
-              let title: String
-              let value: String
+          // MARK: - HapticManager
+          final class HapticManager {
+              static let shared = HapticManager()
+              func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
+                  UIImpactFeedbackGenerator(style: style).impactOccurred()
+              }
+              func notification(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+                  UINotificationFeedbackGenerator().notificationOccurred(type)
+              }
+              func success() { notification(.success) }
+              func error()   { notification(.error) }
+          }
 
+          // MARK: - Onboarding
+          struct OnboardingView: View {
+              @State private var step = 0
+              let onFinish: () -> Void
               var body: some View {
-                  VStack(alignment: .leading, spacing: 4) {
-                      Text(title)
-                          .font(.system(size: 11))
-                          .foregroundColor(.gray)
-                      Text(value)
-                          .font(.system(size: 13, weight: .semibold))
-                          .foregroundColor(Color(red: 0.08, green: 0.20, blue: 0.12))
+                  VStack {
+                      Spacer()
+                      Image("onboarding_\(step + 1)", bundle: nil)
+                          .resizable()
+                          .scaledToFit()
+                          .frame(maxWidth: 320)
+                      Spacer()
+                      Button(step < 2 ? "Continue" : "Get started") {
+                          if step < 2 { step += 1 }
+                          else {
+                              UserDefaults.standard.set(true, forKey: "apppeek.onboarded.v1")
+                              onFinish()
+                          }
+                      }
+                      .buttonStyle(APPrimaryButtonStyle())
+                      .padding(.horizontal, 20)
+                      .padding(.bottom, 30)
                   }
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .padding(10)
-                  .background(Color(red: 0.96, green: 0.98, blue: 0.97))
-                  .cornerRadius(8)
+                  .background(Color.apBackground.ignoresSafeArea())
               }
           }
-          VIPEOF
 
-      - name: Build and Package App
+          // MARK: - History sheet
+          struct HistoryView: View {
+              @ObservedObject var store = HistoryStore.shared
+              let onPick: (AppSnapshot) -> Void
+              @Environment(\.dismiss) private var dismiss
+              var body: some View {
+                  NavigationStack {
+                      List {
+                          if store.recent.isEmpty {
+                              Text("No lookups yet.")
+                                  .foregroundColor(.apSubtext)
+                          } else {
+                              ForEach(store.recent) { snap in
+                                  Button { onPick(snap) } label: {
+                                      HStack(spacing: 12) {
+                                          CachedImage(url: snap.artworkUrl, contentMode: .fill)
+                                              .frame(width: 44, height: 44)
+                                              .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                          VStack(alignment: .leading, spacing: 2) {
+                                              Text(snap.trackName).foregroundColor(.apText)
+                                              Text(snap.artistName ?? snap.bundleId)
+                                                  .font(.apCaption)
+                                                  .foregroundColor(.apSubtext)
+                                          }
+                                          Spacer()
+                                          if let v = snap.version {
+                                              APChip(text: "v\(v)", color: .apPrimary)
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      .navigationTitle("Recent")
+                      .toolbar {
+                          ToolbarItem(placement: .topBarTrailing) {
+                              Button("Done") { dismiss() }
+                          }
+                      }
+                  }
+              }
+          }
+
+          // MARK: - Share card
+          struct ShareCardView: View {
+              let app: ITunesApp
+              @Environment(\.dismiss) private var dismiss
+              var body: some View {
+                  NavigationStack {
+                      ScrollView {
+                          VStack(spacing: 16) {
+                              card
+                              HStack {
+                                  Button("Copy text") {
+                                      UIPasteboard.general.string = textSummary
+                                  }
+                                  .buttonStyle(APSecondaryButtonStyle())
+
+                                  Button {
+                                      ShareSheetHelper.present(textSummary)
+                                  } label: {
+                                      HStack { Image(systemName: "square.and.arrow.up"); Text("Share") }
+                                  }
+                                  .buttonStyle(APPrimaryButtonStyle())
+                              }
+                              .padding(.horizontal, 18)
+                          }
+                          .padding(.vertical, 20)
+                      }
+                      .background(Color.apBackground.ignoresSafeArea())
+                      .navigationTitle("Share")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .topBarTrailing) {
+                              Button("Close") { dismiss() }
+                          }
+                      }
+                  }
+              }
+
+              private var card: some View {
+                  VStack(alignment: .leading, spacing: 14) {
+                      HStack(spacing: 12) {
+                          CachedImage(url: app.bestArtwork, contentMode: .fill)
+                              .frame(width: 76, height: 76)
+                              .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                          VStack(alignment: .leading, spacing: 4) {
+                              Text(app.trackName)
+                                  .font(.apHeadline)
+                                  .foregroundColor(.apText)
+                              if let dev = app.artistName {
+                                  Text(dev).font(.apCaption).foregroundColor(.apSubtext)
+                              }
+                              HStack(spacing: 6) {
+                                  APChip(text: "v\(app.version ?? "—")", color: .apPrimary)
+                                  if let c = app.primaryGenreName {
+                                      APChip(text: c, color: .apSecondary)
+                                  }
+                              }
+                          }
+                          Spacer()
+                      }
+                      if let d = app.releaseDateShort {
+                          APInfoRow(icon: "calendar",  title: "Updated",   value: d)
+                      }
+                      APInfoRow(icon: "barcode",      title: "Bundle ID", value: app.bundleId)
+                      APInfoRow(icon: "internaldrive",title: "Size",      value: app.fileSizeFormatted)
+                      if let r = app.averageUserRating {
+                          APInfoRow(icon: "star.fill",  title: "Rating",    value: String(format: "%.2f ★", r))
+                      }
+                  }
+                  .padding(16)
+                  .background(Color.apCard)
+                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                  .padding(.horizontal, 18)
+              }
+
+              private var textSummary: String {
+                  """
+                  📱 \(app.trackName)
+                  Developer: \(app.artistName ?? "—")
+                  Version: \(app.version ?? "—")
+                  Size: \(app.fileSizeFormatted)
+                  Bundle: \(app.bundleId)
+                  Category: \(app.primaryGenreName ?? "—")
+                  Updated: \(app.releaseDateShort ?? "—")
+                  — Looked up with AppPeek
+                  """
+              }
+          }
+
+          // MARK: - Share helper
+          enum ShareSheetHelper {
+              static func present(_ text: String) {
+                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                        let root = scene.keyWindow?.rootViewController else { return }
+                  let avc = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                  if let pop = avc.popoverPresentationController {
+                      pop.sourceView = root.view
+                      pop.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
+                  }
+                  root.present(avc, animated: true)
+              }
+          }
+
+          extension UIWindowScene {
+              var keyWindow: UIWindow? { windows.first(where: { $0.isKeyWindow }) ?? windows.first }
+          }
+          VEOF
+
+      # =========================================================
+      # SOURCE — App entry
+      # =========================================================
+      - name: Generate code - AppEntry.swift
         run: |
-          echo "Building application target..."
-          echo "App build complete."
+          cat > AppEntry.swift << 'AEOF'
+          import SwiftUI
+
+          @main
+          struct AppPeekApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      RootView()
+                  }
+              }
+          }
+          AEOF
+
+      # =========================================================
+      # COMPILE & PACKAGE
+      # =========================================================
+      - name: Compile & package
+        run: |
+          set -e
+          # Create a minimal app bundle layout
+          APP="AppPeek.app"
+          rm -rf "$APP"
+          mkdir -p "$APP"
+
+          # Compile all swift files into a single binary
+          swiftc \
+            -O \
+            -target arm64-apple-ios17.0 \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -framework SwiftUI -framework UIKit -framework Foundation \
+            -parse-as-library \
+            Constants.swift Models.swift LinkParser.swift LookupService.swift \
+            HistoryStore.swift ImageLoader.swift Components.swift Views.swift AppEntry.swift \
+            -o "$APP/AppPeek"
+
+          # Bundle resources — copy flat into app root so SwiftUI Image(_:) can find them
+          for f in Resources/*.png Resources/*.jpg Resources/*.gif; do
+            [ -f "$f" ] && cp "$f" "$APP/$(basename "$f")" 2>/dev/null || true
+          done
+          # Info.plist must live inside the bundle
+          cp Resources/Info.plist "$APP/Info.plist"
+
+          # Codesign with ldid (ad-hoc / fake)
+          ldid -S "$APP/AppPeek" 2>/dev/null || true
+          ldid -S "$APP/Info.plist" 2>/dev/null || true
+
+          # Package as Payload/AppPeek.app for proper IPA layout
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr AppPeek.ipa Payload
+          # Fallback if zip was empty
+          if [ ! -s AppPeek.ipa ]; then
+            zip -qr AppPeek.ipa "$APP"
+          fi
+
+          ls -lh
+          echo "Bundle contents:"
+          ls -lh "$APP" | head -40
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppPeek-IPA
+          path: AppPeek.ipa
+          if-no-files-found: error
+          retention-days: 7
