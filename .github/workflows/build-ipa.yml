@@ -766,6 +766,14 @@ jobs:
                   } else {
                       self.repositories = [
                           DownloadRepository(
+                              id: "21s-admin-panel",
+                              name: "21s 管理パネル",
+                              feedURL: "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app/api/public/store-apps",
+                              homepage: "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app",
+                              enabled: true,
+                              maxGB: 500
+                          ),
+                          DownloadRepository(
                               id: "apptesters-main",
                               name: "AppTesters IPA Repo",
                               feedURL: "https://repository.apptesters.org/apps.json",
@@ -5812,6 +5820,56 @@ jobs:
                   savedIDs = Set(d.stringArray(forKey: kSaved) ?? [])
                   reels = GeamRelsStore.decode([ReelPost].self, key: kReels) ?? GeamRelsStore.seedReels()
                   tools = GeamRelsStore.decode([DevTool].self, key: kTools) ?? GeamRelsStore.seedTools()
+                  refreshFromAdminPanel()
+              }
+
+              // MARK: - Admin control panel sync
+              static let adminBaseURL = "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app"
+
+              private struct AdminReelsEnvelope: Decodable { let reels: [AdminReel] }
+              private struct AdminReel: Decodable {
+                  let id: String
+                  let author: String
+                  let verified: Bool
+                  let title: String
+                  let caption: String
+                  let mediaURL: String
+                  let likes: Int
+                  let comments: [AdminComment]
+              }
+              private struct AdminComment: Decodable {
+                  let id: String
+                  let author: String
+                  let verified: Bool
+                  let text: String
+              }
+
+              func refreshFromAdminPanel() {
+                  guard let url = URL(string: GeamRelsStore.adminBaseURL + "/api/public/reels") else { return }
+                  var req = URLRequest(url: url)
+                  req.cachePolicy = .reloadRevalidatingCacheData
+                  req.timeoutInterval = 15
+                  URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                      guard let self = self, let data = data,
+                            let env = try? JSONDecoder().decode(AdminReelsEnvelope.self, from: data),
+                            !env.reels.isEmpty else { return }
+                      let mapped: [ReelPost] = env.reels.map { r in
+                          ReelPost(id: r.id,
+                                   author: r.author,
+                                   verified: r.verified,
+                                   title: r.title,
+                                   caption: r.caption,
+                                   mediaURL: r.mediaURL,
+                                   likes: r.likes,
+                                   comments: r.comments.map { c in
+                                       ReelComment(id: c.id, author: c.author, verified: c.verified, text: c.text)
+                                   })
+                      }
+                      DispatchQueue.main.async {
+                          self.reels = mapped
+                          self.persistAll()
+                      }
+                  }.resume()
               }
 
               private static func decode<T: Decodable>(_ type: T.Type, key: String) -> T? {
