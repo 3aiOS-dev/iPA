@@ -1105,6 +1105,19 @@ jobs:
               let name: String
               let dialCode: String
               let flag: String
+
+              /// ISO コード ("SA") -> 絵文字の国旗 ("\u{1F1F8}\u{1F1E6}")
+              var flagEmoji: String {
+                  let code = flag.uppercased()
+                  guard code.count == 2, code.allSatisfy({ $0.isLetter }) else { return flag }
+                  var out = ""
+                  for ch in code.unicodeScalars {
+                      if let scalar = UnicodeScalar(127397 + ch.value) {
+                          out.unicodeScalars.append(scalar)
+                      }
+                  }
+                  return out.isEmpty ? flag : out
+              }
           }
 
           let countries: [Country] = [
@@ -1485,7 +1498,7 @@ jobs:
                                                       selectedCountry = country
                                                   } label: {
                                                       HStack {
-                                                          Text(country.flag)
+                                                          Text(country.flagEmoji)
                                                           Text(country.dialCode)
                                                           Text(country.name)
                                                       }
@@ -1493,7 +1506,7 @@ jobs:
                                               }
                                           } label: {
                                               HStack(spacing: 4) {
-                                                  Text(selectedCountry.flag)
+                                                  Text(selectedCountry.flagEmoji)
                                                   Text(selectedCountry.dialCode)
                                                   Image(systemName: "chevron.down")
                                                       .font(.system(size: 10))
@@ -2364,20 +2377,17 @@ jobs:
           // ================= GEAMRELS ENTRY BUTTON =================
           struct GeamRelsEntryButton: View {
               @Binding var isPresented: Bool
-              @State private var playing: Bool = false
 
               var body: some View {
                   Button {
                       HapticManager.shared.impact(.medium)
-                      playing = true
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                          playing = false
-                          isPresented = true
-                      }
+                      isPresented = true
                   } label: {
                       HStack(spacing: 12) {
-                          TapToPlayGif(resourceName: "geamrels_icon", isPlaying: playing)
-                              .frame(width: 62, height: 62)
+                          // 自動再生される GIF アイコン（タップ不要）
+                          LoopingGifPlayer(resourceName: "geamrels_icon", ext: "gif", fillMode: .fit)
+                              .frame(width: 44, height: 44)
+                              .clipShape(RoundedRectangle(cornerRadius: 12))
                           VStack(alignment: .leading, spacing: 3) {
                               HStack(spacing: 6) {
                                   Text("GeamRels")
@@ -3062,7 +3072,7 @@ jobs:
                                   }
                               } label: {
                                   TapToPlayGif(resourceName: gifIcon, isPlaying: gifPlaying)
-                                      .frame(width: 30, height: 30)
+                                      .frame(width: 20, height: 20)
                               }
                               .buttonStyle(.plain)
                           }
@@ -6050,21 +6060,26 @@ jobs:
                           }
                           .frame(maxWidth: .infinity, maxHeight: .infinity)
                       } else {
-                          TabView(selection: $current) {
-                              ForEach(store.reels) { reel in
-                                  ReelCell(reel: reel,
-                                           store: store,
-                                           isActive: current == reel.id,
-                                           onComment: { commentTarget = reel })
-                                      .rotationEffect(.degrees(-90))
-                                      .tag(reel.id)
+                          // 画面サイズにぴったり合わせる（Instagram リールと同じ縦スワイプ）
+                          GeometryReader { geo in
+                              TabView(selection: $current) {
+                                  ForEach(store.reels) { reel in
+                                      ReelCell(reel: reel,
+                                               store: store,
+                                               isActive: current == reel.id,
+                                               onComment: { commentTarget = reel })
+                                          .frame(width: geo.size.width, height: geo.size.height)
+                                          .rotationEffect(.degrees(-90))
+                                          .tag(reel.id)
+                                  }
                               }
+                              .frame(width: geo.size.height, height: geo.size.width)
+                              .rotationEffect(.degrees(90), anchor: .topLeading)
+                              .offset(x: geo.size.width)
+                              .tabViewStyle(.page(indexDisplayMode: .never))
+                              .frame(width: geo.size.width, height: geo.size.height)
+                              .clipped()
                           }
-                          .frame(width: UIScreen.main.bounds.height - 190,
-                                 height: UIScreen.main.bounds.width)
-                          .rotationEffect(.degrees(90), anchor: .topLeading)
-                          .offset(x: UIScreen.main.bounds.width)
-                          .tabViewStyle(.page(indexDisplayMode: .never))
                           .frame(maxWidth: .infinity, maxHeight: .infinity)
                           .clipped()
                       }
@@ -6103,7 +6118,7 @@ jobs:
                   ZStack(alignment: .bottom) {
                       Color.black
                       ReelPlayer(urlString: reel.mediaURL, isActive: isActive)
-                          .ignoresSafeArea()
+                          .clipped()
 
                       HStack(alignment: .bottom) {
                           VStack(alignment: .leading, spacing: 8) {
@@ -6146,7 +6161,8 @@ jobs:
                       .padding(.horizontal, 18)
                       .padding(.bottom, 28)
                   }
-                  .clipShape(RoundedRectangle(cornerRadius: 0))
+                  .clipped()
+                  .contentShape(Rectangle())
               }
 
               @ViewBuilder
