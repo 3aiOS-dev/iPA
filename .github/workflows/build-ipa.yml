@@ -8697,6 +8697,56 @@ jobs:
           unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
           echo "IPA is valid, passes zip integrity test, and contains the App Bundle."
 
+      # =========================================================
+      # INSTALL SERVER (Lovable Cloud) - upload IPA + publish to store
+      # =========================================================
+      - name: Upload IPA to install server (OTA)
+        env:
+          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
+          UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$UPLOAD_TOKEN" ]; then
+            echo "Missing secret IPA_UPLOAD_TOKEN (add it in GitHub > Settings > Secrets > Actions)"
+            exit 1
+          fi
+          echo "Uploading artifacts/21s.ipa -> $INSTALL_SERVER"
+          HTTP_CODE=$(curl -sS -o /tmp/upload_response.json -w "%{http_code}" \
+            -X POST "$INSTALL_SERVER/api/public/upload" \
+            -H "x-upload-token: $UPLOAD_TOKEN" \
+            -F "file=@artifacts/21s.ipa;type=application/octet-stream" \
+            -F "slug=21s" \
+            -F "name=$NEW_APP_NAME" \
+            -F "bundle_id=$NEW_BUNDLE_ID" \
+            -F "version=1.0" \
+            -F "build=${GITHUB_RUN_NUMBER}" \
+            -F "description=21s Store - SwiftUI build" \
+            -F "icon_url=https://up6.cc/2026/07/178463790906632.png")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/upload_response.json; echo
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Upload to install server failed."
+            exit 1
+          fi
+          echo "================ INSTALL LINKS ================"
+          echo "Store page : $INSTALL_SERVER/"
+          echo "Manifest   : $INSTALL_SERVER/api/public/manifest/21s"
+          echo "Direct IPA : $INSTALL_SERVER/api/public/ipa/21s"
+          echo "Install    : itms-services://?action=download-manifest&url=$INSTALL_SERVER/api/public/manifest/21s"
+          echo "==============================================="
+
+      - name: Install summary
+        env:
+          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
+        run: |
+          {
+            echo "## 21s - Install from server"
+            echo ""
+            echo "- Store: $INSTALL_SERVER/"
+            echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
+            echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
