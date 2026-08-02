@@ -8701,14 +8701,18 @@ jobs:
       # INSTALL SERVER (Lovable Cloud) - upload IPA + publish to store
       # =========================================================
       - name: Upload IPA to install server (OTA)
+        id: ota_upload
+        continue-on-error: true
         env:
           INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
-          set -e
+          set +e
           if [ -z "$UPLOAD_TOKEN" ]; then
-            echo "Missing secret IPA_UPLOAD_TOKEN (add it in GitHub > Settings > Secrets > Actions)"
-            exit 1
+            echo "::warning::Secret IPA_UPLOAD_TOKEN is not set - skipping OTA upload."
+            echo "Add it in GitHub > Settings > Secrets and variables > Actions > New repository secret."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "Uploading artifacts/21s.ipa -> $INSTALL_SERVER"
           HTTP_CODE=$(curl -sS -o /tmp/upload_response.json -w "%{http_code}" \
@@ -8723,17 +8727,20 @@ jobs:
             -F "description=21s Store - SwiftUI build" \
             -F "icon_url=https://up6.cc/2026/07/178463790906632.png")
           echo "HTTP $HTTP_CODE"
-          cat /tmp/upload_response.json; echo
+          cat /tmp/upload_response.json 2>/dev/null; echo
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "Upload to install server failed."
-            exit 1
+            echo "::warning::Upload to install server failed (HTTP $HTTP_CODE). The IPA artifact is still available."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "uploaded=true" >> "$GITHUB_OUTPUT"
           echo "================ INSTALL LINKS ================"
           echo "Store page : $INSTALL_SERVER/"
           echo "Manifest   : $INSTALL_SERVER/api/public/manifest/21s"
           echo "Direct IPA : $INSTALL_SERVER/api/public/ipa/21s"
           echo "Install    : itms-services://?action=download-manifest&url=$INSTALL_SERVER/api/public/manifest/21s"
           echo "==============================================="
+
 
       - name: Install summary
         env:
@@ -8744,6 +8751,7 @@ jobs:
             echo ""
             echo "- Store: $INSTALL_SERVER/"
             echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
+            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (no IPA_UPLOAD_TOKEN secret)' }}"
             echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
