@@ -2620,9 +2620,71 @@ jobs:
               }
 
               func setServer(_ value: String) {
-                  let clean = value.trimmingCharacters(in: .whitespaces)
+                  let clean = SigningManager.sanitizeServer(value)
                   serverURL = clean
                   UserDefaults.standard.set(clean, forKey: "sign_server_21s")
+                  addLog("署名サーバーを保存: \(clean)")
+              }
+
+              /// Accepts anything the user pastes (itms-services://?action=download-manifest&url=...,
+              /// a manifest .plist link, a bare host, or a full https base) and returns a usable
+              /// https base URL. This is what prevents the "未対応のURL" (unsupported URL) failure:
+              /// URLSession can only POST to http/https, never to itms-services.
+              static func sanitizeServer(_ raw: String) -> String {
+                  var v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                  if v.isEmpty { return v }
+
+                  // itms-services://?action=download-manifest&url=<encoded https manifest>
+                  if v.lowercased().hasPrefix("itms-services://") {
+                      if let comps = URLComponents(string: v),
+                         let inner = comps.queryItems?.first(where: { $0.name.lowercased() == "url" })?.value,
+                         !inner.isEmpty {
+                          v = inner.removingPercentEncoding ?? inner
+                      } else if let r = v.range(of: "url=") {
+                          let tail = String(v[r.upperBound...])
+                          v = tail.removingPercentEncoding ?? tail
+                      }
+                  }
+
+                  // Add a scheme when the user typed only a host.
+                  let lower = v.lowercased()
+                  if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
+                      v = "https://" + v.replacingOccurrences(of: "^/+", with: "", options: .regularExpression)
+                  }
+
+                  guard var comps = URLComponents(string: v), let host = comps.host, !host.isEmpty else { return v }
+                  comps.query = nil
+                  comps.fragment = nil
+                  if comps.scheme?.lowercased() != "http" { comps.scheme = "https" }
+
+                  // Keep only the base path: drop /sign, /manifest/..., or a trailing manifest file.
+                  var path = comps.path
+                  for suffix in ["/sign", "/api/sign", "/api/public/sign"] {
+                      if path.lowercased().hasSuffix(suffix) {
+                          path = String(path.dropLast(suffix.count))
+                          break
+                      }
+                  }
+                  if path.lowercased().hasSuffix(".plist") || path.lowercased().hasSuffix(".ipa") {
+                      path = (path as NSString).deletingLastPathComponent
+                  }
+                  if let r = path.range(of: "/manifest", options: [.caseInsensitive]) {
+                      path = String(path[path.startIndex..<r.lowerBound])
+                  }
+                  while path.hasSuffix("/") { path.removeLast() }
+                  comps.path = path
+                  return comps.string ?? v
+              }
+
+              /// Endpoint used for the multipart upload. Returns nil when the stored value
+              /// can never be used for a POST (wrong scheme, no host).
+              var signEndpoint: URL? {
+                  let base = SigningManager.sanitizeServer(serverURL)
+                  guard let url = URL(string: base + "/sign"),
+                        let scheme = url.scheme?.lowercased(),
+                        scheme == "https" || scheme == "http",
+                        let host = url.host, !host.isEmpty else { return nil }
+                  return url
               }
 
               private func addLog(_ line: String) {
@@ -2758,8 +2820,11 @@ jobs:
                       addLog("証明書が未完成です (.p12 と .mobileprovision が必要)")
                       return
                   }
-                  guard let endpoint = URL(string: serverURL.hasSuffix("/") ? serverURL + "sign" : serverURL + "/sign") else {
-                      addLog("署名サーバー URL が無効です")
+                  guard let endpoint = signEndpoint else {
+                      let hint = "署名サーバーには https:// のアドレスを入力してください (itms-services:// は使用できません)。"
+                      addLog("署名サーバー URL が無効です: \(serverURL)")
+                      addLog(hint)
+                      NotificationsManager.shared.push(title: "署名サーバーの URL が不正です", body: hint, icon: "exclamationmark.triangle.fill")
                       return
                   }
                   guard let ipaData = try? Data(contentsOf: fileURL(ipa.fileName)),
@@ -2823,8 +2888,9 @@ jobs:
                                   self.save()
                               }
                               self.lastInstallURL = install
-                              self.addLog("署名完了。インストール準備ができました。")
-                              NotificationsManager.shared.push(title: "署名が完了しました", body: "\(ipa.name) をインストールできます。", icon: "checkmark.seal.fill")
+                              self.addLog("署名完了。インストールを開始します。")
+                              NotificationsManager.shared.push(title: "署名が完了しました", body: "\(ipa.name) をインストールします。", icon: "checkmark.seal.fill")
+                              self.install(install)
                           } else {
                               let text = String(data: data, encoding: .utf8) ?? ""
                               self.addLog("応答を解析できません: \(text.prefix(160))")
@@ -2856,25 +2922,43 @@ jobs:
                   return nil
               }
 
-              private func normalizeInstall(_ raw: String) -> String {
-                  if raw.hasPrefix("itms-services://") { return raw }
-                  if raw.lowercased().hasSuffix(".plist") {
-                      let encoded = raw.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? raw
+              func normalizeInstall(_ raw: String) -> String {
+                  let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                  if value.lowercased().hasPrefix("itms-services://") { return value }
+                  let lower = value.lowercased()
+                  // Any https manifest link (.plist or a /manifest/... endpoint) becomes an OTA URL.
+                  if lower.hasPrefix("https://") && (lower.hasSuffix(".plist") || lower.contains("manifest")) {
+                      let encoded = value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
                       return "itms-services://?action=download-manifest&url=\(encoded)"
                   }
-                  return raw
+                  return value
               }
 
               // MARK: OTA install
               func install(_ urlString: String) {
-                  guard let url = URL(string: urlString) else { addLog("インストール URL が無効です"); return }
+                  // iOS only installs through itms-services://?action=download-manifest&url=<https manifest>.
+                  // Anything else (plain https link, .plist link) is converted here first.
+                  let final = normalizeInstall(urlString.trimmingCharacters(in: .whitespacesAndNewlines))
+                  guard let url = URL(string: final), url.scheme != nil else {
+                      addLog("インストール URL が無効です: \(urlString)")
+                      NotificationsManager.shared.push(title: "インストールできません", body: "インストール URL が無効です。", icon: "xmark.octagon.fill")
+                      return
+                  }
+                  guard url.scheme?.lowercased() == "itms-services" else {
+                      addLog("インストール URL は itms-services:// である必要があります: \(final)")
+                      NotificationsManager.shared.push(title: "インストールできません", body: "サーバーが manifest (.plist) の URL を返していません。", icon: "xmark.octagon.fill")
+                      return
+                  }
                   addLog("インストールを開始します...")
-                  UIApplication.shared.open(url, options: [:]) { ok in
-                      DispatchQueue.main.async {
-                          if ok {
-                              NotificationsManager.shared.push(title: "インストール中", body: "ホーム画面を確認してください。", icon: "arrow.down.app.fill")
-                          } else {
-                              self.addLog("インストールを開始できませんでした。")
+                  DispatchQueue.main.async {
+                      UIApplication.shared.open(url, options: [:]) { ok in
+                          DispatchQueue.main.async {
+                              if ok {
+                                  NotificationsManager.shared.push(title: "インストール中", body: "ホーム画面を確認してください。", icon: "arrow.down.app.fill")
+                              } else {
+                                  self.addLog("インストールを開始できませんでした。設定 > プロファイルで信頼を確認してください。")
+                                  NotificationsManager.shared.push(title: "インストールを開始できません", body: "インストールを許可してから再試行してください。", icon: "xmark.octagon.fill")
+                              }
                           }
                       }
                   }
@@ -3137,13 +3221,13 @@ jobs:
                                   .disableAutocorrection(true)
                                   .padding(.horizontal, 12).frame(height: 42)
                                   .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt))
-                              Button(action: { manager.setServer(serverDraft); HapticManager.shared.success() }) {
+                              Button(action: { manager.setServer(serverDraft); serverDraft = manager.serverURL; HapticManager.shared.success() }) {
                                   Text("保存").font(.system(size: 12, weight: .bold)).foregroundColor(.white)
                                       .padding(.horizontal, 14).frame(height: 42)
                                       .background(Capsule().fill(PinkTheme.gradient))
                               }
                           }
-                          Text("POST /sign に ipa・p12・mobileprovision・password を送信し、install_url を受け取ります。")
+                          Text("https:// のサーバーを入力してください。POST /sign に ipa・p12・mobileprovision・password を送信し、install_url を受け取ります。itms-services:// を貼り付けた場合は自動で https に変換します。")
                               .font(.system(size: 10)).foregroundColor(.storeSub)
                       }
                       .padding(14)
