@@ -8791,15 +8791,19 @@ jobs:
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
 
-          # A stock iPhone cannot install an ad-hoc ldid signature. Sign with a real
-          # Apple distribution/development certificate and matching provisioning profile.
+          # Build without failure when secrets are absent. Real OTA installation still
+          # requires all three Apple signing secrets and a matching provisioning profile.
           if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
-            echo "::error::Missing IOS_P12_BASE64, IOS_P12_PASSWORD, or IOS_MOBILEPROVISION_BASE64 GitHub secret."
-            echo "The IPA cannot be installed on a normal iPhone without a valid Apple signature."
-            exit 1
+            echo "::warning::Apple signing secrets are not configured; creating an unsigned IPA artifact."
+            echo "::warning::Add IOS_P12_BASE64, IOS_P12_PASSWORD, and IOS_MOBILEPROVISION_BASE64 together for real iPhone installation."
+            SIGNED_FOR_DEVICE=false
+          else
+            SIGNED_FOR_DEVICE=true
           fi
+          echo "SIGNED_FOR_DEVICE=$SIGNED_FOR_DEVICE" >> "$GITHUB_ENV"
 
-          KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
+          if [ "$SIGNED_FOR_DEVICE" = "true" ]; then
+            KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
           P12_PATH="$RUNNER_TEMP/signing.p12"
           PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
@@ -8829,7 +8833,8 @@ jobs:
             exit 1
           fi
           /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
-          /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
+            /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
+          fi
 
           rm -f artifacts/21s.ipa
           find build-output -name ".DS_Store" -delete
@@ -8875,6 +8880,7 @@ jobs:
       # =========================================================
       - name: Upload IPA to install server (OTA)
         id: ota_upload
+        if: env.SIGNED_FOR_DEVICE == 'true'
         continue-on-error: false
         env:
           INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
@@ -8937,7 +8943,8 @@ jobs:
             echo ""
             echo "- Store: $INSTALL_SERVER/"
             echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
-            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (no IPA_UPLOAD_TOKEN secret)' }}"
+            echo "- Apple signed for normal iPhone: ${SIGNED_FOR_DEVICE:-false}"
+            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (unsigned IPA or no upload token)' }}"
             echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
