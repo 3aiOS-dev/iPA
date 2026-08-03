@@ -2588,7 +2588,25 @@ jobs:
 
               /// Real signing backend. Any server that accepts a multipart upload
               /// (ipa + p12 + mobileprovision + password) and returns an install URL.
-              @Published var serverURL: String = UserDefaults.standard.string(forKey: "sign_server_21s") ?? "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app/api/public"
+              static let defaultServer = "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app/api/public"
+
+              /// A stored value is only used when it is a real http(s) URL with a host.
+              /// An empty or broken saved value falls back to the default server, so the
+              /// "署名サーバーの URL が不正です" alert can never lock the user out.
+              @Published var serverURL: String = SigningManager.usableServer(UserDefaults.standard.string(forKey: "sign_server_21s"))
+
+              static func isUsable(_ value: String) -> Bool {
+                  guard let url = URL(string: value + "/sign"),
+                        let scheme = url.scheme?.lowercased(),
+                        scheme == "https" || scheme == "http",
+                        let host = url.host, !host.isEmpty else { return false }
+                  return true
+              }
+
+              static func usableServer(_ raw: String?) -> String {
+                  let clean = sanitizeServer(raw ?? "")
+                  return isUsable(clean) ? clean : defaultServer
+              }
 
               private let certKey = "sign_certs_21s"
               private let ipaKey  = "sign_ipas_21s"
@@ -2621,9 +2639,21 @@ jobs:
 
               func setServer(_ value: String) {
                   let clean = SigningManager.sanitizeServer(value)
+                  guard SigningManager.isUsable(clean) else {
+                      // Never store an empty/broken value: keep the working server instead.
+                      addLog("入力された URL は使用できません。https:// のアドレスを入力してください。")
+                      addLog("現在の署名サーバー: \(serverURL)")
+                      return
+                  }
                   serverURL = clean
                   UserDefaults.standard.set(clean, forKey: "sign_server_21s")
                   addLog("署名サーバーを保存: \(clean)")
+              }
+
+              func resetServer() {
+                  serverURL = SigningManager.defaultServer
+                  UserDefaults.standard.set(serverURL, forKey: "sign_server_21s")
+                  addLog("署名サーバーを既定値に戻しました: \(serverURL)")
               }
 
               /// Accepts anything the user pastes (itms-services://?action=download-manifest&url=...,
@@ -2676,10 +2706,11 @@ jobs:
                   return comps.string ?? v
               }
 
-              /// Endpoint used for the multipart upload. Returns nil when the stored value
-              /// can never be used for a POST (wrong scheme, no host).
+              /// Endpoint used for the multipart upload. Falls back to the default server
+              /// when the stored value is empty or unusable, so signing never dead-ends.
               var signEndpoint: URL? {
-                  let base = SigningManager.sanitizeServer(serverURL)
+                  var base = SigningManager.sanitizeServer(serverURL)
+                  if !SigningManager.isUsable(base) { base = SigningManager.defaultServer }
                   guard let url = URL(string: base + "/sign"),
                         let scheme = url.scheme?.lowercased(),
                         scheme == "https" || scheme == "http",
@@ -3261,13 +3292,26 @@ jobs:
                                   .disableAutocorrection(true)
                                   .padding(.horizontal, 12).frame(height: 42)
                                   .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt))
-                              Button(action: { manager.setServer(serverDraft); serverDraft = manager.serverURL; HapticManager.shared.success() }) {
+                              Button(action: {
+                                  let trimmed = serverDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                                  if trimmed.isEmpty { manager.resetServer() } else { manager.setServer(trimmed) }
+                                  serverDraft = manager.serverURL
+                                  HapticManager.shared.success()
+                              }) {
                                   Text("保存").font(.system(size: 12, weight: .bold)).foregroundColor(.white)
                                       .padding(.horizontal, 14).frame(height: 42)
                                       .background(Capsule().fill(PinkTheme.gradient))
                               }
                           }
-                          Text("https:// のサーバーを入力してください。POST /sign に ipa・p12・mobileprovision・password を送信し、install_url を受け取ります。itms-services:// を貼り付けた場合は自動で https に変換します。")
+                          HStack(spacing: 10) {
+                              Text("現在: \(manager.serverURL)")
+                                  .font(.system(size: 10)).foregroundColor(.storeSub).lineLimit(1).truncationMode(.middle)
+                              Spacer(minLength: 6)
+                              Button(action: { manager.resetServer(); serverDraft = manager.serverURL }) {
+                                  Text("既定に戻す").font(.system(size: 10, weight: .bold)).foregroundColor(.storeText)
+                              }
+                          }
+                          Text("https:// のサーバーを入力してください。POST /sign に ipa・p12・mobileprovision・password を送信し、install_url を受け取ります。itms-services:// を貼り付けた場合は自動で https に変換します。空欄で保存すると既定サーバーに戻ります。")
                               .font(.system(size: 10)).foregroundColor(.storeSub)
                       }
                       .padding(14)
