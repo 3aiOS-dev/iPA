@@ -486,14 +486,120 @@ jobs:
               static var p: ThemePalette { ThemeManager.shared.current }
           }
 
+          // ================= STAR BURST SETTINGS (per user) =================
+          struct StarFXColorOption: Identifiable, Equatable {
+              let id: Int
+              let name: String
+              let rgbv: (CGFloat, CGFloat, CGFloat)
+              static func == (a: StarFXColorOption, b: StarFXColorOption) -> Bool { a.id == b.id }
+          }
+
+          enum StarFXCatalog {
+              // id 0 = follow the app theme colors
+              static let colors: [StarFXColorOption] = [
+                  StarFXColorOption(id: 0, name: "حسب الثيم",  rgbv: (0.55, 0.30, 0.95)),
+                  StarFXColorOption(id: 1, name: "ذهبي",       rgbv: (1.00, 0.80, 0.25)),
+                  StarFXColorOption(id: 2, name: "وردي",       rgbv: (0.98, 0.35, 0.62)),
+                  StarFXColorOption(id: 3, name: "أزرق",       rgbv: (0.25, 0.55, 1.00)),
+                  StarFXColorOption(id: 4, name: "أخضر",       rgbv: (0.20, 0.82, 0.52)),
+                  StarFXColorOption(id: 5, name: "برتقالي",    rgbv: (1.00, 0.52, 0.18)),
+                  StarFXColorOption(id: 6, name: "بنفسجي",     rgbv: (0.62, 0.35, 1.00)),
+                  StarFXColorOption(id: 7, name: "سماوي",      rgbv: (0.30, 0.86, 0.96)),
+                  StarFXColorOption(id: 8, name: "أحمر",       rgbv: (0.95, 0.25, 0.28)),
+                  StarFXColorOption(id: 9, name: "أبيض لؤلؤي", rgbv: (0.98, 0.98, 1.00))
+              ]
+              static func color(_ id: Int) -> StarFXColorOption {
+                  colors.first(where: { $0.id == id }) ?? colors[0]
+              }
+          }
+
+          /// Per-user settings for the star burst effect fired when tapping an app icon.
+          /// Every value is stored per user id (phone / username), so each account
+          /// keeps its own count / speed / color.
+          final class StarFXManager: ObservableObject {
+              static let shared = StarFXManager()
+
+              static let defaultCount: Int = 14
+              static let defaultSpeed: Double = 0.75
+              static let defaultColorID: Int = 0
+
+              private var userID: String = "guest"
+
+              @Published var enabled: Bool = true
+              @Published var count: Int = StarFXManager.defaultCount
+              @Published var speed: Double = StarFXManager.defaultSpeed
+              @Published var colorID: Int = StarFXManager.defaultColorID
+
+              private init() { load() }
+
+              private func key(_ name: String) -> String { "starfx_\(name)_\(userID)" }
+
+              /// Bind the effect settings to the signed-in user.
+              func bind(userID newID: String?) {
+                  let resolved = (newID?.isEmpty == false) ? newID! : "guest"
+                  guard resolved != userID else { return }
+                  userID = resolved
+                  load()
+              }
+
+              private func load() {
+                  let d = UserDefaults.standard
+                  enabled = (d.object(forKey: key("enabled")) as? Bool) ?? true
+                  count   = (d.object(forKey: key("count")) as? Int) ?? StarFXManager.defaultCount
+                  speed   = (d.object(forKey: key("speed")) as? Double) ?? StarFXManager.defaultSpeed
+                  colorID = (d.object(forKey: key("color")) as? Int) ?? StarFXManager.defaultColorID
+              }
+
+              func setEnabled(_ v: Bool) {
+                  enabled = v
+                  UserDefaults.standard.set(v, forKey: key("enabled"))
+              }
+
+              func setCount(_ v: Int) {
+                  let clamped = max(4, min(40, v))
+                  count = clamped
+                  UserDefaults.standard.set(clamped, forKey: key("count"))
+              }
+
+              /// Speed slider is 0.3 (fast) ... 1.6 (slow) seconds of animation.
+              func setSpeed(_ v: Double) {
+                  let clamped = max(0.3, min(1.6, v))
+                  speed = clamped
+                  UserDefaults.standard.set(clamped, forKey: key("speed"))
+              }
+
+              func setColorID(_ v: Int) {
+                  colorID = v
+                  UserDefaults.standard.set(v, forKey: key("color"))
+              }
+
+              func reset() {
+                  setEnabled(true)
+                  setCount(StarFXManager.defaultCount)
+                  setSpeed(StarFXManager.defaultSpeed)
+                  setColorID(StarFXManager.defaultColorID)
+              }
+
+              /// Gradient colors used by the burst particles.
+              var particleColors: [Color] {
+                  if colorID == 0 {
+                      let p = ThemeManager.p
+                      return [rgb(p.yellow), rgb(p.accent), rgb(p.primary)]
+                  }
+                  let base = rgb(StarFXCatalog.color(colorID).rgbv)
+                  return [base.opacity(0.95), base, base.opacity(0.8)]
+              }
+
+              var glowColor: Color {
+                  colorID == 0 ? rgb(ThemeManager.p.primary) : rgb(StarFXCatalog.color(colorID).rgbv)
+              }
+          }
+
           func rgb(_ c: (CGFloat, CGFloat, CGFloat)) -> Color {
               Color(UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1))
           }
 
-          // Dark mode removed: colors follow the selected theme palette.
-          func dyn(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> Color {
-              Color(UIColor(red: light.0, green: light.1, blue: light.2, alpha: 1))
-          }
+          // NOTE: dyn(_:_:) is declared once near the top of this file.
 
           extension Color {
               static var xcodeBackground: Color { rgb(ThemeManager.p.bg) }
@@ -4814,8 +4920,11 @@ jobs:
           // ================= STAR BURST =================
           struct StarBurstView: View {
               let fire: Int
+              @ObservedObject private var fx = StarFXManager.shared
               @State private var go: Bool = false
-              private let count = 14
+
+              private var count: Int { max(4, fx.count) }
+              private var duration: Double { fx.speed }
 
               var body: some View {
                   ZStack {
@@ -4825,20 +4934,20 @@ jobs:
                           Image(systemName: i % 3 == 0 ? "sparkles" : "star.fill")
                               .font(.system(size: CGFloat(7 + (i % 3) * 4), weight: .black))
                               .foregroundStyle(
-                                  LinearGradient(colors: [Color.storeYellow, Color.storePink, Color.storePrimary],
+                                  LinearGradient(colors: fx.particleColors,
                                                  startPoint: .top, endPoint: .bottom)
                               )
                               .offset(x: cos(angle) * dist, y: sin(angle) * dist)
                               .scaleEffect(go ? 0.2 : 1.15)
                               .opacity(go ? 0 : 1)
                               .rotationEffect(.degrees(go ? 320 : 0))
-                              .shadow(color: Color.storePrimary.opacity(0.6), radius: 6)
+                              .shadow(color: fx.glowColor.opacity(0.6), radius: 6)
                       }
                   }
                   .allowsHitTesting(false)
                   .onAppear {
                       go = false
-                      withAnimation(.easeOut(duration: 0.75)) { go = true }
+                      withAnimation(.easeOut(duration: duration)) { go = true }
                   }
                   .id(fire)
               }
@@ -4873,7 +4982,7 @@ jobs:
                               .rotation3DEffect(.degrees(float ? 10 : -10), axis: (x: 0, y: 1, z: 0), perspective: 0.7)
                               .offset(y: float ? -5 : 5)
                               .scaleEffect(tapped ? 1.22 : 1.0)
-                          if burst > 0 {
+                          if burst > 0 && StarFXManager.shared.enabled {
                               StarBurstView(fire: burst)
                           }
                       }
@@ -6957,6 +7066,7 @@ jobs:
               @State private var showChangePassword = false
               @State private var showAbout = false
               @State private var showLogoutConfirm = false
+              @ObservedObject private var starFX = StarFXManager.shared
 
               var body: some View {
                   NavigationView {
@@ -7001,6 +7111,10 @@ jobs:
                                       ThemePickerRow()
                                   }
 
+                                  SettingsGroup(title: "تأثير تطاير النجوم") {
+                                      StarFXSettingsRow()
+                                  }
+
                                   SettingsGroup(title: nil) {
                                       SettingsRow(
                                           icon: "info.circle.fill",
@@ -7031,6 +7145,13 @@ jobs:
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarHidden(true)
                   }
+                  .onAppear {
+                      // Bind the star effect settings to the signed-in user.
+                      StarFXManager.shared.bind(
+                          userID: authManager.currentUser?.phoneNumber
+                              ?? authManager.currentUser?.username
+                      )
+                  }
                   .sheet(isPresented: $showProfileDetails) {
                       ProfileDetailsView(authManager: authManager, isPresented: $showProfileDetails)
                   }
@@ -7050,6 +7171,201 @@ jobs:
                   } message: {
                       Text("ستحتاج رقم الجوال وكلمة المرور لتسجيل الدخول مرة أخرى.")
                   }
+              }
+          }
+
+          // ================= STAR BURST SETTINGS UI =================
+          struct StarFXSettingsRow: View {
+              @ObservedObject private var fx = StarFXManager.shared
+              @State private var preview: Int = 0
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 16) {
+                      HStack(spacing: 12) {
+                          Image(systemName: "sparkles")
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(.storePrimary)
+                              .frame(width: 36, height: 36)
+                              .background(Circle().fill(Color.storePrimary.opacity(0.15)))
+                          VStack(alignment: .leading, spacing: 2) {
+                              Text("تطاير النجوم عند الضغط")
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(.storeText)
+                              Text(fx.enabled ? "مفعّل" : "متوقف")
+                                  .font(.system(size: 12, weight: .medium))
+                                  .foregroundColor(.storeSub)
+                          }
+                          Spacer()
+                          Toggle("", isOn: Binding(
+                              get: { fx.enabled },
+                              set: { v in
+                                  HapticManager.shared.selection()
+                                  StarFXManager.shared.setEnabled(v)
+                              }
+                          ))
+                          .labelsHidden()
+                          .tint(Color.storePrimary)
+                      }
+
+                      if fx.enabled {
+                          // ---- Count ----
+                          VStack(alignment: .leading, spacing: 6) {
+                              HStack {
+                                  Text("عدد النجوم")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                  Spacer()
+                                  Text("\(fx.count)")
+                                      .font(.system(size: 13, weight: .heavy))
+                                      .foregroundColor(.storePrimary)
+                              }
+                              Slider(
+                                  value: Binding(
+                                      get: { Double(fx.count) },
+                                      set: { StarFXManager.shared.setCount(Int($0.rounded())) }
+                                  ),
+                                  in: 4...40,
+                                  step: 1
+                              )
+                              .tint(Color.storePrimary)
+                          }
+
+                          // ---- Speed ----
+                          VStack(alignment: .leading, spacing: 6) {
+                              HStack {
+                                  Text("سرعة التطاير")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                  Spacer()
+                                  Text(String(format: "%.2f ث", fx.speed))
+                                      .font(.system(size: 13, weight: .heavy))
+                                      .foregroundColor(.storePrimary)
+                              }
+                              // Slider is inverted: dragging right = faster (shorter duration).
+                              Slider(
+                                  value: Binding(
+                                      get: { 1.9 - fx.speed },
+                                      set: { StarFXManager.shared.setSpeed(1.9 - $0) }
+                                  ),
+                                  in: 0.3...1.6
+                              )
+                              .tint(Color.storePrimary)
+                              HStack {
+                                  Text("بطيء")
+                                  Spacer()
+                                  Text("سريع")
+                              }
+                              .font(.system(size: 10, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                          }
+
+                          // ---- Color ----
+                          VStack(alignment: .leading, spacing: 8) {
+                              HStack {
+                                  Text("لون النجوم")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storeText)
+                                  Spacer()
+                                  Text(StarFXCatalog.color(fx.colorID).name)
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(.storeSub)
+                              }
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 12) {
+                                      ForEach(StarFXCatalog.colors) { opt in
+                                          Button {
+                                              HapticManager.shared.impact(.light)
+                                              StarFXManager.shared.setColorID(opt.id)
+                                              preview += 1
+                                          } label: {
+                                              VStack(spacing: 6) {
+                                                  ZStack {
+                                                      Circle()
+                                                          .fill(opt.id == 0
+                                                                ? AnyShapeStyle(LinearGradient(
+                                                                    colors: [rgb(ThemeManager.p.yellow),
+                                                                             rgb(ThemeManager.p.accent),
+                                                                             rgb(ThemeManager.p.primary)],
+                                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                                                                : AnyShapeStyle(rgb(opt.rgbv)))
+                                                          .frame(width: 38, height: 38)
+                                                          .shadow(color: rgb(opt.rgbv).opacity(0.35), radius: 6, y: 3)
+                                                      if fx.colorID == opt.id {
+                                                          Image(systemName: "checkmark")
+                                                              .font(.system(size: 13, weight: .black))
+                                                              .foregroundColor(.white)
+                                                      }
+                                                  }
+                                                  .overlay(
+                                                      Circle()
+                                                          .stroke(fx.colorID == opt.id ? Color.storeText : Color.clear, lineWidth: 2)
+                                                          .frame(width: 46, height: 46)
+                                                  )
+                                                  Text(opt.name)
+                                                      .font(.system(size: 10, weight: .semibold))
+                                                      .foregroundColor(.storeSub)
+                                                      .lineLimit(1)
+                                              }
+                                              .frame(width: 66)
+                                          }
+                                          .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.vertical, 4)
+                                  .padding(.horizontal, 2)
+                              }
+                          }
+
+                          // ---- Live preview + reset ----
+                          HStack(spacing: 12) {
+                              Button {
+                                  HapticManager.shared.impact(.medium)
+                                  preview += 1
+                              } label: {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "wand.and.stars")
+                                      Text("تجربة التأثير")
+                                  }
+                                  .font(.system(size: 12, weight: .heavy))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 16)
+                                  .padding(.vertical, 10)
+                                  .background(Capsule().fill(Color.storePrimary))
+                              }
+                              .buttonStyle(.plain)
+
+                              Button {
+                                  HapticManager.shared.selection()
+                                  StarFXManager.shared.reset()
+                                  preview += 1
+                              } label: {
+                                  Text("استعادة الافتراضي")
+                                      .font(.system(size: 12, weight: .bold))
+                                      .foregroundColor(.storeSub)
+                                      .padding(.horizontal, 14)
+                                      .padding(.vertical, 10)
+                                      .background(Capsule().fill(Color.storeCardAlt))
+                              }
+                              .buttonStyle(.plain)
+
+                              Spacer()
+                          }
+
+                          ZStack {
+                              RoundedRectangle(cornerRadius: 18)
+                                  .fill(Color.storeCardAlt)
+                                  .frame(height: 120)
+                              Image(systemName: "app.fill")
+                                  .font(.system(size: 40, weight: .bold))
+                                  .foregroundColor(.storePrimary.opacity(0.6))
+                              if preview > 0 {
+                                  StarBurstView(fire: preview)
+                              }
+                          }
+                      }
+                  }
+                  .padding(.vertical, 12)
+                  .padding(.horizontal, 14)
               }
           }
 
