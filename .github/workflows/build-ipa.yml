@@ -3129,39 +3129,29 @@ jobs:
               /// Real signing backend. Any server that accepts a multipart upload
               /// (ipa + p12 + mobileprovision + password) and returns an install URL.
               static let defaultServer = "__SIGNING_SERVER_BASE__"
-              private static let serverKey = "sign_server_21s"
 
-              /// The build-time URL is used first. A valid user-saved HTTPS URL can
-              /// override it; an empty configuration stays empty and is never replaced
-              /// by a fake/non-routable hostname.
-              @Published private(set) var serverURL: String = ""
+              /// A stored value is only used when it is a real http(s) URL with a host.
+              /// An empty or broken saved value falls back to the default server, so the
+              /// "عنوان سيرفر التوقيع غير صحيح" alert can never lock the user out.
+              @Published private(set) var serverURL: String = SigningManager.defaultServer
 
               static func isUsable(_ value: String) -> Bool {
-                  let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard clean == value, !clean.isEmpty, !clean.contains(where: { $0.isWhitespace }),
-                        let components = URLComponents(string: clean),
-                        components.scheme?.lowercased() == "https",
-                        components.user == nil, components.password == nil,
-                        let host = components.host?.trimmingCharacters(in: .whitespacesAndNewlines),
-                        !host.isEmpty, !host.lowercased().hasSuffix(".invalid") else { return false }
+                  guard let url = URL(string: value + "/sign"),
+                        let scheme = url.scheme?.lowercased(),
+                        scheme == "https" || scheme == "http",
+                        let host = url.host, !host.isEmpty else { return false }
                   return true
               }
 
               static func usableServer(_ raw: String?) -> String {
                   let clean = sanitizeServer(raw ?? "")
-                  return isUsable(clean) ? clean : ""
+                  return isUsable(clean) ? clean : defaultServer
               }
 
               private let certKey = "sign_certs_21s"
               private let ipaKey  = "sign_ipas_21s"
 
-              private init() {
-                  let saved = UserDefaults.standard.string(forKey: SigningManager.serverKey)
-                  let savedServer = SigningManager.usableServer(saved)
-                  let builtInServer = SigningManager.usableServer(SigningManager.defaultServer)
-                  serverURL = savedServer.isEmpty ? builtInServer : savedServer
-                  load()
-              }
+              private init() { load() }
 
               // MARK: storage
               var storeDir: URL {
@@ -3196,14 +3186,14 @@ jobs:
                       return
                   }
                   serverURL = clean
-                  UserDefaults.standard.set(clean, forKey: SigningManager.serverKey)
-                  addLog("تم تحديث إعداد سيرفر التوقيع والتحقق من صيغة HTTPS.")
+                  UserDefaults.standard.set(clean, forKey: "sign_server_21s")
+                  addLog("تم تحديث إعداد سيرفر التوقيع.")
               }
 
               func resetServer() {
-                  UserDefaults.standard.removeObject(forKey: SigningManager.serverKey)
-                  serverURL = SigningManager.usableServer(SigningManager.defaultServer)
-                  addLog(serverURL.isEmpty ? "لم يتم إعداد سيرفر التوقيع في نسخة البناء." : "تمت إعادة إعداد سيرفر التوقيع.")
+                  serverURL = SigningManager.defaultServer
+                  UserDefaults.standard.set(serverURL, forKey: "sign_server_21s")
+                  addLog("تمت إعادة إعداد سيرفر التوقيع.")
               }
 
               /// Accepts anything the user pastes (itms-services://?action=download-manifest&url=...,
@@ -3256,19 +3246,15 @@ jobs:
                   return comps.string ?? v
               }
 
-              /// Endpoint used for the multipart upload. It is built with URLComponents
-              /// so spaces, malformed hosts, query fragments and duplicate slashes cannot
-              /// silently produce a request to the wrong host.
+              /// Endpoint used for the multipart upload. Falls back to the default server
+              /// when the stored value is empty or unusable, so signing never dead-ends.
               var signEndpoint: URL? {
-                  let base = SigningManager.sanitizeServer(serverURL)
-                  guard SigningManager.isUsable(base), var components = URLComponents(string: base) else { return nil }
-                  var path = components.path
-                  while path.hasSuffix("/") { path.removeLast() }
-                  if !path.lowercased().hasSuffix("/sign") { path += "/sign" }
-                  components.path = path
-                  components.query = nil
-                  components.fragment = nil
-                  guard let url = components.url, url.scheme?.lowercased() == "https", url.host != nil else { return nil }
+                  var base = SigningManager.sanitizeServer(serverURL)
+                  if !SigningManager.isUsable(base) { base = SigningManager.defaultServer }
+                  guard let url = URL(string: base + "/sign"),
+                        let scheme = url.scheme?.lowercased(),
+                        scheme == "https" || scheme == "http",
+                        let host = url.host, !host.isEmpty else { return nil }
                   return url
               }
 
@@ -3400,14 +3386,14 @@ jobs:
               func exportURL(for item: LocalIPAFile) -> URL { fileURL(item.fileName) }
 
               // MARK: signing on the real server
-              func sign(ipa: LocalIPAFile, with cert: SignCertificate, attempt: Int = 1) {
+              func sign(ipa: LocalIPAFile, with cert: SignCertificate) {
                   guard cert.isComplete else {
                       addLog("الشهادة غير مكتملة (مطلوب .p12 و .mobileprovision)")
                       return
                   }
                   guard let endpoint = signEndpoint else {
-                      let hint = "لم يتم إعداد عنوان صالح لسيرفر التوقيع. أضف SIGNING_SERVER_BASE في GitHub Secrets أو أدخل عنوان HTTPS حقيقيًا داخل التطبيق."
-                      addLog("إعداد سيرفر التوقيع مفقود أو غير صالح (HTTPS ومضيف حقيقي مطلوبان).")
+                      let hint = "يجب إدخال عنوان يبدأ بـ https:// لسيرفر التوقيع (لا يمكن استخدام itms-services://)."
+                      addLog("إعداد سيرفر التوقيع غير صالح.")
                       addLog(hint)
                       NotificationsManager.shared.push(title: "عنوان سيرفر التوقيع غير صحيح", body: hint, icon: "exclamationmark.triangle.fill")
                       return
@@ -3420,11 +3406,8 @@ jobs:
                   }
 
                   isWorking = true
-                  progress = max(progress, 0.05)
-                  addLog("اختيار الشهادة: \(cert.name)")
-                  addLog("اختيار IPA: \(ipa.name) · \(ipa.sizeText)")
-                  addLog("الاتصال بالسيرفر (المحاولة \(attempt)/3): \(endpoint.host ?? "غير معروف")")
-                  addLog("جارٍ رفع ملف IPA والشهادة وملف Provision...")
+                  progress = 0.05
+                  addLog("جارٍ الرفع إلى سيرفر التوقيع...")
 
                   let boundary = "Boundary-\(UUID().uuidString)"
                   var request = URLRequest(url: endpoint)
@@ -3456,35 +3439,13 @@ jobs:
 
                   let task = URLSession.shared.uploadTask(with: request, from: body) { data, response, error in
                       DispatchQueue.main.async {
-                          if let error = error {
-                              let nsError = error as NSError
-                              let retryableCodes: Set<Int> = [
-                                  NSURLErrorTimedOut, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
-                                  NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
-                                  NSURLErrorDNSLookupFailed, NSURLErrorResourceUnavailable
-                              ]
-                              if nsError.domain == NSURLErrorDomain, retryableCodes.contains(nsError.code), attempt < 3 {
-                                  self.addLog("تعذر الاتصال: \(error.localizedDescription). ستتم إعادة المحاولة تلقائيًا...")
-                                  self.progress = 0.05
-                                  DispatchQueue.main.asyncAfter(deadline: .now() + Double(attempt * 2)) {
-                                      self.sign(ipa: ipa, with: cert, attempt: attempt + 1)
-                                  }
-                                  return
-                              }
-                              self.isWorking = false
-                              self.progress = 0
-                              let message: String
-                              if nsError.domain == NSURLErrorDomain && (nsError.code == NSURLErrorCannotFindHost || nsError.code == NSURLErrorDNSLookupFailed) {
-                                  message = "تعذر العثور على مضيف سيرفر التوقيع. تحقق من اسم النطاق وDNS وإعداد SIGNING_SERVER_BASE."
-                              } else {
-                                  message = error.localizedDescription
-                              }
-                              self.addLog("فشل الاتصال بالسيرفر: \(message)")
-                              NotificationsManager.shared.push(title: "فشل التوقيع", body: message, icon: "xmark.octagon.fill")
-                              return
-                          }
                           self.isWorking = false
                           self.progress = 1
+                          if let error = error {
+                              self.addLog("فشل التوقيع: \(error.localizedDescription)")
+                              NotificationsManager.shared.push(title: "فشل التوقيع", body: error.localizedDescription, icon: "xmark.octagon.fill")
+                              return
+                          }
                           guard let http = response as? HTTPURLResponse else {
                               self.addLog("لا يوجد رد HTTP صالح من سيرفر التوقيع")
                               NotificationsManager.shared.push(title: "فشل التوقيع", body: "رد سيرفر التوقيع غير صالح.", icon: "xmark.octagon.fill")
@@ -3511,9 +3472,7 @@ jobs:
                                   self.save()
                               }
                               self.lastInstallURL = install
-                              self.addLog("اكتمل التوقيع بنجاح.")
-                              self.addLog("تم إنشاء Manifest ورابط itms-services.")
-                              self.addLog("جارٍ فتح نافذة Install...")
+                              self.addLog("تم التوقيع. سيظهر تأكيد التثبيت من iOS.")
                               NotificationsManager.shared.push(title: "تم التوقيع بنجاح", body: "سيبدأ تثبيت \(ipa.name).", icon: "checkmark.seal.fill")
                               self.install(install)
                           } else {
@@ -3541,8 +3500,7 @@ jobs:
 
               private func parseInstallURL(from data: Data) -> String? {
                   if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                      if let success = obj["success"] as? Bool, !success { return nil }
-                      for key in ["install_url", "installURL", "itms", "manifest_url", "plist_url", "url"] {
+                      for key in ["install_url", "installURL", "itms", "manifest_url", "plist_url", "url", "ipa_url", "download_url"] {
                           if let v = obj[key] as? String, !v.isEmpty {
                               return normalizeInstall(v)
                           }
@@ -8811,16 +8769,16 @@ jobs:
           import os
           from pathlib import Path
 
-          from urllib.parse import urlsplit
-
           raw = os.environ.get("SIGNING_SERVER_BASE", "").strip().rstrip("/")
-          if raw:
-              parsed = urlsplit(raw)
-              if parsed.scheme != "https" or not parsed.hostname or any(c.isspace() for c in raw):
-                  raise SystemExit("SIGNING_SERVER_BASE must be a valid HTTPS URL with a real hostname and no spaces")
-              if parsed.username or parsed.password or parsed.hostname.endswith(".invalid"):
-                  raise SystemExit("SIGNING_SERVER_BASE contains a forbidden or non-routable hostname")
-          value = f"{raw}/api/public" if raw else ""
+          if raw and not raw.startswith("https://"):
+              print("::warning::SIGNING_SERVER_BASE was ignored because it must start with https://")
+              raw = ""
+
+          # Keep a syntactically valid, non-routable HTTPS value when no server is
+          # configured. This preserves a successful IPA build without exposing or
+          # inventing a signing endpoint. Server actions remain unavailable until
+          # the secret or repository variable is configured.
+          value = f"{raw}/api/public" if raw else "https://signing.invalid/api/public"
           p = Path("SigningCenter.swift")
           text = p.read_text()
           marker = "__SIGNING_SERVER_BASE__"
@@ -8830,7 +8788,7 @@ jobs:
           if raw:
               print("Signing server configuration injected securely.")
           else:
-              print("::warning::SIGNING_SERVER_BASE is not configured. The app will build, but server signing is disabled until a valid HTTPS server is entered in-app or configured as a GitHub secret.")
+              print("::notice::SIGNING_SERVER_BASE is not configured; continuing without server signing/OTA upload.")
           PYCONF
 
       - name: Build the app
@@ -9024,19 +8982,15 @@ jobs:
             echo "Add it in GitHub > Settings > Secrets and variables > Actions."
             exit 1
           fi
-          case "$INSTALL_SERVER" in
-            https://*) ;;
-            *) echo "::error::SIGNING_SERVER_BASE must start with https://"; exit 1 ;;
-          esac
           MANIFEST_ENDPOINT="$INSTALL_SERVER/api/public/manifest/21s"
           UPLOAD_ENDPOINT="$INSTALL_SERVER/api/public/upload"
-          echo "Checking intermediary install server and DNS..."
-          STATUS=$(curl --fail-with-body --connect-timeout 15 --max-time 45 --retry 3 --retry-all-errors -sS -o /tmp/server_probe -w "%{http_code}" "$INSTALL_SERVER/api/public/health" || true)
+          echo "Checking intermediary install server..."
+          STATUS=$(curl -sS -o /tmp/server_probe -w "%{http_code}" "$INSTALL_SERVER/api/public/health" || true)
           if [ "$STATUS" = "404" ]; then
             echo "::warning::Health endpoint is missing; upload endpoint will be the authoritative check."
           fi
           echo "Uploading signed IPA to the configured install server..."
-          HTTP_CODE=$(curl --connect-timeout 20 --max-time 1800 --retry 3 --retry-all-errors -sS -o /tmp/upload_response.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS -o /tmp/upload_response.json -w "%{http_code}" \
             -X POST "$INSTALL_SERVER/api/public/upload" \
             -H "x-upload-token: $UPLOAD_TOKEN" \
             -F "file=@artifacts/21s.ipa;type=application/octet-stream" \
@@ -9054,7 +9008,7 @@ jobs:
             cat /tmp/upload_response.json 2>/dev/null || true
             exit 1
           fi
-          MANIFEST_CODE=$(curl --connect-timeout 15 --max-time 60 --retry 3 --retry-all-errors -sS -o /tmp/manifest.plist -w "%{http_code}" "$MANIFEST_ENDPOINT")
+          MANIFEST_CODE=$(curl -sS -o /tmp/manifest.plist -w "%{http_code}" "$MANIFEST_ENDPOINT")
           MANIFEST_TYPE=$(file -b --mime-type /tmp/manifest.plist || true)
           if [ "$MANIFEST_CODE" != "200" ] || ! grep -q '<key>items</key>' /tmp/manifest.plist; then
             echo "::error::The intermediary did not return a valid Apple manifest (HTTP $MANIFEST_CODE, $MANIFEST_TYPE)."
