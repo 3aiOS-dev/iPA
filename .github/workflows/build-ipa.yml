@@ -8,8 +8,9 @@ name: ONEs Store - Login + Apps (SwiftUI) - Arabic/English Edition
 env:
   NEW_BUNDLE_ID: "com.vip21.store.pro"
   NEW_APP_NAME:  "ONEs"
-  # Configure this in GitHub Actions secrets. It is injected only on the runner.
-  SIGNING_SERVER_BASE: ${{ secrets.SIGNING_SERVER_BASE }}
+  # Optional: configure this as a GitHub Actions secret (preferred) or repository variable.
+  # An absent value no longer stops the IPA build.
+  SIGNING_SERVER_BASE: ${{ secrets.SIGNING_SERVER_BASE || vars.SIGNING_SERVER_BASE || '' }}
 
 jobs:
   build:
@@ -3127,7 +3128,7 @@ jobs:
 
               /// Real signing backend. Any server that accepts a multipart upload
               /// (ipa + p12 + mobileprovision + password) and returns an install URL.
-              static let defaultServer = "__SIGNING_SERVER_BASE__/api/public"
+              static let defaultServer = "__SIGNING_SERVER_BASE__"
 
               /// A stored value is only used when it is a real http(s) URL with a host.
               /// An empty or broken saved value falls back to the default server, so the
@@ -8761,27 +8762,33 @@ jobs:
 
       - name: Inject private signing server configuration
         env:
-          SIGNING_SERVER_BASE: ${{ secrets.SIGNING_SERVER_BASE }}
+          SIGNING_SERVER_BASE: ${{ secrets.SIGNING_SERVER_BASE || vars.SIGNING_SERVER_BASE || '' }}
         run: |
           set -euo pipefail
-          if [ -z "${SIGNING_SERVER_BASE:-}" ]; then
-            echo "::error::GitHub secret SIGNING_SERVER_BASE is required."
-            exit 1
-          fi
-          case "$SIGNING_SERVER_BASE" in
-            https://*) ;;
-            *) echo "::error::SIGNING_SERVER_BASE must start with https://"; exit 1 ;;
-          esac
           python3 - <<'PYCONF'
           import os
           from pathlib import Path
-          value = os.environ["SIGNING_SERVER_BASE"].rstrip("/")
+
+          raw = os.environ.get("SIGNING_SERVER_BASE", "").strip().rstrip("/")
+          if raw and not raw.startswith("https://"):
+              print("::warning::SIGNING_SERVER_BASE was ignored because it must start with https://")
+              raw = ""
+
+          # Keep a syntactically valid, non-routable HTTPS value when no server is
+          # configured. This preserves a successful IPA build without exposing or
+          # inventing a signing endpoint. Server actions remain unavailable until
+          # the secret or repository variable is configured.
+          value = f"{raw}/api/public" if raw else "https://signing.invalid/api/public"
           p = Path("SigningCenter.swift")
           text = p.read_text()
           marker = "__SIGNING_SERVER_BASE__"
           if marker not in text:
               raise SystemExit("Signing server marker is missing")
           p.write_text(text.replace(marker, value))
+          if raw:
+              print("Signing server configuration injected securely.")
+          else:
+              print("::notice::SIGNING_SERVER_BASE is not configured; continuing without server signing/OTA upload.")
           PYCONF
 
       - name: Build the app
@@ -8963,10 +8970,10 @@ jobs:
       # =========================================================
       - name: Upload IPA to install server (OTA)
         id: ota_upload
-        if: env.SIGNED_FOR_DEVICE == 'true'
+        if: env.SIGNED_FOR_DEVICE == 'true' && env.SIGNING_SERVER_BASE != ''
         continue-on-error: false
         env:
-          INSTALL_SERVER: ${{ secrets.SIGNING_SERVER_BASE }}
+          INSTALL_SERVER: ${{ env.SIGNING_SERVER_BASE }}
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
@@ -9014,7 +9021,7 @@ jobs:
 
       - name: Install summary
         env:
-          INSTALL_SERVER: ${{ secrets.SIGNING_SERVER_BASE }}
+          INSTALL_SERVER: ${{ env.SIGNING_SERVER_BASE }}
         run: |
           {
             echo "## ONEs - Install from server"
