@@ -3845,9 +3845,14 @@ jobs:
               }
 
               private func matchedApp(_ item: StoreUpdateItem) -> StoreAPIApp? {
-                  feed.apps.first {
-                      $0.id == (item.appId ?? "") ||
-                      ($0.bundleId != nil && $0.bundleId == item.bundleId)
+                  let targetID: String = item.appId ?? ""
+                  let targetBundle: String = item.bundleId ?? ""
+                  return feed.apps.first { (app: StoreAPIApp) -> Bool in
+                      let appID: String = app.id
+                      let appBundle: String = app.bundleId ?? ""
+                      if !targetID.isEmpty && appID == targetID { return true }
+                      if !targetBundle.isEmpty && appBundle == targetBundle { return true }
+                      return false
                   }
               }
           }
@@ -7058,12 +7063,27 @@ jobs:
               case noInternet
           }
 
+          /// رسالة منبثقة قصيرة (توست) تظهر أعلى الشاشة
+          struct StatusToast: Identifiable, Equatable {
+              enum Style: Equatable { case info, success, error }
+              let id = UUID()
+              let style: Style
+              let text: String
+
+              static func info(_ text: String) -> StatusToast { StatusToast(style: .info, text: text) }
+              static func success(_ text: String) -> StatusToast { StatusToast(style: .success, text: text) }
+              static func error(_ text: String) -> StatusToast { StatusToast(style: .error, text: text) }
+
+              static func == (lhs: StatusToast, rhs: StatusToast) -> Bool { lhs.id == rhs.id }
+          }
+
           @MainActor
           final class StatusCenter: ObservableObject {
               static let shared = StatusCenter()
 
               @Published var kind: StatusKind = .ok
               @Published var hasShownFirstWelcome: Bool = false
+              @Published var toast: StatusToast? = nil
 
               private let monitor = NWPathMonitor()
               private let queue = DispatchQueue(label: "com.21s.status.monitor")
@@ -7086,6 +7106,21 @@ jobs:
 
               func refresh() {
                   evaluate(currentPath: monitor.currentPath)
+              }
+
+              /// إظهار رسالة منبثقة قصيرة
+              func show(_ toast: StatusToast, duration: TimeInterval = 2.4) {
+                  self.toast = toast
+                  let shownID = toast.id
+                  Task { @MainActor [weak self] in
+                      try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                      guard let self else { return }
+                      if self.toast?.id == shownID { self.toast = nil }
+                  }
+              }
+
+              func dismissToast() {
+                  toast = nil
               }
 
               private func evaluate(currentPath: NWPath) {
@@ -7222,6 +7257,52 @@ jobs:
                       }
                   }
                   .animation(.easeInOut(duration: 0.25), value: center.kind)
+                  .overlay(alignment: .top) {
+                      if let toast = center.toast {
+                          StatusToastView(toast: toast)
+                              .padding(.horizontal, 20)
+                              .padding(.top, 12)
+                              .transition(.move(edge: .top).combined(with: .opacity))
+                      }
+                  }
+                  .animation(.easeInOut(duration: 0.25), value: center.toast)
+              }
+          }
+
+          struct StatusToastView: View {
+              let toast: StatusToast
+
+              private var bg: Color {
+                  switch toast.style {
+                  case .info: return Color.black.opacity(0.85)
+                  case .success: return Color.green.opacity(0.92)
+                  case .error: return Color.red.opacity(0.92)
+                  }
+              }
+
+              private var icon: String {
+                  switch toast.style {
+                  case .info: return "info.circle.fill"
+                  case .success: return "checkmark.circle.fill"
+                  case .error: return "exclamationmark.triangle.fill"
+                  }
+              }
+
+              var body: some View {
+                  HStack(spacing: 8) {
+                      Image(systemName: icon)
+                          .font(.system(size: 15, weight: .bold))
+                      Text(toast.text)
+                          .font(.system(size: 13, weight: .semibold))
+                          .multilineTextAlignment(.center)
+                      Spacer(minLength: 0)
+                  }
+                  .foregroundColor(.white)
+                  .padding(.horizontal, 14)
+                  .padding(.vertical, 11)
+                  .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(bg))
+                  .shadow(color: Color.black.opacity(0.25), radius: 10, y: 4)
+                  .environment(\.layoutDirection, .rightToLeft)
               }
           }
           STATUSEOF
