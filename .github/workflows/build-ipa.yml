@@ -64,8 +64,6 @@ jobs:
           curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178493307055591.gif"
           # Thanks overlay
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
-          # Store header tap-to-play GIF icon
-          curl -L -o Resources/store_icon.gif          "https://up6.cc/2026/08/178554033779411.gif"
           # App details icon background animation (GIF behind the app icon)
           curl -L -o Resources/detail_icon_bg.gif      "https://up6.cc/2026/07/178550909012951.gif"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
@@ -340,26 +338,20 @@ jobs:
           public final class LanguageManager: ObservableObject {
               public static let shared = LanguageManager()
 
-              @Published public var isArabic: Bool {
-                  didSet {
-                      UserDefaults.standard.set(isArabic ? "ar" : "en", forKey: kAppLanguageKey)
-                  }
-              }
+              /// التطبيق عربي فقط (RTL) — لا توجد لغة أخرى.
+              @Published public var isArabic: Bool = true
 
               private init() {
-                  let saved = UserDefaults.standard.string(forKey: kAppLanguageKey) ?? "ar"
-                  isArabic = (saved != "en")
+                  UserDefaults.standard.set("ar", forKey: kAppLanguageKey)
               }
 
-              public static var currentCode: String {
-                  (UserDefaults.standard.string(forKey: kAppLanguageKey) ?? "ar") == "en" ? "en" : "ar"
-              }
+              public static var currentCode: String { "ar" }
 
-              public var locale: Locale { Locale(identifier: isArabic ? "ar" : "en") }
-              public var layout: LayoutDirection { isArabic ? .rightToLeft : .leftToRight }
-              public var title: String { isArabic ? "العربية" : "English" }
+              public var locale: Locale { Locale(identifier: "ar") }
+              public var layout: LayoutDirection { .rightToLeft }
+              public var title: String { "العربية" }
 
-              public func toggle() { isArabic.toggle() }
+              public func toggle() { }
           }
 
           /// جدول الترجمة: المفتاح هو النص العربي.
@@ -995,8 +987,8 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "لوحة تحكم ONEs",
-                              feedURL: "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app/api/public/store-apps",
-                              homepage: "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app",
+                              feedURL: "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app/api/public/store/apps",
+                              homepage: "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app",
                               enabled: true,
                               maxGB: 500
                           ),
@@ -1389,7 +1381,7 @@ jobs:
               public static let activationNameLink = "https://t.me/deviosx"
 
               /// سيرفر التحقق من أسماء التفعيل + بيانات المتجر.
-              public static let codesSiteBase = "https://project--92e8b333-0bab-4109-ba96-fb29b4ee8b97.lovable.app"
+              public static let codesSiteBase = "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app"
 
               @Published public private(set) var isActive: Bool = false
               @Published public private(set) var code: String = ""
@@ -1472,7 +1464,7 @@ jobs:
                       completion?(false)
                       return
                   }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/activate") else {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/activate") else {
                       lastError = "رابط الموقع غير صحيح"; completion?(false); return
                   }
                   isWorking = true
@@ -1482,7 +1474,10 @@ jobs:
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "code": clean,
-                      "device_id": deviceID
+                      "device_id": deviceID,
+                      "udid": deviceID,
+                      "device_name": UIDevice.current.name,
+                      "ios_version": UIDevice.current.systemVersion
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, error in
                       Task { @MainActor in
@@ -1506,7 +1501,7 @@ jobs:
               /// التحقق الدوري: يوقف التطبيق فور انتهاء المدة أو إيقاف الاسم من اللوحة.
               public func verify(completion: ((Bool) -> Void)? = nil) {
                   guard !code.isEmpty else { completion?(false); return }
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/verify")
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/me")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
                       URLQueryItem(name: "device_id", value: deviceID)
@@ -2717,6 +2712,24 @@ jobs:
                   StoreRootView(authManager: authManager)
               }
           }
+
+          /// بوابة الدخول: كود الاشتراك فقط (لا يوجد إنشاء حساب).
+          struct RootGateView: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              @StateObject private var authManager = AuthManager()
+
+              var body: some View {
+                  Group {
+                      if activation.isActive {
+                          ContentView(authManager: authManager)
+                      } else {
+                          ActivationGateView()
+                      }
+                  }
+                  .animation(.easeInOut(duration: 0.25), value: activation.isActive)
+                  .onAppear { activation.verify() }
+              }
+          }
           VIPEOF
 
       # =========================================================
@@ -2784,17 +2797,9 @@ jobs:
               /// هالة متحركة لصفحة تفاصيل التطبيق (بدون مكعب 3D)
               static func detailAura(title: String) -> String {
                   let pal = ThemeManager.p
-                  var dots = ""
-                  for i in 0..<18 {
-                      let l = (i * 53) % 100
-                      let d = Double(i) * 0.32
-                      let sz = 6 + (i % 4) * 4
-                      dots += "<i style='left:\(l)%;width:\(sz)px;height:\(sz)px;animation-delay:\(d)s'></i>"
-                  }
                   let body = """
                   <div class="halo"></div>
                   <div class="ring r1"></div><div class="ring r2"></div>
-                  <div class="dots">\(dots)</div>
                   <div class="ttl">\(title)</div>
                   """
                   let css = """
@@ -2806,11 +2811,6 @@ jobs:
                   .r1{width:150px;height:150px;margin:-75px 0 0 -75px;animation:sp 9s linear infinite}
                   .r2{width:210px;height:210px;margin:-105px 0 0 -105px;border-style:dashed;animation:sp 14s linear infinite reverse}
                   @keyframes sp{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-                  .dots{position:absolute;inset:0;overflow:hidden}
-                  .dots i{position:absolute;bottom:-20px;border-radius:50%;background:rgba(255,255,255,.55);
-                  animation:rise 6s linear infinite}
-                  @keyframes rise{0%{transform:translateY(0) scale(.6);opacity:0}
-                  20%{opacity:.9}100%{transform:translateY(-300px) scale(1.1);opacity:0}}
                   .ttl{position:absolute;bottom:14px;width:100%;text-align:center;font-size:13px;font-weight:800;
                   text-shadow:0 2px 10px rgba(0,0,0,.4);opacity:.95}
                   """
@@ -3241,14 +3241,14 @@ jobs:
                           StoreHomeView(feed: feed,
                                        onMenu: { openSettings() },
                                        onGoApps: { tab = 3 },
-                                       onGoFiles: { tab = 2 })
+                                       onGoUpdates: { tab = 2 })
                               .opacity(tab == 0 ? 1 : 0)
                               .allowsHitTesting(tab == 0)
                           FavoritesView(feed: feed,
                                         onMenu: { openSettings() })
                               .opacity(tab == 1 ? 1 : 0)
                               .allowsHitTesting(tab == 1)
-                          AlertsView(feed: feed,
+                          UpdatesView(feed: feed,
                                       onMenu: { openSettings() })
                               .opacity(tab == 2 ? 1 : 0)
                               .allowsHitTesting(tab == 2)
@@ -3318,7 +3318,7 @@ jobs:
                           tabItem(icon: "heart.fill", label: LS("المفضلة"), index: 1, badge: favs.items.count)
                           Spacer().frame(width: 66)
                           tabItem(icon: "square.grid.2x2.fill", label: LS("التطبيقات"), index: 3)
-                          tabItem(icon: "tray.full.fill", label: LS("الملفات"), index: 2)
+                          tabItem(icon: "arrow.triangle.2.circlepath", label: "التحديثات", index: 2)
                       }
                       .padding(.horizontal, 14)
                       .padding(.vertical, 12)
@@ -3485,7 +3485,7 @@ jobs:
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
               var onGoApps: (() -> Void)? = nil
-              var onGoFiles: (() -> Void)? = nil
+              var onGoUpdates: (() -> Void)? = nil
 
               var body: some View {
                   NavigationStack {
@@ -3494,7 +3494,6 @@ jobs:
                               // Header: bell (notification centre) on the leading side
                               StoreHeader(title: LS("المتجر"),
                                           onMenu: { onMenu?() },
-                                          gifIcon: "store_icon",
                                           showBell: true)
 
                               // Simple apps list (classic white layout)
@@ -3547,7 +3546,6 @@ jobs:
               @State private var searchText: String = ""
               @State private var selectedCategory: String? = nil
               @State private var visiblePage: Int = 0
-              @State private var gridMode: Bool = true
 
               private static let hiddenCategories: [String] = ["movies", "movie", "films", "film", "أفلام", "افلام"]
 
@@ -3588,16 +3586,11 @@ jobs:
                   return Array(set).sorted()
               }
 
-              private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
                           StoreHeader(title: "التطبيقات",
-                                      onRefresh: {
-                                          HapticManager.shared.impact(.light)
-                                          Task { await feed.refresh() }
-                                      },
                                       onMenu: { onMenu?() })
 
                           ScrollView(showsIndicators: false) {
@@ -3621,18 +3614,6 @@ jobs:
                                       .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
                                       .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
 
-                                      Button {
-                                          HapticManager.shared.selection()
-                                          withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) { gridMode.toggle() }
-                                      } label: {
-                                          Image(systemName: gridMode ? "square.grid.2x2.fill" : "list.bullet")
-                                              .font(.system(size: 16, weight: .bold))
-                                              .foregroundColor(.white)
-                                              .frame(width: 46, height: 46)
-                                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storePrimary))
-                                              .rotation3DEffect(.degrees(gridMode ? 0 : 180), axis: (x: 0, y: 1, z: 0))
-                                      }
-                                      .buttonStyle(.plain)
                                   }
                                   .padding(.horizontal, 20)
                                   .padding(.top, 12)
@@ -3667,19 +3648,6 @@ jobs:
                                       LoadingList()
                                   } else if filtered.isEmpty {
                                       EmptyState(message: searchText.isEmpty ? "لا توجد تطبيقات في هذا التصنيف." : "لا توجد نتائج تطابق «\(searchText)».")
-                                  } else if gridMode {
-                                      LazyVGrid(columns: columns, spacing: 14) {
-                                          ForEach(Array(visibleItems.enumerated()), id: \.element.id) { pair in
-                                              NavigationLink(value: pair.element) {
-                                                  App3DCard(app: pair.element, index: pair.offset)
-                                              }
-                                              .buttonStyle(.plain)
-                                              .onAppear { handleAppear(app: pair.element) }
-                                          }
-                                      }
-                                      .padding(.horizontal, 18)
-                                      .padding(.top, 14)
-                                      .padding(.bottom, 30)
                                   } else {
                                       LazyVStack(spacing: 10) {
                                           ForEach(visibleItems) { app in
@@ -3742,6 +3710,199 @@ jobs:
           }
 
           // ================= 3D APP CARD =================
+          // MARK: - التثبيت الفعلي عبر السيرفر (OTA / itms-services)
+          @MainActor
+          final class OTAInstaller: ObservableObject {
+              static let shared = OTAInstaller()
+              private init() {}
+
+              @Published var isWorking: Bool = false
+
+              private var base: String { ActivationManager.codesSiteBase }
+
+              /// يطلب من السيرفر جلسة تثبيت موقّعة ثم يفتح itms-services لتثبيت التطبيق مباشرة على الجهاز.
+              func install(app: StoreAPIApp) {
+                  guard ActivationManager.shared.isActive else {
+                      StatusCenter.shared.show(.error("اشتراكك غير مفعّل"))
+                      return
+                  }
+                  guard let url = URL(string: base + "/api/public/store/install") else { return }
+                  isWorking = true
+                  StatusCenter.shared.show(.info("جارٍ تحضير التثبيت…"))
+
+                  var req = URLRequest(url: url)
+                  req.httpMethod = "POST"
+                  req.timeoutInterval = 30
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "app_id": app.id,
+                      "bundle_id": app.bundleId ?? "",
+                      "name": app.name,
+                      "code": ActivationManager.shared.code,
+                      "udid": ActivationManager.shared.deviceID,
+                      "ios_version": UIDevice.current.systemVersion
+                  ])
+
+                  URLSession.shared.dataTask(with: req) { data, _, error in
+                      Task { @MainActor in
+                          self.isWorking = false
+                          guard let data = data,
+                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                                (json["ok"] as? Bool) == true,
+                                let manifest = json["manifest_url"] as? String,
+                                let itms = URL(string: "itms-services://?action=download-manifest&url=" + manifest) else {
+                              let msg = ((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any])?["message"] as? String
+                              StatusCenter.shared.show(.error(msg ?? error?.localizedDescription ?? "تعذر بدء التثبيت"))
+                              return
+                          }
+                          HapticManager.shared.success()
+                          StatusCenter.shared.show(.info("بدأ التثبيت على جهازك"))
+                          UIApplication.shared.open(itms)
+                      }
+                  }.resume()
+              }
+          }
+
+          // MARK: - تبويب تحديثات التطبيقات (بديل تبويب الملفات)
+          struct StoreUpdateItem: Identifiable, Codable, Hashable {
+              let id: String
+              let name: String
+              let version: String?
+              let icon: String?
+              let kind: String?
+              let notes: String?
+              let publishedAt: String?
+              let appId: String?
+              let bundleId: String?
+
+              enum CodingKeys: String, CodingKey {
+                  case id, name, version, icon, kind, notes
+                  case publishedAt = "published_at"
+                  case appId = "app_id"
+                  case bundleId = "bundle_id"
+              }
+
+              var isNew: Bool { (kind ?? "update").lowercased() == "new" }
+          }
+
+          @MainActor
+          final class UpdatesFeed: ObservableObject {
+              @Published var items: [StoreUpdateItem] = []
+              @Published var isLoading: Bool = false
+              @Published var lastError: String = ""
+
+              func refresh() async {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/updates") else { return }
+                  isLoading = true
+                  lastError = ""
+                  do {
+                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+                      req.setValue(ActivationManager.shared.deviceID, forHTTPHeaderField: "X-Device-UDID")
+                      let (data, _) = try await URLSession.shared.data(for: req)
+                      if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                         let arr = json["updates"] ?? json["items"],
+                         let raw = try? JSONSerialization.data(withJSONObject: arr) {
+                          items = (try? JSONDecoder().decode([StoreUpdateItem].self, from: raw)) ?? []
+                      } else {
+                          items = (try? JSONDecoder().decode([StoreUpdateItem].self, from: data)) ?? []
+                      }
+                  } catch {
+                      lastError = error.localizedDescription
+                  }
+                  isLoading = false
+              }
+          }
+
+          struct UpdatesView: View {
+              @ObservedObject var feed: StoreFeed
+              var onMenu: (() -> Void)? = nil
+              @StateObject private var updates = UpdatesFeed()
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      StoreHeader(title: "تحديثات التطبيقات", onMenu: { onMenu?() })
+
+                      ScrollView(showsIndicators: false) {
+                          LazyVStack(spacing: 10) {
+                              if updates.items.isEmpty && updates.isLoading {
+                                  LoadingList()
+                              } else if updates.items.isEmpty {
+                                  EmptyState(message: "لا توجد تحديثات جديدة حاليًا. اسحب للأسفل للتحديث.")
+                              } else {
+                                  ForEach(updates.items) { item in
+                                      UpdateRow(item: item, app: matchedApp(item))
+                                  }
+                              }
+                          }
+                          .padding(.horizontal, 20)
+                          .padding(.top, 14)
+                          .padding(.bottom, 30)
+                      }
+                      .refreshable { await updates.refresh() }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .task { await updates.refresh() }
+              }
+
+              private func matchedApp(_ item: StoreUpdateItem) -> StoreAPIApp? {
+                  feed.apps.first {
+                      $0.id == (item.appId ?? "") ||
+                      ($0.bundleId != nil && $0.bundleId == item.bundleId)
+                  }
+              }
+          }
+
+          struct UpdateRow: View {
+              let item: StoreUpdateItem
+              let app: StoreAPIApp?
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      RemoteIcon(url: item.icon ?? app?.icon, size: 54, cornerRadius: 14)
+                      VStack(alignment: .leading, spacing: 4) {
+                          HStack(spacing: 6) {
+                              Text(item.name)
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.storeText)
+                                  .lineLimit(1)
+                              Text(item.isNew ? "جديد" : "تحديث")
+                                  .font(.system(size: 9, weight: .heavy))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 7).padding(.vertical, 3)
+                                  .background(Capsule().fill(item.isNew ? Color.storeCyan : Color.storePrimary))
+                          }
+                          if let v = item.version {
+                              Text("الإصدار \(v)")
+                                  .font(.system(size: 11, weight: .semibold))
+                                  .foregroundColor(.storeSub)
+                          }
+                          if let n = item.notes, !n.isEmpty {
+                              Text(n)
+                                  .font(.system(size: 11))
+                                  .foregroundColor(.storeSub)
+                                  .lineLimit(2)
+                          }
+                      }
+                      Spacer(minLength: 6)
+                      if let app {
+                          Button {
+                              OTAInstaller.shared.install(app: app)
+                          } label: {
+                              Text(item.isNew ? "تثبيت" : "تحديث")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 16).padding(.vertical, 8)
+                                  .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
+                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
+              }
+          }
+
           struct App3DCard: View {
               let app: StoreAPIApp
               let index: Int
@@ -3959,10 +4120,10 @@ jobs:
                                                   Label("إزالة من المفضلة", systemImage: "heart.slash")
                                               }
                                               Button {
-                                                  DownloadsManager.shared.enqueue(app: app)
+                                                  OTAInstaller.shared.install(app: app)
                                                   HapticManager.shared.success()
                                               } label: {
-                                                  Label("تثبيت", systemImage: "arrow.down.circle")
+                                                  Label("تثبيت", systemImage: "arrow.down.app.fill")
                                               }
                                           }
                                       }
@@ -4388,15 +4549,8 @@ jobs:
                                   .background(Circle().fill(Color.storeCard))
                                   .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
                           }
-                      } else if let onRefresh {
-                          Button(action: onRefresh) {
-                              Image(systemName: "arrow.clockwise")
-                                  .font(.system(size: 15, weight: .semibold))
-                                  .foregroundColor(.storeText)
-                                  .frame(width: 40, height: 40)
-                                  .background(Circle().fill(Color.storeCard))
-                                  .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
-                          }
+                      } else {
+                          Spacer().frame(width: 40, height: 40)
                       }
                   }
                   .padding(.horizontal, 20)
@@ -4585,7 +4739,7 @@ jobs:
                               Spacer()
                               Button {
                                   HapticManager.shared.success()
-                                  DownloadsManager.shared.enqueue(app: app)
+                                  OTAInstaller.shared.install(app: app)
                               } label: {
                                   Text("تثبيت")
                                       .font(.system(size: 13, weight: .bold))
@@ -5756,7 +5910,7 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      NavigationView { AuthView() }
+                      NavigationView { RootGateView() }
                           .navigationViewStyle(.stack)
                           .overlay(alignment: .center) {
                               if captureService.showThanksOverlay {
@@ -5916,38 +6070,6 @@ jobs:
                                           trailing: .chevron,
                                           action: { showChangePassword = true }
                                       )
-                                  }
-
-                                  SettingsGroup(title: LS("اللغة")) {
-                                      SettingsRow(
-                                          icon: "globe",
-                                          iconBg: Color.storeDivider,
-                                          title: LS("اللغة") + " · " + lang.title,
-                                          trailing: .chevron,
-                                          action: {
-                                              HapticManager.shared.selection()
-                                              lang.toggle()
-                                              langIsArabic = lang.isArabic
-                                          }
-                                      )
-                                      Divider().padding(.leading, 64)
-                                      HStack(spacing: 10) {
-                                          Text(LS("تغيير لغة التطبيق"))
-                                              .font(.system(size: 13))
-                                              .foregroundColor(.storeSub)
-                                          Spacer(minLength: 8)
-                                          Picker("", selection: $langIsArabic) {
-                                              Text("العربية").tag(true)
-                                              Text("English").tag(false)
-                                          }
-                                          .pickerStyle(.segmented)
-                                          .frame(width: 190)
-                                          .onChange(of: langIsArabic) { newValue in
-                                              if lang.isArabic != newValue { lang.isArabic = newValue }
-                                          }
-                                      }
-                                      .padding(.horizontal, 16)
-                                      .padding(.vertical, 10)
                                   }
 
                                   SettingsGroup(title: nil) {
@@ -7116,7 +7238,7 @@ jobs:
           final class BackendAccount: ObservableObject {
               static let shared = BackendAccount()
 
-              static let siteBase = "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app"
+              static let siteBase = "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app"
               static let supabaseURL = "https://xpsqdzirevankrzrnxko.supabase.co"
               static let anonKey = "sb_publishable_-UfDzXdzukrKLoh6kp8Gsg_ecMMt56Z"
 
