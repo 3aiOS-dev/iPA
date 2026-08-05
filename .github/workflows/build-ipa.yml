@@ -6836,7 +6836,29 @@ jobs:
               private let queue = DispatchQueue(label: "com.21s.status.monitor")
               private var didStart = false
 
+              @Published var toastText: String = ""
+              private var toastToken: Int = 0
+
               private init() {}
+
+              /// عرض رسالة حالة سريعة (Toast) من أي خيط.
+              nonisolated func show(text: String) {
+                  Task { @MainActor in
+                      StatusCenter.shared.presentToast(text)
+                  }
+              }
+
+              private func presentToast(_ text: String) {
+                  toastText = text
+                  toastToken &+= 1
+                  let token = toastToken
+                  Task { @MainActor in
+                      try? await Task.sleep(nanoseconds: 2_600_000_000)
+                      if self.toastToken == token {
+                          self.toastText = ""
+                      }
+                  }
+              }
 
               func start() {
                   guard !didStart else { return }
@@ -6976,19 +6998,41 @@ jobs:
               @ObservedObject var center = StatusCenter.shared
 
               var body: some View {
-                  Group {
-                      switch center.kind {
-                      case .ok:
-                          EmptyView()
-                      case .noInternet:
-                          NoInternetScreen {
-                              HapticManager.shared.impact(.light)
-                              center.refresh()
+                  ZStack {
+                      Group {
+                          switch center.kind {
+                          case .ok:
+                              EmptyView()
+                          case .noInternet:
+                              NoInternetScreen {
+                                  HapticManager.shared.impact(.light)
+                                  center.refresh()
+                              }
+                              .transition(.opacity.combined(with: .scale(scale: 1.02)))
                           }
-                          .transition(.opacity.combined(with: .scale(scale: 1.02)))
+                      }
+                      .animation(.easeInOut(duration: 0.25), value: center.kind)
+
+                      if !center.toastText.isEmpty {
+                          VStack {
+                              Spacer()
+                              Text(center.toastText)
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.white)
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal, 18)
+                                  .padding(.vertical, 12)
+                                  .background(
+                                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                          .fill(Color.black.opacity(0.85))
+                                  )
+                                  .padding(.bottom, 60)
+                                  .padding(.horizontal, 24)
+                          }
+                          .transition(.opacity)
                       }
                   }
-                  .animation(.easeInOut(duration: 0.25), value: center.kind)
+                  .animation(.easeInOut(duration: 0.25), value: center.toastText)
               }
           }
           STATUSEOF
