@@ -65,7 +65,6 @@ jobs:
           # Thanks overlay
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
           # Store header tap-to-play GIF icon
-          curl -L -o Resources/store_icon.gif          "https://up6.cc/2026/08/178554033779411.gif"
           # App details icon background animation (GIF behind the app icon)
           curl -L -o Resources/detail_icon_bg.gif      "https://up6.cc/2026/07/178550909012951.gif"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
@@ -347,17 +346,18 @@ jobs:
               }
 
               private init() {
+                  // التطبيق أصبح باللغة العربية فقط.
                   UserDefaults.standard.set("ar", forKey: kAppLanguageKey)
                   isArabic = true
               }
 
               public static var currentCode: String { "ar" }
 
-              public var locale: Locale { Locale(identifier: "ar") }
-              public var layout: LayoutDirection { .rightToLeft }
-              public var title: String { "العربية" }
+              public var locale: Locale { Locale(identifier: isArabic ? "ar" : "en") }
+              public var layout: LayoutDirection { isArabic ? .rightToLeft : .leftToRight }
+              public var title: String { isArabic ? "العربية" : "English" }
 
-              public func toggle() { isArabic.toggle() }
+              public func toggle() { /* العربية فقط */ }
           }
 
           /// جدول الترجمة: المفتاح هو النص العربي.
@@ -495,7 +495,8 @@ jobs:
 
           /// LS = Localized String. يعيد العربية كما هي، أو الترجمة الإنجليزية.
           public func LS(_ ar: String) -> String {
-              return ar
+              if LanguageManager.currentCode == "ar" { return ar }
+              return ONEsEnglishStrings[ar] ?? ar
           }
           LANGEOF
 
@@ -992,8 +993,8 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "لوحة تحكم ONEs",
-                              feedURL: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app/api/public/store/apps",
-                              homepage: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app",
+                              feedURL: "https://project--256fd1b4-b65a-4b2b-947f-894ddfee0926.lovable.app/api/public/store/feed",
+                              homepage: "https://project--256fd1b4-b65a-4b2b-947f-894ddfee0926.lovable.app",
                               enabled: true,
                               maxGB: 500
                           ),
@@ -1386,7 +1387,7 @@ jobs:
               public static let activationNameLink = "https://t.me/deviosx"
 
               /// سيرفر التحقق من أسماء التفعيل + بيانات المتجر.
-              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+              public static let codesSiteBase = "https://project--256fd1b4-b65a-4b2b-947f-894ddfee0926.lovable.app"
 
               @Published public private(set) var isActive: Bool = false
               @Published public private(set) var code: String = ""
@@ -1395,6 +1396,9 @@ jobs:
               @Published public var isWorking: Bool = false
               @Published public var lastError: String = ""
 
+              @Published public private(set) var subscriberName: String = UserDefaults.standard.string(forKey: "activation_name_v1") ?? ""
+
+              private let kName = "activation_name_v1"
               private let kCode = "activation_code_v1"
               private let kExpires = "activation_expires_v1"
               private let kDays = "activation_days_v1"
@@ -1433,10 +1437,11 @@ jobs:
               }
 
               private func refreshLocalState() {
-                  if let exp = expiresAt, exp > Date(), !code.isEmpty {
-                      isActive = true
+                  guard !code.isEmpty else { isActive = false; return }
+                  if let exp = expiresAt {
+                      isActive = exp > Date()
                   } else {
-                      isActive = false
+                      isActive = true
                   }
               }
 
@@ -1449,9 +1454,14 @@ jobs:
 
               private func apply(_ json: [String: Any]) -> Bool {
                   guard (json["ok"] as? Bool) == true else { return false }
-                  if let c = json["code"] as? String { code = c }
-                  if let days = json["duration_days"] as? Int { durationDays = days }
-                  if let iso = json["expires_at"] as? String {
+                  let account = (json["account"] as? [String: Any]) ?? json
+                  if let c = account["subscription_code"] as? String { code = c }
+                  if let name = account["full_name"] as? String {
+                      subscriberName = name
+                      UserDefaults.standard.set(name, forKey: kName)
+                  }
+                  if let days = account["duration_days"] as? Int { durationDays = days }
+                  if let iso = account["expires_at"] as? String {
                       let f = ISO8601DateFormatter()
                       f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                       expiresAt = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
@@ -1464,8 +1474,8 @@ jobs:
               /// تفعيل اسم جديد (يبدأ العد التنازلي على السيرفر).
               public func activate(code newCode: String, completion: ((Bool) -> Void)? = nil) {
                   let clean = newCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  guard clean.count >= 6 else {
-                      lastError = LS("أدخل اسمًا صحيحًا")
+                  guard clean.count >= 4 else {
+                      lastError = "أدخل كود اشتراك صحيح"
                       completion?(false)
                       return
                   }
@@ -1479,7 +1489,7 @@ jobs:
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "code": clean,
-                      "device_id": deviceID
+                      "udid": deviceID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, error in
                       Task { @MainActor in
@@ -1493,7 +1503,7 @@ jobs:
                               HapticManager.shared.success()
                               completion?(true)
                           } else {
-                              self.lastError = (json["message"] as? String) ?? LS("الاسم غير صالح")
+                              self.lastError = (json["error"] as? String) ?? (json["message"] as? String) ?? "كود الاشتراك غير صالح"
                               completion?(false)
                           }
                       }
@@ -1506,7 +1516,7 @@ jobs:
                   var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
-                      URLQueryItem(name: "device_id", value: deviceID)
+                      URLQueryItem(name: "udid", value: deviceID)
                   ]
                   guard let url = comps?.url else { completion?(false); return }
                   URLSession.shared.dataTask(with: url) { data, _, _ in
@@ -1520,7 +1530,7 @@ jobs:
                           if self.apply(json) {
                               completion?(true)
                           } else {
-                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك"
+                              self.lastError = (json["error"] as? String) ?? (json["message"] as? String) ?? "انتهى الاشتراك"
                               self.deactivate(keepMessage: true)
                               completion?(false)
                           }
@@ -1535,6 +1545,249 @@ jobs:
                   isActive = false
                   if !keepMessage { lastError = "" }
                   persist()
+              }
+          }
+
+          /// شاشة تسجيل الدخول بالاسم.
+          /// شاشة الدخول الوحيدة: كود الاشتراك + UDID الجهاز.
+          struct ActivationGateView: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              @State private var input: String = ""
+
+              var body: some View {
+                  ZStack {
+                      LinearGradient(colors: [Color(red: 0.06, green: 0.07, blue: 0.13),
+                                              Color(red: 0.12, green: 0.11, blue: 0.20)],
+                                     startPoint: .top, endPoint: .bottom)
+                          .edgesIgnoringSafeArea(.all)
+
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 20) {
+                              Text("ONEs")
+                                  .font(.system(size: 54, weight: .black))
+                                  .foregroundColor(.white)
+                                  .padding(.top, 70)
+
+                              Text("الدخول إلى المتجر")
+                                  .font(.system(size: 22, weight: .heavy))
+                                  .foregroundColor(.white)
+
+                              Text("أدخل كود الاشتراك الصادر من لوحة التحكم. الكود مرتبط بـ UDID جهازك.")
+                                  .font(.system(size: 14))
+                                  .foregroundColor(.white.opacity(0.75))
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal, 28)
+
+                              HStack(spacing: 10) {
+                                  TextField("XXXX-XXXX-XXXX", text: $input)
+                                      .textInputAutocapitalization(.characters)
+                                      .disableAutocorrection(true)
+                                      .multilineTextAlignment(.center)
+                                      .font(.system(size: 18, weight: .bold, design: .monospaced))
+                                      .foregroundColor(.white)
+                                      .padding(.vertical, 16)
+                                      .frame(maxWidth: .infinity)
+                                      .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.10)))
+
+                                  Button {
+                                      if let s = UIPasteboard.general.string {
+                                          input = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                                      }
+                                  } label: {
+                                      Image(systemName: "doc.on.clipboard")
+                                          .foregroundColor(.white)
+                                          .padding(16)
+                                          .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.10)))
+                                  }
+                              }
+                              .padding(.horizontal, 24)
+
+                              VStack(spacing: 6) {
+                                  Text("UDID الخاص بجهازك")
+                                      .font(.system(size: 12, weight: .bold))
+                                      .foregroundColor(.white.opacity(0.7))
+                                  Text(activation.deviceID)
+                                      .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                      .foregroundColor(.white.opacity(0.9))
+                                      .multilineTextAlignment(.center)
+                                      .padding(.horizontal, 12)
+                                  Button {
+                                      UIPasteboard.general.string = activation.deviceID
+                                      HapticManager.shared.success()
+                                  } label: {
+                                      Text("نسخ UDID")
+                                          .font(.system(size: 12, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .padding(.horizontal, 16).padding(.vertical, 8)
+                                          .background(Capsule().fill(Color.white.opacity(0.12)))
+                                  }
+                              }
+                              .padding(.vertical, 14)
+                              .frame(maxWidth: .infinity)
+                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.06)))
+                              .padding(.horizontal, 24)
+
+                              Button {
+                                  activation.activate(code: input)
+                              } label: {
+                                  HStack {
+                                      if activation.isWorking { ProgressView().tint(.white) }
+                                      Text(activation.isWorking ? "جارٍ التحقق…" : "فتح المتجر")
+                                          .font(.system(size: 17, weight: .bold))
+                                  }
+                                  .foregroundColor(.white)
+                                  .frame(maxWidth: .infinity)
+                                  .padding(.vertical, 16)
+                                  .background(RoundedRectangle(cornerRadius: 18)
+                                      .fill(LinearGradient(colors: [Color(red: 0.98, green: 0.78, blue: 0.35),
+                                                                    Color(red: 0.90, green: 0.55, blue: 0.20)],
+                                                           startPoint: .leading, endPoint: .trailing)))
+                              }
+                              .disabled(activation.isWorking || input.count < 4)
+                              .padding(.horizontal, 24)
+
+                              if !activation.lastError.isEmpty {
+                                  Text(activation.lastError)
+                                      .font(.system(size: 13, weight: .semibold))
+                                      .foregroundColor(Color(red: 1.0, green: 0.45, blue: 0.45))
+                                      .multilineTextAlignment(.center)
+                                      .padding(.horizontal, 28)
+                              }
+
+                              if let url = URL(string: ActivationManager.activationNameLink) {
+                                  Link("الحصول على كود اشتراك", destination: url)
+                                      .font(.system(size: 14, weight: .semibold))
+                                      .foregroundColor(.white.opacity(0.85))
+                                      .padding(.top, 6)
+                              }
+
+                              Spacer(minLength: 40)
+                          }
+                      }
+                  }
+                  .environment(\.layoutDirection, .rightToLeft)
+                  .environment(\.locale, Locale(identifier: "ar"))
+              }
+          }
+
+          /// التثبيت الفعلي عبر السيرفر (itms-services) وليس تنزيل ملف IPA.
+          @MainActor
+          public final class StoreInstaller {
+              public static let shared = StoreInstaller()
+              private init() {}
+
+              public func install(_ app: StoreAPIApp) {
+                  let activation = ActivationManager.shared
+                  let bundle = app.bundleId ?? ""
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/manifest")
+                  comps?.queryItems = [
+                      URLQueryItem(name: "bundle", value: bundle),
+                      URLQueryItem(name: "code", value: activation.code),
+                      URLQueryItem(name: "udid", value: activation.deviceID)
+                  ]
+                  guard let manifest = comps?.url?.absoluteString,
+                        let encoded = manifest.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                        let url = URL(string: "itms-services://?action=download-manifest&url=" + encoded) else { return }
+                  HapticManager.shared.success()
+                  NotificationsManager.shared.push(title: "جارٍ التثبيت",
+                                                   body: "يتم تثبيت \(app.name) على جهازك عبر السيرفر.",
+                                                   icon: "arrow.down.app.fill")
+                  UIApplication.shared.open(url, options: [:], completionHandler: nil)
+              }
+          }
+
+          /// عنصر تحديث قادم من السيرفر.
+          struct StoreUpdateItem: Identifiable, Decodable {
+              let id: String
+              let app_name: String
+              let icon_url: String?
+              let version: String
+              let changelog: String?
+              let kind: String
+              let released_at: String?
+          }
+
+          @MainActor
+          final class UpdatesFeed: ObservableObject {
+              @Published var items: [StoreUpdateItem] = []
+              @Published var isLoading: Bool = false
+              @Published var error: String = ""
+
+              func load() async {
+                  isLoading = true
+                  error = ""
+                  let activation = ActivationManager.shared
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/updates")
+                  comps?.queryItems = [
+                      URLQueryItem(name: "code", value: activation.code),
+                      URLQueryItem(name: "udid", value: activation.deviceID)
+                  ]
+                  guard let url = comps?.url else { isLoading = false; return }
+                  do {
+                      let (data, _) = try await URLSession.shared.data(from: url)
+                      struct Payload: Decodable { let ok: Bool?; let updates: [StoreUpdateItem]? }
+                      let payload = try JSONDecoder().decode(Payload.self, from: data)
+                      items = payload.updates ?? []
+                  } catch {
+                      self.error = "تعذر جلب التحديثات"
+                  }
+                  isLoading = false
+              }
+          }
+
+          /// تبويب تحديثات التطبيقات (بديل تبويب الملفات).
+          struct UpdatesView: View {
+              var onMenu: (() -> Void)? = nil
+              @StateObject private var feed = UpdatesFeed()
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      StoreHeader(title: "التحديثات", onMenu: { onMenu?() })
+
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 12) {
+                              if feed.isLoading && feed.items.isEmpty {
+                                  LoadingList()
+                              } else if feed.items.isEmpty {
+                                  EmptyState(message: "لا توجد تحديثات أو تطبيقات جديدة حاليًا.")
+                              } else {
+                                  ForEach(feed.items) { item in
+                                      HStack(spacing: 12) {
+                                          RemoteIcon(url: item.icon_url, size: 54, cornerRadius: 14)
+                                          VStack(alignment: .leading, spacing: 4) {
+                                              Text(item.app_name)
+                                                  .font(.system(size: 15, weight: .bold))
+                                                  .foregroundColor(.storeText)
+                                              Text("الإصدار \(item.version)")
+                                                  .font(.system(size: 11, weight: .semibold))
+                                                  .foregroundColor(.storeSub)
+                                              if let log = item.changelog, !log.isEmpty {
+                                                  Text(log)
+                                                      .font(.system(size: 12))
+                                                      .foregroundColor(.storeSub)
+                                                      .lineLimit(3)
+                                              }
+                                          }
+                                          Spacer(minLength: 6)
+                                          Text(item.kind == "new" ? "جديد" : "تحديث")
+                                              .font(.system(size: 11, weight: .bold))
+                                              .foregroundColor(.white)
+                                              .padding(.horizontal, 12).padding(.vertical, 6)
+                                              .background(Capsule().fill(item.kind == "new" ? Color.storePrimary : Color.storePink))
+                                      }
+                                      .padding(12)
+                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                                      .padding(.horizontal, 20)
+                                  }
+                              }
+                          }
+                          .padding(.top, 14)
+                          .padding(.bottom, 24)
+                      }
+                      .refreshable { await feed.load() }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .task { await feed.load() }
               }
           }
 
@@ -1562,157 +1815,6 @@ jobs:
                   .padding(14)
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.gray.opacity(0.15)))
                   .onAppear { activation.verify() }
-              }
-          }
-
-          // ================= شاشة تفاصيل الاشتراك (كود الاشتراك + UDID + تفاصيل الحساب) =================
-          struct SubscriptionDetailsView: View {
-              @ObservedObject private var activation = ActivationManager.shared
-              @Binding var isPresented: Bool
-              @State private var codeInput: String = ""
-              @State private var copied: Bool = false
-              @State private var errorText: String = ""
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 18) {
-
-                              // حالة الاشتراك
-                              VStack(alignment: .leading, spacing: 10) {
-                                  HStack {
-                                      Image(systemName: activation.isActive ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                                          .foregroundColor(activation.isActive ? .green : .orange)
-                                      Text(LS(activation.isActive ? "الاشتراك مفعّل" : "الجهاز غير مفعّل"))
-                                          .font(.system(size: 16, weight: .bold))
-                                      Spacer()
-                                  }
-                                  if activation.isActive {
-                                      DetailRowLine(title: LS("كود الاشتراك"), value: activation.code, mono: true)
-                                      DetailRowLine(title: LS("المدة"), value: "\(activation.durationDays) \(LS("يوم"))")
-                                      DetailRowLine(title: LS("المتبقي"), value: "\(activation.daysLeft) \(LS("يوم"))")
-                                      DetailRowLine(title: LS("تاريخ الانتهاء"), value: activation.expiryText)
-                                  } else {
-                                      Text(LS("فعّل كود الاشتراك أولاً لاستخدام الميزات."))
-                                          .font(.system(size: 13)).opacity(0.75)
-                                  }
-                              }
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                              .padding(16)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.gray.opacity(0.14)))
-
-                              // إدخال كود الاشتراك
-                              VStack(alignment: .leading, spacing: 12) {
-                                  Text(LS("كود الاشتراك")).font(.system(size: 15, weight: .bold))
-                                  TextField(LS("XXXX-XXXX-XX"), text: $codeInput)
-                                      .textInputAutocapitalization(.characters)
-                                      .disableAutocorrection(true)
-                                      .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                                      .padding(14)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.gray.opacity(0.12)))
-
-                                  if !errorText.isEmpty {
-                                      Text(errorText).font(.system(size: 12)).foregroundColor(.red)
-                                  }
-
-                                  Button {
-                                      HapticManager.shared.impact(.light)
-                                      errorText = ""
-                                      activation.activate(code: codeInput) { ok in
-                                          if ok {
-                                              codeInput = ""
-                                              errorText = ""
-                                          } else {
-                                              errorText = activation.lastError
-                                          }
-                                      }
-                                  } label: {
-                                      HStack {
-                                          if activation.isWorking { ProgressView().scaleEffect(0.8) }
-                                          Text(LS(activation.isActive ? "تحديث التفعيل" : "تفعيل الاشتراك"))
-                                              .font(.system(size: 15, weight: .bold))
-                                      }
-                                      .frame(maxWidth: .infinity)
-                                      .padding(.vertical, 14)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.green.opacity(0.85)))
-                                      .foregroundColor(.white)
-                                  }
-                                  .disabled(activation.isWorking || codeInput.trimmingCharacters(in: .whitespacesAndNewlines).count < 6)
-                                  .buttonStyle(.plain)
-                              }
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                              .padding(16)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.gray.opacity(0.14)))
-
-                              // تفاصيل الجهاز / الحساب
-                              VStack(alignment: .leading, spacing: 12) {
-                                  Text(LS("تفاصيل الجهاز")).font(.system(size: 15, weight: .bold))
-                                  DetailRowLine(title: LS("UDID الرسمي للجهاز"), value: activation.deviceID, mono: true)
-                                  DetailRowLine(title: LS("موديل الجهاز"), value: UIDevice.current.model)
-                                  DetailRowLine(title: LS("نظام التشغيل"), value: UIDevice.current.systemName + " " + UIDevice.current.systemVersion)
-
-                                  Button {
-                                      UIPasteboard.general.string = activation.deviceID
-                                      HapticManager.shared.success()
-                                      copied = true
-                                  } label: {
-                                      HStack {
-                                          Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                                          Text(LS(copied ? "تم النسخ" : "نسخ UDID"))
-                                              .font(.system(size: 14, weight: .semibold))
-                                      }
-                                      .frame(maxWidth: .infinity)
-                                      .padding(.vertical, 12)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.gray.opacity(0.18)))
-                                  }
-                                  .buttonStyle(.plain)
-                              }
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                              .padding(16)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.gray.opacity(0.14)))
-
-                              Text(LS("تُنشأ الأكواد وتفاصيل الحسابات من لوحة التحكم، ثم تُدخل هنا."))
-                                  .font(.system(size: 12)).opacity(0.6)
-                                  .multilineTextAlignment(.center)
-
-                              Spacer(minLength: 30)
-                          }
-                          .padding(20)
-                      }
-                      .background(Color.storeBg.ignoresSafeArea())
-                      .navigationBarHidden(true)
-                      .overlay(alignment: .top) {
-                          HStack {
-                              Button { isPresented = false } label: {
-                                  Image(systemName: "xmark").font(.system(size: 15, weight: .bold)).padding(10)
-                              }
-                              Spacer()
-                              Text(LS("الاشتراك و UDID")).font(.system(size: 16, weight: .bold))
-                              Spacer()
-                              Image(systemName: "xmark").opacity(0)
-                          }
-                          .padding(.horizontal, 14)
-                      }
-                      .onAppear { activation.verify() }
-                  }
-              }
-          }
-
-          struct DetailRowLine: View {
-              let title: String
-              let value: String
-              var mono: Bool = false
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 4) {
-                      Text(title).font(.system(size: 12)).opacity(0.6)
-                      Text(value.isEmpty ? "—" : value)
-                          .font(.system(size: 13, weight: .semibold, design: mono ? .monospaced : .default))
-                          .textSelection(.enabled)
-                          .lineLimit(3)
-                          .minimumScaleFactor(0.7)
-                  }
-                  .frame(maxWidth: .infinity, alignment: .leading)
               }
           }
           ACTEOF
@@ -2048,231 +2150,23 @@ jobs:
           import SwiftUI
           import UIKit
 
+          /// نقطة الدخول: كود الاشتراك فقط (لا يوجد إنشاء حساب داخل التطبيق).
           struct AuthView: View {
               @StateObject private var authManager = AuthManager()
-              @State private var isLoginMode = true
-              @State private var phoneNumber = ""
-              @State private var username = ""
-              @State private var password = ""
-              @State private var confirmPassword = ""
-              @State private var isPasswordVisible = false
-              @State private var isConfirmPasswordVisible = false
-              @State private var showOnboarding = false
-              @State private var showVerification = false
-
-              @State private var selectedCountry = countries.first(where: { $0.dialCode == "+81" }) ?? countries.first!
-              @State private var phoneNumberWithoutCode = ""
-
-              var fullPhoneNumber: String {
-                  selectedCountry.dialCode + phoneNumberWithoutCode
-              }
-
               @ObservedObject private var activation = ActivationManager.shared
 
               var body: some View {
                   Group {
-                      if showOnboarding {
-                          Color.clear
-                              .fullScreenCover(isPresented: $showOnboarding) {
-                                  OnboardingView(isPresented: $showOnboarding)
-                              }
-                      } else {
+                      if activation.isActive {
                           ContentView(authManager: authManager)
+                              .transition(.opacity)
+                      } else {
+                          ActivationGateView()
                               .transition(.opacity)
                       }
                   }
-                  .onAppear {
-                      let hasSeen = UserDefaults.standard.bool(forKey: AppConstants.hasSeenOnboardingKey)
-                      if !hasSeen {
-                          showOnboarding = true
-                      }
-                  }
-                  .animation(.easeInOut(duration: 0.3), value: showOnboarding)
-              }
-
-              var mainAuthView: some View {
-                  ZStack {
-                      Color.xcodeBackground.edgesIgnoringSafeArea(.all)
-
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 28) {
-                              IllustrationHeader(isLoginMode: isLoginMode)
-                                  .padding(.top, 24)
-
-                              VStack(alignment: .leading, spacing: 22) {
-                                  VStack(alignment: .leading, spacing: 6) {
-                                      Text(isLoginMode ? "دخول" : "تسجيل")
-                                          .font(.system(size: 32, weight: .heavy))
-                                          .foregroundColor(.xcodeBlue)
-                                      Text(isLoginMode ? "سجّل الدخول للمتابعة." : "أنشئ حسابًا لتسجيل الدخول.")
-                                          .font(.system(size: 13))
-                                          .foregroundColor(.xcodeSecondary)
-                                  }
-
-                                  VStack(spacing: 14) {
-                                      HStack(spacing: 0) {
-                                          Menu {
-                                              ForEach(countries) { country in
-                                                  Button {
-                                                      selectedCountry = country
-                                                  } label: {
-                                                      HStack {
-                                                          Text(country.flagEmoji)
-                                                          Text(country.dialCode)
-                                                          Text(country.name)
-                                                      }
-                                                  }
-                                              }
-                                          } label: {
-                                              HStack(spacing: 4) {
-                                                  Text(selectedCountry.flagEmoji)
-                                                  Text(selectedCountry.dialCode)
-                                                  Image(systemName: "chevron.down")
-                                                      .font(.system(size: 10))
-                                                      .foregroundColor(.xcodeSecondary)
-                                              }
-                                              .padding(.horizontal, 10)
-                                              .frame(height: 48)
-                                              .background(RoundedRectangle(cornerRadius: 10).fill(Color.xcodeEditor))
-                                          }
-                                          .padding(.trailing, 6)
-
-                                          TextField("رقم الجوال", text: $phoneNumberWithoutCode)
-                                              .font(.system(size: 14))
-                                              .keyboardType(.phonePad)
-                                              .padding(.horizontal, 14)
-                                              .frame(height: 48)
-                                              .background(RoundedRectangle(cornerRadius: 10).fill(Color.xcodeEditor))
-                                      }
-
-                                      MockupField(icon: "person.fill", placeholder: "اسم المستخدم", text: $username)
-
-                                      MockupSecureField(
-                                          icon: "lock.fill",
-                                          placeholder: "كلمة المرور",
-                                          text: $password,
-                                          isVisible: $isPasswordVisible
-                                      )
-
-                                      if !isLoginMode {
-                                          MockupSecureField(
-                                              icon: "lock.fill",
-                                              placeholder: "تأكيد كلمة المرور",
-                                              text: $confirmPassword,
-                                              isVisible: $isConfirmPasswordVisible
-                                          )
-                                      }
-
-                                      HStack {
-                                          Text("تذكّرني لاحقًا")
-                                              .font(.system(size: 12))
-                                              .foregroundColor(.xcodeSecondary)
-                                          Spacer()
-                                          Toggle("", isOn: .constant(true))
-                                              .labelsHidden()
-                                              .tint(.xcodeBlue)
-                                      }
-                                  }
-
-                                  if let error = authManager.errorMessage {
-                                      HStack(spacing: 6) {
-                                          Image(systemName: "exclamationmark.triangle.fill")
-                                              .foregroundColor(.xcodeRed)
-                                              .font(.system(size: 12))
-                                          Text(error)
-                                              .font(.system(size: 12))
-                                              .foregroundColor(.xcodeRed)
-                                          Spacer()
-                                      }
-                                  }
-
-                                  Button {
-                                      HapticManager.shared.impact(.medium)
-                                      if isLoginMode {
-                                          _ = authManager.login(phoneNumber: fullPhoneNumber, password: password)
-                                      } else {
-                                          // التسجيل يتطلب رمز تحقق: فحص المدخلات -> إرسال الرمز -> شاشة التأكيد
-                                          if authManager.validateSignUp(
-                                              phoneNumber: fullPhoneNumber,
-                                              username: username,
-                                              password: password,
-                                              confirmPassword: confirmPassword
-                                          ) {
-                                              NotificationsManager.shared.requestAuthorization()
-                                              VerificationService.shared.sendCode(to: fullPhoneNumber)
-                                              showVerification = true
-                                          }
-                                      }
-                                  } label: {
-                                      HStack(spacing: 8) {
-                                          if authManager.isLoading {
-                                              ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white)).scaleEffect(0.8)
-                                          }
-                                          Text(authManager.isLoading ? "جارٍ التحميل..." : (isLoginMode ? "تسجيل الدخول" : "إنشاء حساب"))
-                                              .font(.system(size: 15, weight: .semibold))
-                                      }
-                                      .foregroundColor(.white)
-                                      .frame(maxWidth: .infinity)
-                                      .frame(height: 50)
-                                      .background(Capsule().fill(Color.xcodeBlue))
-                                      .opacity(authManager.isLoading ? 0.6 : 1.0)
-                                  }
-                                  .disabled(authManager.isLoading)
-
-                                  Button {
-                                      HapticManager.shared.selection()
-                                      withAnimation(.spring()) {
-                                          isLoginMode.toggle()
-                                          phoneNumberWithoutCode = ""
-                                          username = ""
-                                          password = ""
-                                          confirmPassword = ""
-                                          authManager.errorMessage = nil
-                                      }
-                                  } label: {
-                                      HStack(spacing: 4) {
-                                          Spacer()
-                                          Text(isLoginMode ? "ليس لديك حساب؟" : "هل لديك حساب بالفعل؟")
-                                              .font(.system(size: 13))
-                                              .foregroundColor(.xcodeSecondary)
-                                          Text(isLoginMode ? "إنشاء حساب" : "تسجيل الدخول")
-                                              .font(.system(size: 13, weight: .bold))
-                                              .foregroundColor(.xcodeAccent)
-                                          Spacer()
-                                      }
-                                  }
-                              }
-                              .padding(.horizontal, 28)
-                          }
-                          .padding(.bottom, 40)
-                      }
-
-                      NotificationBannerHost()
-                  }
-                  .background(AnimatedWaveBackground())
-                  .fullScreenCover(isPresented: $showVerification) {
-                      VerifyCodeView(
-                          phone: fullPhoneNumber,
-                          onVerified: {
-                              showVerification = false
-                              let ok = authManager.signUp(
-                                  phoneNumber: fullPhoneNumber,
-                                  username: username,
-                                  password: password,
-                                  confirmPassword: confirmPassword
-                              )
-                              if ok {
-                                  VerificationService.shared.reset()
-                                  NotificationsManager.shared.push(
-                                      title: "تم إنشاء الحساب",
-                                      body: "أهلًا بك في ONEs يا \(username)!",
-                                      icon: "person.crop.circle.badge.checkmark"
-                                  )
-                              }
-                          },
-                          onCancel: { showVerification = false }
-                      )
-                  }
+                  .animation(.easeInOut(duration: 0.3), value: activation.isActive)
+                  .onAppear { activation.verify() }
               }
           }
 
@@ -3287,8 +3181,7 @@ jobs:
                                         onMenu: { openSettings() })
                               .opacity(tab == 1 ? 1 : 0)
                               .allowsHitTesting(tab == 1)
-                          AlertsView(feed: feed,
-                                      onMenu: { openSettings() })
+                          UpdatesView(onMenu: { openSettings() })
                               .opacity(tab == 2 ? 1 : 0)
                               .allowsHitTesting(tab == 2)
                           AppsListView(feed: feed,
@@ -3357,7 +3250,7 @@ jobs:
                           tabItem(icon: "heart.fill", label: LS("المفضلة"), index: 1, badge: favs.items.count)
                           Spacer().frame(width: 66)
                           tabItem(icon: "square.grid.2x2.fill", label: LS("التطبيقات"), index: 3)
-                          tabItem(icon: "arrow.triangle.2.circlepath", label: LS("التحديثات"), index: 2)
+                          tabItem(icon: "arrow.down.circle.fill", label: "التحديثات", index: 2)
                       }
                       .padding(.horizontal, 14)
                       .padding(.vertical, 12)
@@ -3531,7 +3424,7 @@ jobs:
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 16) {
                               // Header: bell (notification centre) on the leading side
-                              StoreHeader(title: LS("المتجر"),
+                              StoreHeader(title: "المتجر",
                                           onMenu: { onMenu?() },
                                           showBell: true)
 
@@ -3585,6 +3478,7 @@ jobs:
               @State private var searchText: String = ""
               @State private var selectedCategory: String? = nil
               @State private var visiblePage: Int = 0
+              @State private var gridMode: Bool = false
 
               private static let hiddenCategories: [String] = ["movies", "movie", "films", "film", "أفلام", "افلام"]
 
@@ -3624,6 +3518,8 @@ jobs:
                                   .filter { !AppsListView.isHidden($0) })
                   return Array(set).sorted()
               }
+
+              private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
               var body: some View {
                   NavigationStack {
@@ -3965,7 +3861,7 @@ jobs:
                                                   Label("إزالة من المفضلة", systemImage: "heart.slash")
                                               }
                                               Button {
-                                                  StoreInstaller.shared.install(app: app)
+                                                  StoreInstaller.shared.install(app)
                                                   HapticManager.shared.success()
                                               } label: {
                                                   Label("تثبيت", systemImage: "arrow.down.circle")
@@ -4364,23 +4260,6 @@ jobs:
                           Text(title)
                               .font(.system(size: 18, weight: .bold))
                               .foregroundColor(.storeText)
-                          if let gifIcon {
-                              Button {
-                                  HapticManager.shared.impact(.light)
-                                  guard !gifPlaying else { return }
-                                  gifPlaying = true
-                                  DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                      gifPlaying = false
-                                  }
-                              } label: {
-                                  TapToPlayGif(resourceName: gifIcon, isPlaying: gifPlaying)
-                                      .frame(width: 18, height: 18)
-                                      .fixedSize()
-                                      .clipped()
-                                      .contentShape(Rectangle())
-                              }
-                              .buttonStyle(.plain)
-                          }
                       }
                       Spacer()
                       if showBell {
@@ -4394,6 +4273,8 @@ jobs:
                                   .background(Circle().fill(Color.storeCard))
                                   .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
                           }
+                      } else {
+                          Color.clear.frame(width: 40, height: 40)
                       }
                   }
                   .padding(.horizontal, 20)
@@ -4577,7 +4458,7 @@ jobs:
                               Spacer()
                               Button {
                                   HapticManager.shared.success()
-                                  StoreInstaller.shared.install(app: app)
+                                  StoreInstaller.shared.install(app)
                               } label: {
                                   Text("تثبيت")
                                       .font(.system(size: 13, weight: .bold))
@@ -4847,184 +4728,210 @@ jobs:
               }
           }
 
-          // ============ تحديثات التطبيقات (بديل تبويب الملفات) ============
-          struct StoreUpdateItem: Codable, Identifiable, Hashable {
-              let id: String
-              let app_name: String
-              let bundle_id: String?
-              let icon: String?
-              let version: String
-              let changelog: String?
-              let released_at: String?
-              let is_new: Bool?
-          }
-
-          struct StoreUpdatesResponse: Codable { let updates: [StoreUpdateItem] }
-
-          @MainActor
-          final class UpdatesFeed: ObservableObject {
-              static let shared = MainActor.assumeIsolated { UpdatesFeed() }
-              @Published var items: [StoreUpdateItem] = []
-              @Published var isLoading: Bool = false
-              @Published var lastError: String = ""
-              private init() {}
-
-              func load() async {
-                  isLoading = true
-                  lastError = ""
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/updates") else {
-                      isLoading = false; return
-                  }
-                  do {
-                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                      req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                      let (data, _) = try await URLSession.shared.data(for: req)
-                      let parsed = try JSONDecoder().decode(StoreUpdatesResponse.self, from: data)
-                      self.items = parsed.updates
-                  } catch {
-                      self.lastError = error.localizedDescription
-                  }
-                  isLoading = false
-              }
-          }
-
           struct AlertsView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
-              @ObservedObject private var updates = UpdatesFeed.shared
+              @StateObject private var downloads = DownloadsManager.shared
+              @State private var segment: AlertSegment = .alerts
+              @AppStorage("hasSeenAlertsOnboarding21s") private var hasSeenAlertsOnboarding: Bool = false
+              @State private var showAlertsOnboarding: Bool = false
+              @State private var showShareSheet: Bool = false
+              @State private var sharedFileURL: URL? = nil
+
+              private let onboardingPages: [AlertsOnboardingPage] = [
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding1",
+                      title: "تنزيل حقيقي",
+                      description: "عند الضغط على «تثبيت» يتم تحميل ملف IPA مباشرة من المصدر مع شريط تقدّم مباشر يمكن إيقافه مؤقتًا واستكماله."
+                  ),
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding2",
+                      title: "شارك في أي مكان",
+                      description: "يمكنك إرسال ملف IPA لأصدقائك عبر AirDrop أو حفظه في الملفات أو استخدام قائمة المشاركة في iOS."
+                  ),
+                  AlertsOnboardingPage(
+                      imageName: "alerts_onboarding3",
+                      title: "تحكم كامل",
+                      description: "تُحفظ جميع الملفات على جهازك. اضغط أيقونة سلة المحذوفات لحذفها نهائيًا في أي وقت."
+                  )
+              ]
 
               var body: some View {
                   VStack(spacing: 0) {
-                      StoreHeader(title: "تحديثات التطبيقات",
+                      StoreHeader(title: "الملفات",
                                   onMenu: { onMenu?() })
 
+                      HStack(spacing: 0) {
+                          segmentButton(title: "التنبيهات", segment: .alerts)
+                          segmentButton(title: "الملفات", segment: .files)
+                      }
+                      .padding(.horizontal, 20)
+                      .padding(.top, 6)
+
                       ScrollView(showsIndicators: false) {
-                          VStack(alignment: .leading, spacing: 12) {
-                              if updates.items.isEmpty && updates.isLoading {
-                                  ForEach(0..<4, id: \.self) { _ in
-                                      HStack(spacing: 12) {
-                                          RoundedRectangle(cornerRadius: 14).fill(Color.storeDivider).frame(width: 52, height: 52)
-                                          VStack(alignment: .leading, spacing: 6) {
-                                              RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 140, height: 10)
-                                              RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 200, height: 8)
-                                          }
-                                          Spacer()
-                                      }
-                                      .padding(12)
-                                      .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                                      .padding(.horizontal, 20)
-                                  }
-                              } else if updates.items.isEmpty {
-                                  EmptyState(message: updates.lastError.isEmpty
-                                             ? "لا توجد تحديثات جديدة حاليًا."
-                                             : "تعذّر جلب التحديثات: \(updates.lastError)")
-                                      .padding(.horizontal, 20)
+                          VStack(alignment: .leading, spacing: 16) {
+                              if segment == .alerts {
+                                  alertsContent
                               } else {
-                                  ForEach(updates.items) { item in
-                                      UpdateRow(item: item)
-                                          .padding(.horizontal, 20)
-                                  }
+                                  filesContent
                               }
                           }
-                          .padding(.top, 14)
-                          .padding(.bottom, 26)
+                          .padding(.top, 12)
+                          .padding(.bottom, 24)
                       }
-                      .refreshable { await updates.load() }
                   }
                   .background(Color.storeBg.ignoresSafeArea())
-                  .task { await updates.load() }
+                  .onAppear {
+                      downloads.cleanupOrphanedFiles()
+                      if !hasSeenAlertsOnboarding {
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                              showAlertsOnboarding = true
+                          }
+                      }
+                  }
+                  .fullScreenCover(isPresented: $showAlertsOnboarding) {
+                      AlertsOnboardingView(isPresented: $showAlertsOnboarding, pages: onboardingPages)
+                  }
+                  .sheet(isPresented: $showShareSheet) {
+                      if let url = sharedFileURL {
+                          ShareSheet(items: [url])
+                      }
+                  }
+                  .onChange(of: downloads.shareRequest) { newRequest in
+                      if let req = newRequest {
+                          sharedFileURL = req.fileURL
+                          showShareSheet = true
+                          downloads.clearShareRequest()
+                      }
+                  }
               }
-          }
 
-          struct UpdateRow: View {
-              let item: StoreUpdateItem
+              @ViewBuilder
+              private func segmentButton(title: String, segment: AlertSegment) -> some View {
+                  Button {
+                      HapticManager.shared.selection()
+                      withAnimation(.easeInOut(duration: 0.2)) { self.segment = segment }
+                  } label: {
+                      VStack(spacing: 8) {
+                          Text(title)
+                              .font(.system(size: 15, weight: .semibold))
+                              .foregroundColor(self.segment == segment ? .storePrimary : .storeSub)
+                          Rectangle()
+                              .fill(self.segment == segment ? Color.storePrimary : Color.clear)
+                              .frame(height: 2)
+                      }
+                      .frame(maxWidth: .infinity)
+                  }
+                  .buttonStyle(.plain)
+              }
 
-              var body: some View {
-                  HStack(spacing: 12) {
-                      RemoteIcon(url: item.icon, size: 52, cornerRadius: 14)
-                      VStack(alignment: .leading, spacing: 4) {
-                          HStack(spacing: 6) {
-                              Text(item.app_name)
-                                  .font(.system(size: 15, weight: .bold))
-                                  .foregroundColor(.storeText)
-                              if item.is_new == true {
-                                  Text("جديد")
-                                      .font(.system(size: 9, weight: .heavy))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 6).padding(.vertical, 2)
-                                      .background(Capsule().fill(Color.storePink))
+              @ViewBuilder
+              private var alertsContent: some View {
+                  VStack(spacing: 12) {
+                      if feed.apps.isEmpty && feed.isLoading {
+                          ForEach(0..<4, id: \.self) { _ in
+                              HStack(spacing: 12) {
+                                  Circle().fill(Color.storeDivider).frame(width: 44, height: 44)
+                                  VStack(alignment: .leading, spacing: 6) {
+                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 140, height: 10)
+                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 200, height: 8)
+                                  }
+                                  Spacer()
+                              }
+                              .padding(12)
+                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                              .padding(.horizontal, 20)
+                          }
+                      } else {
+                          ForEach(feed.allSorted.prefix(8)) { app in
+                              AlertRow(app: app) {
+                                  downloads.enqueue(app: app)
+                                  HapticManager.shared.success()
+                              }
+                              .padding(.horizontal, 20)
+                          }
+                      }
+                  }
+              }
+
+              @ViewBuilder
+              private var filesContent: some View {
+                  VStack(alignment: .leading, spacing: 14) {
+                      HStack {
+                          Text("جارٍ التنزيل")
+                              .font(.system(size: 17, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Text("\(downloads.active.count)")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.storePrimary)
+                              .padding(.horizontal, 8).padding(.vertical, 2)
+                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                          Spacer()
+                          if !downloads.active.isEmpty {
+                              Button {
+                                  HapticManager.shared.impact(.light)
+                                  downloads.pauseAll()
+                              } label: {
+                                  Text("إيقاف الكل مؤقتًا")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storePrimary)
                               }
                           }
-                          Text("الإصدار \(item.version)")
-                              .font(.system(size: 11, weight: .semibold))
-                              .foregroundColor(.storePrimary)
-                          if let log = item.changelog, !log.isEmpty {
-                              Text(log)
-                                  .font(.system(size: 12))
-                                  .foregroundColor(.storeSub)
-                                  .lineLimit(3)
+                      }
+                      .padding(.horizontal, 20)
+
+                      if downloads.active.isEmpty {
+                          EmptyFilesState(
+                              icon: "arrow.down.circle",
+                              title: "لا توجد تنزيلات نشطة",
+                              subtitle: "اضغط «تثبيت» في أي تطبيق لبدء التنزيل."
+                          )
+                          .padding(.horizontal, 20)
+                      } else {
+                          VStack(spacing: 12) {
+                              ForEach(downloads.active) { item in
+                                  DownloadingRow(item: item) {
+                                      downloads.togglePause(item: item)
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
                           }
                       }
-                      Spacer(minLength: 6)
-                      Button {
-                          HapticManager.shared.success()
-                          StoreInstaller.shared.install(bundleId: item.bundle_id, name: item.app_name)
-                      } label: {
-                          Text("تحديث")
+
+                      HStack {
+                          Text("تم التنزيل")
+                              .font(.system(size: 17, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Text("\(downloads.completed.count)")
                               .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.white)
-                              .padding(.horizontal, 14).padding(.vertical, 8)
-                              .background(Capsule().fill(Color.storePrimary))
+                              .foregroundColor(.storePrimary)
+                              .padding(.horizontal, 8).padding(.vertical, 2)
+                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
+                          Spacer()
                       }
-                      .buttonStyle(.plain)
+                      .padding(.horizontal, 20)
+                      .padding(.top, 6)
+
+                      if downloads.completed.isEmpty {
+                          EmptyFilesState(
+                              icon: "tray",
+                              title: "لا توجد تنزيلات",
+                              subtitle: "ستظهر التنزيلات المكتملة هنا."
+                          )
+                          .padding(.horizontal, 20)
+                      } else {
+                          VStack(spacing: 12) {
+                              ForEach(downloads.completed) { item in
+                                  DownloadedRow(
+                                      item: item,
+                                      onShare: { downloads.share(item: item) },
+                                      onDelete: { downloads.delete(item: item) }
+                                  )
+                                  .padding(.horizontal, 20)
+                              }
+                          }
+                      }
                   }
-                  .padding(12)
-                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
-              }
-          }
-
-          // ============ التثبيت الرسمي المباشر عبر سيرفر المتجر ============
-          @MainActor
-          final class StoreInstaller: ObservableObject {
-              static let shared = MainActor.assumeIsolated { StoreInstaller() }
-              @Published var isWorking: Bool = false
-              private init() {}
-
-              func install(app: StoreAPIApp) {
-                  install(bundleId: app.bundleId, name: app.name)
-              }
-
-              func install(bundleId: String?, name: String) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت المباشر...")
-                  var req = URLRequest(url: url, timeoutInterval: 30)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "bundle_id": bundleId ?? "",
-                      "name": name,
-                      "udid": ActivationManager.shared.deviceID
-                  ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          self.isWorking = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
-                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                          } else {
-                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
-                              StatusCenter.shared.show(text: msg)
-                          }
-                      }
-                  }.resume()
               }
           }
 
@@ -5838,12 +5745,12 @@ jobs:
               @ObservedObject var authManager: AuthManager
               @ObservedObject private var theme = ThemeManager.shared
               @ObservedObject private var lang = LanguageManager.shared
+              @State private var langIsArabic: Bool = LanguageManager.shared.isArabic
               @Binding var isPresented: Bool
               @State private var showProfileDetails = false
               @State private var showChangePassword = false
               @State private var showAbout = false
               @State private var showLogoutConfirm = false
-              @State private var showSubscription = false
 
               var body: some View {
                   NavigationView {
@@ -5886,14 +5793,6 @@ jobs:
 
                                   SettingsGroup(title: nil) {
                                       ActivationStatusCard()
-                                      Divider().padding(.leading, 64)
-                                      SettingsRow(
-                                          icon: "key.fill",
-                                          iconBg: Color.storeDivider,
-                                          title: LS("كود الاشتراك و UDID"),
-                                          trailing: .chevron,
-                                          action: { showSubscription = true }
-                                      )
                                   }
 
                                   SettingsGroup(title: nil) {
@@ -5934,9 +5833,6 @@ jobs:
                   }
                   .sheet(isPresented: $showAbout) {
                       AboutApplicationView(isPresented: $showAbout)
-                  }
-                  .sheet(isPresented: $showSubscription) {
-                      SubscriptionDetailsView(isPresented: $showSubscription)
                   }
                   .alert("تسجيل الخروج؟", isPresented: $showLogoutConfirm) {
                       Button("إلغاء", role: .cancel) {}
@@ -6892,29 +6788,7 @@ jobs:
               private let queue = DispatchQueue(label: "com.21s.status.monitor")
               private var didStart = false
 
-              @Published var toastText: String = ""
-              private var toastToken: Int = 0
-
               private init() {}
-
-              /// عرض رسالة حالة سريعة (Toast) من أي خيط.
-              nonisolated func show(text: String) {
-                  Task { @MainActor in
-                      StatusCenter.shared.presentToast(text)
-                  }
-              }
-
-              private func presentToast(_ text: String) {
-                  toastText = text
-                  toastToken &+= 1
-                  let token = toastToken
-                  Task { @MainActor in
-                      try? await Task.sleep(nanoseconds: 2_600_000_000)
-                      if self.toastToken == token {
-                          self.toastText = ""
-                      }
-                  }
-              }
 
               func start() {
                   guard !didStart else { return }
@@ -7054,41 +6928,19 @@ jobs:
               @ObservedObject var center = StatusCenter.shared
 
               var body: some View {
-                  ZStack {
-                      Group {
-                          switch center.kind {
-                          case .ok:
-                              EmptyView()
-                          case .noInternet:
-                              NoInternetScreen {
-                                  HapticManager.shared.impact(.light)
-                                  center.refresh()
-                              }
-                              .transition(.opacity.combined(with: .scale(scale: 1.02)))
+                  Group {
+                      switch center.kind {
+                      case .ok:
+                          EmptyView()
+                      case .noInternet:
+                          NoInternetScreen {
+                              HapticManager.shared.impact(.light)
+                              center.refresh()
                           }
-                      }
-                      .animation(.easeInOut(duration: 0.25), value: center.kind)
-
-                      if !center.toastText.isEmpty {
-                          VStack {
-                              Spacer()
-                              Text(center.toastText)
-                                  .font(.system(size: 14, weight: .semibold))
-                                  .foregroundColor(.white)
-                                  .multilineTextAlignment(.center)
-                                  .padding(.horizontal, 18)
-                                  .padding(.vertical, 12)
-                                  .background(
-                                      RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                          .fill(Color.black.opacity(0.85))
-                                  )
-                                  .padding(.bottom, 60)
-                                  .padding(.horizontal, 24)
-                          }
-                          .transition(.opacity)
+                          .transition(.opacity.combined(with: .scale(scale: 1.02)))
                       }
                   }
-                  .animation(.easeInOut(duration: 0.25), value: center.toastText)
+                  .animation(.easeInOut(duration: 0.25), value: center.kind)
               }
           }
           STATUSEOF
@@ -7105,7 +6957,7 @@ jobs:
           final class BackendAccount: ObservableObject {
               static let shared = BackendAccount()
 
-              static let siteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+              static let siteBase = "https://project--5ffe1099-bf1d-4a9f-a669-a7bbab8edcea.lovable.app"
               static let supabaseURL = "https://xpsqdzirevankrzrnxko.supabase.co"
               static let anonKey = "sb_publishable_-UfDzXdzukrKLoh6kp8Gsg_ecMMt56Z"
 
@@ -7512,7 +7364,7 @@ jobs:
         if: env.SIGNED_FOR_DEVICE == 'true'
         continue-on-error: false
         env:
-          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
@@ -7565,7 +7417,7 @@ jobs:
 
       - name: Install summary
         env:
-          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
         run: |
           {
             echo "## ONEs - Install from server"
