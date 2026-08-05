@@ -64,6 +64,8 @@ jobs:
           curl -L -o Resources/no_internet.gif         "https://up6.cc/2026/07/178493307055591.gif"
           # Thanks overlay
           curl -L -o Resources/thanks_overlay.gif      "https://up6.cc/2026/07/178480321212891.gif"
+          # Store header tap-to-play GIF icon
+          curl -L -o Resources/store_icon.gif          "https://up6.cc/2026/08/178554033779411.gif"
           # App details icon background animation (GIF behind the app icon)
           curl -L -o Resources/detail_icon_bg.gif      "https://up6.cc/2026/07/178550909012951.gif"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
@@ -338,11 +340,15 @@ jobs:
           public final class LanguageManager: ObservableObject {
               public static let shared = LanguageManager()
 
-              /// التطبيق عربي فقط (RTL) — لا توجد لغة أخرى.
-              @Published public var isArabic: Bool = true
+              @Published public var isArabic: Bool {
+                  didSet {
+                      UserDefaults.standard.set(isArabic ? "ar" : "en", forKey: kAppLanguageKey)
+                  }
+              }
 
               private init() {
                   UserDefaults.standard.set("ar", forKey: kAppLanguageKey)
+                  isArabic = true
               }
 
               public static var currentCode: String { "ar" }
@@ -351,7 +357,7 @@ jobs:
               public var layout: LayoutDirection { .rightToLeft }
               public var title: String { "العربية" }
 
-              public func toggle() { }
+              public func toggle() { isArabic.toggle() }
           }
 
           /// جدول الترجمة: المفتاح هو النص العربي.
@@ -489,8 +495,7 @@ jobs:
 
           /// LS = Localized String. يعيد العربية كما هي، أو الترجمة الإنجليزية.
           public func LS(_ ar: String) -> String {
-              if LanguageManager.currentCode == "ar" { return ar }
-              return ONEsEnglishStrings[ar] ?? ar
+              return ar
           }
           LANGEOF
 
@@ -987,8 +992,8 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "لوحة تحكم ONEs",
-                              feedURL: "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app/api/public/store/apps",
-                              homepage: "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app",
+                              feedURL: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app/api/public/store/apps",
+                              homepage: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app",
                               enabled: true,
                               maxGB: 500
                           ),
@@ -1381,7 +1386,7 @@ jobs:
               public static let activationNameLink = "https://t.me/deviosx"
 
               /// سيرفر التحقق من أسماء التفعيل + بيانات المتجر.
-              public static let codesSiteBase = "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app"
+              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
 
               @Published public private(set) var isActive: Bool = false
               @Published public private(set) var code: String = ""
@@ -1474,10 +1479,7 @@ jobs:
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "code": clean,
-                      "device_id": deviceID,
-                      "udid": deviceID,
-                      "device_name": UIDevice.current.name,
-                      "ios_version": UIDevice.current.systemVersion
+                      "device_id": deviceID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, error in
                       Task { @MainActor in
@@ -1501,7 +1503,7 @@ jobs:
               /// التحقق الدوري: يوقف التطبيق فور انتهاء المدة أو إيقاف الاسم من اللوحة.
               public func verify(completion: ((Bool) -> Void)? = nil) {
                   guard !code.isEmpty else { completion?(false); return }
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/me")
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
                       URLQueryItem(name: "device_id", value: deviceID)
@@ -2018,11 +2020,8 @@ jobs:
 
               var body: some View {
                   Group {
-                      if authManager.isAuthenticated {
-                          if !activation.isActive {
-                              ActivationGateView()
-                                  .transition(.opacity)
-                          } else if showOnboarding {
+                      if activation.isActive {
+                          if showOnboarding {
                               Color.clear
                                   .fullScreenCover(isPresented: $showOnboarding) {
                                       OnboardingView(isPresented: $showOnboarding)
@@ -2032,10 +2031,11 @@ jobs:
                                   .transition(.opacity)
                           }
                       } else {
-                          mainAuthView
+                          ActivationGateView()
+                              .transition(.opacity)
                       }
                   }
-                  .onChange(of: authManager.isAuthenticated) { newValue in
+                  .onChange(of: activation.isActive) { newValue in
                       if newValue {
                           let hasSeen = UserDefaults.standard.bool(forKey: AppConstants.hasSeenOnboardingKey)
                           if !hasSeen {
@@ -2043,7 +2043,7 @@ jobs:
                           }
                       }
                   }
-                  .animation(.easeInOut(duration: 0.3), value: authManager.isAuthenticated)
+                  .animation(.easeInOut(duration: 0.3), value: activation.isActive)
               }
 
               var mainAuthView: some View {
@@ -2712,24 +2712,6 @@ jobs:
                   StoreRootView(authManager: authManager)
               }
           }
-
-          /// بوابة الدخول: كود الاشتراك فقط (لا يوجد إنشاء حساب).
-          struct RootGateView: View {
-              @ObservedObject private var activation = ActivationManager.shared
-              @StateObject private var authManager = AuthManager()
-
-              var body: some View {
-                  Group {
-                      if activation.isActive {
-                          ContentView(authManager: authManager)
-                      } else {
-                          ActivationGateView()
-                      }
-                  }
-                  .animation(.easeInOut(duration: 0.25), value: activation.isActive)
-                  .onAppear { activation.verify() }
-              }
-          }
           VIPEOF
 
       # =========================================================
@@ -2797,9 +2779,17 @@ jobs:
               /// هالة متحركة لصفحة تفاصيل التطبيق (بدون مكعب 3D)
               static func detailAura(title: String) -> String {
                   let pal = ThemeManager.p
+                  var dots = ""
+                  for i in 0..<18 {
+                      let l = (i * 53) % 100
+                      let d = Double(i) * 0.32
+                      let sz = 6 + (i % 4) * 4
+                      dots += "<i style='left:\(l)%;width:\(sz)px;height:\(sz)px;animation-delay:\(d)s'></i>"
+                  }
                   let body = """
                   <div class="halo"></div>
                   <div class="ring r1"></div><div class="ring r2"></div>
+                  <div class="dots">\(dots)</div>
                   <div class="ttl">\(title)</div>
                   """
                   let css = """
@@ -2811,6 +2801,11 @@ jobs:
                   .r1{width:150px;height:150px;margin:-75px 0 0 -75px;animation:sp 9s linear infinite}
                   .r2{width:210px;height:210px;margin:-105px 0 0 -105px;border-style:dashed;animation:sp 14s linear infinite reverse}
                   @keyframes sp{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+                  .dots{position:absolute;inset:0;overflow:hidden}
+                  .dots i{position:absolute;bottom:-20px;border-radius:50%;background:rgba(255,255,255,.55);
+                  animation:rise 6s linear infinite}
+                  @keyframes rise{0%{transform:translateY(0) scale(.6);opacity:0}
+                  20%{opacity:.9}100%{transform:translateY(-300px) scale(1.1);opacity:0}}
                   .ttl{position:absolute;bottom:14px;width:100%;text-align:center;font-size:13px;font-weight:800;
                   text-shadow:0 2px 10px rgba(0,0,0,.4);opacity:.95}
                   """
@@ -3241,14 +3236,14 @@ jobs:
                           StoreHomeView(feed: feed,
                                        onMenu: { openSettings() },
                                        onGoApps: { tab = 3 },
-                                       onGoUpdates: { tab = 2 })
+                                       onGoFiles: { tab = 2 })
                               .opacity(tab == 0 ? 1 : 0)
                               .allowsHitTesting(tab == 0)
                           FavoritesView(feed: feed,
                                         onMenu: { openSettings() })
                               .opacity(tab == 1 ? 1 : 0)
                               .allowsHitTesting(tab == 1)
-                          UpdatesView(feed: feed,
+                          AlertsView(feed: feed,
                                       onMenu: { openSettings() })
                               .opacity(tab == 2 ? 1 : 0)
                               .allowsHitTesting(tab == 2)
@@ -3318,7 +3313,7 @@ jobs:
                           tabItem(icon: "heart.fill", label: LS("المفضلة"), index: 1, badge: favs.items.count)
                           Spacer().frame(width: 66)
                           tabItem(icon: "square.grid.2x2.fill", label: LS("التطبيقات"), index: 3)
-                          tabItem(icon: "arrow.triangle.2.circlepath", label: "التحديثات", index: 2)
+                          tabItem(icon: "arrow.triangle.2.circlepath", label: LS("التحديثات"), index: 2)
                       }
                       .padding(.horizontal, 14)
                       .padding(.vertical, 12)
@@ -3485,7 +3480,7 @@ jobs:
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
               var onGoApps: (() -> Void)? = nil
-              var onGoUpdates: (() -> Void)? = nil
+              var onGoFiles: (() -> Void)? = nil
 
               var body: some View {
                   NavigationStack {
@@ -3585,7 +3580,6 @@ jobs:
                                   .filter { !AppsListView.isHidden($0) })
                   return Array(set).sorted()
               }
-
 
               var body: some View {
                   NavigationStack {
@@ -3710,204 +3704,6 @@ jobs:
           }
 
           // ================= 3D APP CARD =================
-          // MARK: - التثبيت الفعلي عبر السيرفر (OTA / itms-services)
-          @MainActor
-          final class OTAInstaller: ObservableObject {
-              static let shared = OTAInstaller()
-              private init() {}
-
-              @Published var isWorking: Bool = false
-
-              private var base: String { ActivationManager.codesSiteBase }
-
-              /// يطلب من السيرفر جلسة تثبيت موقّعة ثم يفتح itms-services لتثبيت التطبيق مباشرة على الجهاز.
-              func install(app: StoreAPIApp) {
-                  guard ActivationManager.shared.isActive else {
-                      StatusCenter.shared.show(.error("اشتراكك غير مفعّل"))
-                      return
-                  }
-                  guard let url = URL(string: base + "/api/public/store/install") else { return }
-                  isWorking = true
-                  StatusCenter.shared.show(.info("جارٍ تحضير التثبيت…"))
-
-                  var req = URLRequest(url: url)
-                  req.httpMethod = "POST"
-                  req.timeoutInterval = 30
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "app_id": app.id,
-                      "bundle_id": app.bundleId ?? "",
-                      "name": app.name,
-                      "code": ActivationManager.shared.code,
-                      "udid": ActivationManager.shared.deviceID,
-                      "ios_version": UIDevice.current.systemVersion
-                  ])
-
-                  URLSession.shared.dataTask(with: req) { data, _, error in
-                      Task { @MainActor in
-                          self.isWorking = false
-                          guard let data = data,
-                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                                (json["ok"] as? Bool) == true,
-                                let manifest = json["manifest_url"] as? String,
-                                let itms = URL(string: "itms-services://?action=download-manifest&url=" + manifest) else {
-                              let msg = ((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any])?["message"] as? String
-                              StatusCenter.shared.show(.error(msg ?? error?.localizedDescription ?? "تعذر بدء التثبيت"))
-                              return
-                          }
-                          HapticManager.shared.success()
-                          StatusCenter.shared.show(.info("بدأ التثبيت على جهازك"))
-                          UIApplication.shared.open(itms)
-                      }
-                  }.resume()
-              }
-          }
-
-          // MARK: - تبويب تحديثات التطبيقات (بديل تبويب الملفات)
-          struct StoreUpdateItem: Identifiable, Codable, Hashable {
-              let id: String
-              let name: String
-              let version: String?
-              let icon: String?
-              let kind: String?
-              let notes: String?
-              let publishedAt: String?
-              let appId: String?
-              let bundleId: String?
-
-              enum CodingKeys: String, CodingKey {
-                  case id, name, version, icon, kind, notes
-                  case publishedAt = "published_at"
-                  case appId = "app_id"
-                  case bundleId = "bundle_id"
-              }
-
-              var isNew: Bool { (kind ?? "update").lowercased() == "new" }
-          }
-
-          @MainActor
-          final class UpdatesFeed: ObservableObject {
-              @Published var items: [StoreUpdateItem] = []
-              @Published var isLoading: Bool = false
-              @Published var lastError: String = ""
-
-              func refresh() async {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/updates") else { return }
-                  isLoading = true
-                  lastError = ""
-                  do {
-                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                      req.setValue(ActivationManager.shared.deviceID, forHTTPHeaderField: "X-Device-UDID")
-                      let (data, _) = try await URLSession.shared.data(for: req)
-                      if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                         let arr = json["updates"] ?? json["items"],
-                         let raw = try? JSONSerialization.data(withJSONObject: arr) {
-                          items = (try? JSONDecoder().decode([StoreUpdateItem].self, from: raw)) ?? []
-                      } else {
-                          items = (try? JSONDecoder().decode([StoreUpdateItem].self, from: data)) ?? []
-                      }
-                  } catch {
-                      lastError = error.localizedDescription
-                  }
-                  isLoading = false
-              }
-          }
-
-          struct UpdatesView: View {
-              @ObservedObject var feed: StoreFeed
-              var onMenu: (() -> Void)? = nil
-              @StateObject private var updates = UpdatesFeed()
-
-              var body: some View {
-                  VStack(spacing: 0) {
-                      StoreHeader(title: "تحديثات التطبيقات", onMenu: { onMenu?() })
-
-                      ScrollView(showsIndicators: false) {
-                          LazyVStack(spacing: 10) {
-                              if updates.items.isEmpty && updates.isLoading {
-                                  LoadingList()
-                              } else if updates.items.isEmpty {
-                                  EmptyState(message: "لا توجد تحديثات جديدة حاليًا. اسحب للأسفل للتحديث.")
-                              } else {
-                                  ForEach(updates.items) { item in
-                                      UpdateRow(item: item, app: matchedApp(item))
-                                  }
-                              }
-                          }
-                          .padding(.horizontal, 20)
-                          .padding(.top, 14)
-                          .padding(.bottom, 30)
-                      }
-                      .refreshable { await updates.refresh() }
-                  }
-                  .background(Color.storeBg.ignoresSafeArea())
-                  .task { await updates.refresh() }
-              }
-
-              private func matchedApp(_ item: StoreUpdateItem) -> StoreAPIApp? {
-                  let targetID: String = item.appId ?? ""
-                  let targetBundle: String = item.bundleId ?? ""
-                  return feed.apps.first { (app: StoreAPIApp) -> Bool in
-                      let appID: String = app.id
-                      let appBundle: String = app.bundleId ?? ""
-                      if !targetID.isEmpty && appID == targetID { return true }
-                      if !targetBundle.isEmpty && appBundle == targetBundle { return true }
-                      return false
-                  }
-              }
-          }
-
-          struct UpdateRow: View {
-              let item: StoreUpdateItem
-              let app: StoreAPIApp?
-
-              var body: some View {
-                  HStack(spacing: 12) {
-                      RemoteIcon(url: item.icon ?? app?.icon, size: 54, cornerRadius: 14)
-                      VStack(alignment: .leading, spacing: 4) {
-                          HStack(spacing: 6) {
-                              Text(item.name)
-                                  .font(.system(size: 14, weight: .bold))
-                                  .foregroundColor(.storeText)
-                                  .lineLimit(1)
-                              Text(item.isNew ? "جديد" : "تحديث")
-                                  .font(.system(size: 9, weight: .heavy))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 7).padding(.vertical, 3)
-                                  .background(Capsule().fill(item.isNew ? Color.storeCyan : Color.storePrimary))
-                          }
-                          if let v = item.version {
-                              Text("الإصدار \(v)")
-                                  .font(.system(size: 11, weight: .semibold))
-                                  .foregroundColor(.storeSub)
-                          }
-                          if let n = item.notes, !n.isEmpty {
-                              Text(n)
-                                  .font(.system(size: 11))
-                                  .foregroundColor(.storeSub)
-                                  .lineLimit(2)
-                          }
-                      }
-                      Spacer(minLength: 6)
-                      if let app {
-                          Button {
-                              OTAInstaller.shared.install(app: app)
-                          } label: {
-                              Text(item.isNew ? "تثبيت" : "تحديث")
-                                  .font(.system(size: 12, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 16).padding(.vertical, 8)
-                                  .background(Capsule().fill(Color.storePrimary))
-                          }
-                          .buttonStyle(.plain)
-                      }
-                  }
-                  .padding(12)
-                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
-              }
-          }
-
           struct App3DCard: View {
               let app: StoreAPIApp
               let index: Int
@@ -4125,10 +3921,10 @@ jobs:
                                                   Label("إزالة من المفضلة", systemImage: "heart.slash")
                                               }
                                               Button {
-                                                  OTAInstaller.shared.install(app: app)
+                                                  StoreInstaller.shared.install(app: app)
                                                   HapticManager.shared.success()
                                               } label: {
-                                                  Label("تثبيت", systemImage: "arrow.down.app.fill")
+                                                  Label("تثبيت", systemImage: "arrow.down.circle")
                                               }
                                           }
                                       }
@@ -4554,8 +4350,6 @@ jobs:
                                   .background(Circle().fill(Color.storeCard))
                                   .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
                           }
-                      } else {
-                          Spacer().frame(width: 40, height: 40)
                       }
                   }
                   .padding(.horizontal, 20)
@@ -4709,11 +4503,6 @@ jobs:
                                   .frame(maxWidth: .infinity)
                                   .clipShape(RoundedCorner(radius: 30, corners: [.bottomLeft, .bottomRight]))
                                   .allowsHitTesting(false)
-                              HTMLContentView(html: HTML3D.detailAura(title: app.name))
-                                  .frame(height: 280)
-                                  .frame(maxWidth: .infinity)
-                                  .clipShape(RoundedCorner(radius: 30, corners: [.bottomLeft, .bottomRight]))
-                                  .allowsHitTesting(false)
                               HStack {
                                   Button { dismiss() } label: {
                                       Image(systemName: "arrow.left")
@@ -4744,7 +4533,7 @@ jobs:
                               Spacer()
                               Button {
                                   HapticManager.shared.success()
-                                  OTAInstaller.shared.install(app: app)
+                                  StoreInstaller.shared.install(app: app)
                               } label: {
                                   Text("تثبيت")
                                       .font(.system(size: 13, weight: .bold))
@@ -5014,210 +4803,184 @@ jobs:
               }
           }
 
+          // ============ تحديثات التطبيقات (بديل تبويب الملفات) ============
+          struct StoreUpdateItem: Codable, Identifiable, Hashable {
+              let id: String
+              let app_name: String
+              let bundle_id: String?
+              let icon: String?
+              let version: String
+              let changelog: String?
+              let released_at: String?
+              let is_new: Bool?
+          }
+
+          struct StoreUpdatesResponse: Codable { let updates: [StoreUpdateItem] }
+
+          @MainActor
+          final class UpdatesFeed: ObservableObject {
+              static let shared = MainActor.assumeIsolated { UpdatesFeed() }
+              @Published var items: [StoreUpdateItem] = []
+              @Published var isLoading: Bool = false
+              @Published var lastError: String = ""
+              private init() {}
+
+              func load() async {
+                  isLoading = true
+                  lastError = ""
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/updates") else {
+                      isLoading = false; return
+                  }
+                  do {
+                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+                      req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                      let (data, _) = try await URLSession.shared.data(for: req)
+                      let parsed = try JSONDecoder().decode(StoreUpdatesResponse.self, from: data)
+                      self.items = parsed.updates
+                  } catch {
+                      self.lastError = error.localizedDescription
+                  }
+                  isLoading = false
+              }
+          }
+
           struct AlertsView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
-              @StateObject private var downloads = DownloadsManager.shared
-              @State private var segment: AlertSegment = .alerts
-              @AppStorage("hasSeenAlertsOnboarding21s") private var hasSeenAlertsOnboarding: Bool = false
-              @State private var showAlertsOnboarding: Bool = false
-              @State private var showShareSheet: Bool = false
-              @State private var sharedFileURL: URL? = nil
-
-              private let onboardingPages: [AlertsOnboardingPage] = [
-                  AlertsOnboardingPage(
-                      imageName: "alerts_onboarding1",
-                      title: "تنزيل حقيقي",
-                      description: "عند الضغط على «تثبيت» يتم تحميل ملف IPA مباشرة من المصدر مع شريط تقدّم مباشر يمكن إيقافه مؤقتًا واستكماله."
-                  ),
-                  AlertsOnboardingPage(
-                      imageName: "alerts_onboarding2",
-                      title: "شارك في أي مكان",
-                      description: "يمكنك إرسال ملف IPA لأصدقائك عبر AirDrop أو حفظه في الملفات أو استخدام قائمة المشاركة في iOS."
-                  ),
-                  AlertsOnboardingPage(
-                      imageName: "alerts_onboarding3",
-                      title: "تحكم كامل",
-                      description: "تُحفظ جميع الملفات على جهازك. اضغط أيقونة سلة المحذوفات لحذفها نهائيًا في أي وقت."
-                  )
-              ]
+              @ObservedObject private var updates = UpdatesFeed.shared
 
               var body: some View {
                   VStack(spacing: 0) {
-                      StoreHeader(title: "الملفات",
+                      StoreHeader(title: "تحديثات التطبيقات",
                                   onMenu: { onMenu?() })
 
-                      HStack(spacing: 0) {
-                          segmentButton(title: "التنبيهات", segment: .alerts)
-                          segmentButton(title: "الملفات", segment: .files)
-                      }
-                      .padding(.horizontal, 20)
-                      .padding(.top, 6)
-
                       ScrollView(showsIndicators: false) {
-                          VStack(alignment: .leading, spacing: 16) {
-                              if segment == .alerts {
-                                  alertsContent
+                          VStack(alignment: .leading, spacing: 12) {
+                              if updates.items.isEmpty && updates.isLoading {
+                                  ForEach(0..<4, id: \.self) { _ in
+                                      HStack(spacing: 12) {
+                                          RoundedRectangle(cornerRadius: 14).fill(Color.storeDivider).frame(width: 52, height: 52)
+                                          VStack(alignment: .leading, spacing: 6) {
+                                              RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 140, height: 10)
+                                              RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 200, height: 8)
+                                          }
+                                          Spacer()
+                                      }
+                                      .padding(12)
+                                      .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
+                                      .padding(.horizontal, 20)
+                                  }
+                              } else if updates.items.isEmpty {
+                                  EmptyState(message: updates.lastError.isEmpty
+                                             ? "لا توجد تحديثات جديدة حاليًا."
+                                             : "تعذّر جلب التحديثات: \(updates.lastError)")
+                                      .padding(.horizontal, 20)
                               } else {
-                                  filesContent
+                                  ForEach(updates.items) { item in
+                                      UpdateRow(item: item)
+                                          .padding(.horizontal, 20)
+                                  }
                               }
                           }
-                          .padding(.top, 12)
-                          .padding(.bottom, 24)
+                          .padding(.top, 14)
+                          .padding(.bottom, 26)
                       }
+                      .refreshable { await updates.load() }
                   }
                   .background(Color.storeBg.ignoresSafeArea())
-                  .onAppear {
-                      downloads.cleanupOrphanedFiles()
-                      if !hasSeenAlertsOnboarding {
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                              showAlertsOnboarding = true
-                          }
-                      }
-                  }
-                  .fullScreenCover(isPresented: $showAlertsOnboarding) {
-                      AlertsOnboardingView(isPresented: $showAlertsOnboarding, pages: onboardingPages)
-                  }
-                  .sheet(isPresented: $showShareSheet) {
-                      if let url = sharedFileURL {
-                          ShareSheet(items: [url])
-                      }
-                  }
-                  .onChange(of: downloads.shareRequest) { newRequest in
-                      if let req = newRequest {
-                          sharedFileURL = req.fileURL
-                          showShareSheet = true
-                          downloads.clearShareRequest()
-                      }
-                  }
+                  .task { await updates.load() }
               }
+          }
 
-              @ViewBuilder
-              private func segmentButton(title: String, segment: AlertSegment) -> some View {
-                  Button {
-                      HapticManager.shared.selection()
-                      withAnimation(.easeInOut(duration: 0.2)) { self.segment = segment }
-                  } label: {
-                      VStack(spacing: 8) {
-                          Text(title)
-                              .font(.system(size: 15, weight: .semibold))
-                              .foregroundColor(self.segment == segment ? .storePrimary : .storeSub)
-                          Rectangle()
-                              .fill(self.segment == segment ? Color.storePrimary : Color.clear)
-                              .frame(height: 2)
-                      }
-                      .frame(maxWidth: .infinity)
-                  }
-                  .buttonStyle(.plain)
-              }
+          struct UpdateRow: View {
+              let item: StoreUpdateItem
 
-              @ViewBuilder
-              private var alertsContent: some View {
-                  VStack(spacing: 12) {
-                      if feed.apps.isEmpty && feed.isLoading {
-                          ForEach(0..<4, id: \.self) { _ in
-                              HStack(spacing: 12) {
-                                  Circle().fill(Color.storeDivider).frame(width: 44, height: 44)
-                                  VStack(alignment: .leading, spacing: 6) {
-                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 140, height: 10)
-                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 200, height: 8)
-                                  }
-                                  Spacer()
+              var body: some View {
+                  HStack(spacing: 12) {
+                      RemoteIcon(url: item.icon, size: 52, cornerRadius: 14)
+                      VStack(alignment: .leading, spacing: 4) {
+                          HStack(spacing: 6) {
+                              Text(item.app_name)
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(.storeText)
+                              if item.is_new == true {
+                                  Text("جديد")
+                                      .font(.system(size: 9, weight: .heavy))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 6).padding(.vertical, 2)
+                                      .background(Capsule().fill(Color.storePink))
                               }
-                              .padding(12)
-                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                              .padding(.horizontal, 20)
                           }
-                      } else {
-                          ForEach(feed.allSorted.prefix(8)) { app in
-                              AlertRow(app: app) {
-                                  downloads.enqueue(app: app)
-                                  HapticManager.shared.success()
-                              }
-                              .padding(.horizontal, 20)
-                          }
-                      }
-                  }
-              }
-
-              @ViewBuilder
-              private var filesContent: some View {
-                  VStack(alignment: .leading, spacing: 14) {
-                      HStack {
-                          Text("جارٍ التنزيل")
-                              .font(.system(size: 17, weight: .heavy))
-                              .foregroundColor(.storeText)
-                          Text("\(downloads.active.count)")
-                              .font(.system(size: 12, weight: .bold))
+                          Text("الإصدار \(item.version)")
+                              .font(.system(size: 11, weight: .semibold))
                               .foregroundColor(.storePrimary)
-                              .padding(.horizontal, 8).padding(.vertical, 2)
-                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
-                          Spacer()
-                          if !downloads.active.isEmpty {
-                              Button {
-                                  HapticManager.shared.impact(.light)
-                                  downloads.pauseAll()
-                              } label: {
-                                  Text("إيقاف الكل مؤقتًا")
-                                      .font(.system(size: 13, weight: .bold))
-                                      .foregroundColor(.storePrimary)
-                              }
+                          if let log = item.changelog, !log.isEmpty {
+                              Text(log)
+                                  .font(.system(size: 12))
+                                  .foregroundColor(.storeSub)
+                                  .lineLimit(3)
                           }
                       }
-                      .padding(.horizontal, 20)
-
-                      if downloads.active.isEmpty {
-                          EmptyFilesState(
-                              icon: "arrow.down.circle",
-                              title: "لا توجد تنزيلات نشطة",
-                              subtitle: "اضغط «تثبيت» في أي تطبيق لبدء التنزيل."
-                          )
-                          .padding(.horizontal, 20)
-                      } else {
-                          VStack(spacing: 12) {
-                              ForEach(downloads.active) { item in
-                                  DownloadingRow(item: item) {
-                                      downloads.togglePause(item: item)
-                                  }
-                                  .padding(.horizontal, 20)
-                              }
-                          }
-                      }
-
-                      HStack {
-                          Text("تم التنزيل")
-                              .font(.system(size: 17, weight: .heavy))
-                              .foregroundColor(.storeText)
-                          Text("\(downloads.completed.count)")
+                      Spacer(minLength: 6)
+                      Button {
+                          HapticManager.shared.success()
+                          StoreInstaller.shared.install(bundleId: item.bundle_id, name: item.app_name)
+                      } label: {
+                          Text("تحديث")
                               .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.storePrimary)
-                              .padding(.horizontal, 8).padding(.vertical, 2)
-                              .background(Capsule().fill(Color.storePrimary.opacity(0.12)))
-                          Spacer()
+                              .foregroundColor(.white)
+                              .padding(.horizontal, 14).padding(.vertical, 8)
+                              .background(Capsule().fill(Color.storePrimary))
                       }
-                      .padding(.horizontal, 20)
-                      .padding(.top, 6)
+                      .buttonStyle(.plain)
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
+                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
+              }
+          }
 
-                      if downloads.completed.isEmpty {
-                          EmptyFilesState(
-                              icon: "tray",
-                              title: "لا توجد تنزيلات",
-                              subtitle: "ستظهر التنزيلات المكتملة هنا."
-                          )
-                          .padding(.horizontal, 20)
-                      } else {
-                          VStack(spacing: 12) {
-                              ForEach(downloads.completed) { item in
-                                  DownloadedRow(
-                                      item: item,
-                                      onShare: { downloads.share(item: item) },
-                                      onDelete: { downloads.delete(item: item) }
-                                  )
-                                  .padding(.horizontal, 20)
-                              }
+          // ============ التثبيت الرسمي المباشر عبر سيرفر المتجر ============
+          @MainActor
+          final class StoreInstaller: ObservableObject {
+              static let shared = MainActor.assumeIsolated { StoreInstaller() }
+              @Published var isWorking: Bool = false
+              private init() {}
+
+              func install(app: StoreAPIApp) {
+                  install(bundleId: app.bundleId, name: app.name)
+              }
+
+              func install(bundleId: String?, name: String) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت المباشر...")
+                  var req = URLRequest(url: url, timeoutInterval: 30)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "bundle_id": bundleId ?? "",
+                      "name": name,
+                      "udid": ActivationManager.shared.deviceID
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      DispatchQueue.main.async {
+                          self.isWorking = false
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
+                              StatusCenter.shared.show(text: msg)
                           }
                       }
-                  }
+                  }.resume()
               }
           }
 
@@ -5915,7 +5678,7 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      NavigationView { RootGateView() }
+                      NavigationView { AuthView() }
                           .navigationViewStyle(.stack)
                           .overlay(alignment: .center) {
                               if captureService.showThanksOverlay {
@@ -6031,7 +5794,6 @@ jobs:
               @ObservedObject var authManager: AuthManager
               @ObservedObject private var theme = ThemeManager.shared
               @ObservedObject private var lang = LanguageManager.shared
-              @State private var langIsArabic: Bool = LanguageManager.shared.isArabic
               @Binding var isPresented: Bool
               @State private var showProfileDetails = false
               @State private var showChangePassword = false
@@ -7063,27 +6825,12 @@ jobs:
               case noInternet
           }
 
-          /// رسالة منبثقة قصيرة (توست) تظهر أعلى الشاشة
-          struct StatusToast: Identifiable, Equatable {
-              enum Style: Equatable { case info, success, error }
-              let id = UUID()
-              let style: Style
-              let text: String
-
-              static func info(_ text: String) -> StatusToast { StatusToast(style: .info, text: text) }
-              static func success(_ text: String) -> StatusToast { StatusToast(style: .success, text: text) }
-              static func error(_ text: String) -> StatusToast { StatusToast(style: .error, text: text) }
-
-              static func == (lhs: StatusToast, rhs: StatusToast) -> Bool { lhs.id == rhs.id }
-          }
-
           @MainActor
           final class StatusCenter: ObservableObject {
               static let shared = StatusCenter()
 
               @Published var kind: StatusKind = .ok
               @Published var hasShownFirstWelcome: Bool = false
-              @Published var toast: StatusToast? = nil
 
               private let monitor = NWPathMonitor()
               private let queue = DispatchQueue(label: "com.21s.status.monitor")
@@ -7106,21 +6853,6 @@ jobs:
 
               func refresh() {
                   evaluate(currentPath: monitor.currentPath)
-              }
-
-              /// إظهار رسالة منبثقة قصيرة
-              func show(_ toast: StatusToast, duration: TimeInterval = 2.4) {
-                  self.toast = toast
-                  let shownID = toast.id
-                  Task { @MainActor [weak self] in
-                      try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-                      guard let self else { return }
-                      if self.toast?.id == shownID { self.toast = nil }
-                  }
-              }
-
-              func dismissToast() {
-                  toast = nil
               }
 
               private func evaluate(currentPath: NWPath) {
@@ -7257,52 +6989,6 @@ jobs:
                       }
                   }
                   .animation(.easeInOut(duration: 0.25), value: center.kind)
-                  .overlay(alignment: .top) {
-                      if let toast = center.toast {
-                          StatusToastView(toast: toast)
-                              .padding(.horizontal, 20)
-                              .padding(.top, 12)
-                              .transition(.move(edge: .top).combined(with: .opacity))
-                      }
-                  }
-                  .animation(.easeInOut(duration: 0.25), value: center.toast)
-              }
-          }
-
-          struct StatusToastView: View {
-              let toast: StatusToast
-
-              private var bg: Color {
-                  switch toast.style {
-                  case .info: return Color.black.opacity(0.85)
-                  case .success: return Color.green.opacity(0.92)
-                  case .error: return Color.red.opacity(0.92)
-                  }
-              }
-
-              private var icon: String {
-                  switch toast.style {
-                  case .info: return "info.circle.fill"
-                  case .success: return "checkmark.circle.fill"
-                  case .error: return "exclamationmark.triangle.fill"
-                  }
-              }
-
-              var body: some View {
-                  HStack(spacing: 8) {
-                      Image(systemName: icon)
-                          .font(.system(size: 15, weight: .bold))
-                      Text(toast.text)
-                          .font(.system(size: 13, weight: .semibold))
-                          .multilineTextAlignment(.center)
-                      Spacer(minLength: 0)
-                  }
-                  .foregroundColor(.white)
-                  .padding(.horizontal, 14)
-                  .padding(.vertical, 11)
-                  .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(bg))
-                  .shadow(color: Color.black.opacity(0.25), radius: 10, y: 4)
-                  .environment(\.layoutDirection, .rightToLeft)
               }
           }
           STATUSEOF
@@ -7319,7 +7005,7 @@ jobs:
           final class BackendAccount: ObservableObject {
               static let shared = BackendAccount()
 
-              static let siteBase = "https://project--0425374b-9c38-44b8-8a95-fc7766a2284a.lovable.app"
+              static let siteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
               static let supabaseURL = "https://xpsqdzirevankrzrnxko.supabase.co"
               static let anonKey = "sb_publishable_-UfDzXdzukrKLoh6kp8Gsg_ecMMt56Z"
 
@@ -7726,7 +7412,7 @@ jobs:
         if: env.SIGNED_FOR_DEVICE == 'true'
         continue-on-error: false
         env:
-          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
@@ -7779,7 +7465,7 @@ jobs:
 
       - name: Install summary
         env:
-          INSTALL_SERVER: "https://project--291589c4-e7ca-44e3-9e12-655617d8f716.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
         run: |
           {
             echo "## ONEs - Install from server"
