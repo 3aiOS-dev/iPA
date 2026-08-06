@@ -210,6 +210,11 @@ jobs:
               <array>
                   <string>remote-notification</string>
                   <string>fetch</string>
+                  <string>processing</string>
+              </array>
+              <key>BGTaskSchedulerPermittedIdentifiers</key>
+              <array>
+                  <string>com.21s.store.refresh</string>
               </array>
               <key>NSUserNotificationsUsageDescription</key>
               <string>نُبلغك برموز التحقق وحالة التنزيل والتوقيع.</string>
@@ -3310,6 +3315,77 @@ jobs:
               }
           }
 
+          // ================= CATALOG REFRESHER (background-safe) =================
+          // نسخة بدون واجهة من StoreFeed.refresh()، تستعملها مهمة BGAppRefreshTask
+          // لكشف التطبيقات الجديدة/المحدّثة وإرسال إشعار نظام iOS حتى لو كان
+          // التطبيق في الخلفية أو غير مفتوح.
+          @MainActor
+          final class CatalogRefresher: ObservableObject {
+              static let shared = CatalogRefresher()
+              private let snapshotKey = "store_catalog_snapshot_v1"
+              private init() {}
+
+              func refreshAndNotify() async {
+                  let repos = RepositoriesStore.shared.repositories.filter { $0.enabled }
+                  guard !repos.isEmpty else { return }
+
+                  var combined: [StoreAPIApp] = []
+                  var seen = Set<String>()
+                  await withTaskGroup(of: StoreAPIResponse?.self) { group in
+                      for repo in repos {
+                          group.addTask { () -> StoreAPIResponse? in
+                              guard let url = URL(string: repo.feedURL) else { return nil }
+                              do {
+                                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+                                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                                  let (data, response) = try await URLSession.shared.data(for: req)
+                                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
+                                  return try? JSONDecoder().decode(StoreAPIResponse.self, from: data)
+                              } catch {
+                                  return nil
+                              }
+                          }
+                      }
+                      for await resp in group {
+                          guard let resp = resp else { continue }
+                          for app in resp.apps {
+                              let key = app.bundleId?.lowercased() ?? "n_\(app.id)_\(app.name.lowercased())"
+                              if !seen.contains(key) { seen.insert(key); combined.append(app) }
+                          }
+                      }
+                  }
+
+                  guard !combined.isEmpty else { return }
+
+                  let prev = (UserDefaults.standard.dictionary(forKey: snapshotKey) as? [String: String]) ?? [:]
+                  var next: [String: String] = [:]
+                  for app in combined { next["\(app.id)"] = app.version ?? app.bundleVersion ?? "" }
+
+                  if !prev.isEmpty {
+                      var count = 0
+                      for app in combined {
+                          let key = "\(app.id)"
+                          let cur = next[key] ?? ""
+                          let old = prev[key] ?? ""
+                          if old.isEmpty {
+                              NotificationsManager.shared.pushAppEvent(
+                                  name: app.name, iconURL: app.iconURL ?? app.icon,
+                                  version: cur, isUpdate: false)
+                              count += 1
+                          } else if cur != old {
+                              NotificationsManager.shared.pushAppEvent(
+                                  name: app.name, iconURL: app.iconURL ?? app.icon,
+                                  version: cur, isUpdate: true)
+                              count += 1
+                          }
+                          if count >= 8 { break }
+                      }
+                  }
+
+                  UserDefaults.standard.set(next, forKey: snapshotKey)
+              }
+          }
+
 
           // ================= STORE ROOT =================
           struct StoreRootView: View {
@@ -3695,10 +3771,9 @@ jobs:
               static let pill      = Color.white.opacity(0.10)
           }
 
-          // ---- Remote brand glyphs (borderless, free-floating images) ----
+          // ---- Remote brand glyph (borderless, free-floating image) ----
           enum ONEsAssets {
-              static let actionGlyph = "https://up6.cc/2026/08/178601755474351.png"
-              static let brandGlyph  = "https://up6.cc/2026/08/178601510097731.png"
+              static let brandGlyph = "https://up6.cc/2026/08/178601510097731.png"
           }
 
           struct RemoteGlyph: View {
@@ -3723,35 +3798,18 @@ jobs:
               }
           }
 
-          // ---- Top bar (search on the left, ONEs brand in the center) ----
+          // ---- Top bar: ONEs brand centered, no side icons ----
           struct ONEsTopBar: View {
-              var onSearch: (() -> Void)? = nil
-              var onSettings: (() -> Void)? = nil
-              var onNotifications: (() -> Void)? = nil
-              var onRefresh: (() -> Void)? = nil
-
               var body: some View {
                   HStack {
-                      Button {
-                          HapticManager.shared.selection()
-                          onSearch?()
-                      } label: {
-                          RemoteGlyph(url: ONEsAssets.actionGlyph, size: 30)
-                      }
-                      .buttonStyle(.plain)
-
                       Spacer()
-
                       HStack(spacing: 8) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
                           Text("ONEs")
                               .font(.system(size: 20, weight: .heavy))
                               .foregroundColor(ONEsUI.text)
                       }
-
                       Spacer()
-
-                      Color.clear.frame(width: 30, height: 30)
                   }
                   .padding(.horizontal, 18)
                   .padding(.top, 6)
@@ -4072,10 +4130,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(onSearch: { onGoApps?() },
-                                     onSettings: { onMenu?() },
-                                     onNotifications: { showNotifications = true },
-                                     onRefresh: { Task { await feed.refresh() } })
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4279,10 +4334,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(onSearch: { },
-                                     onSettings: { onMenu?() },
-                                     onNotifications: { showNotifications = true },
-                                     onRefresh: { Task { await feed.refresh() } })
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -6154,6 +6206,8 @@ jobs:
         run: |
           cat > VIP21StoreApp.swift << 'VIPEOF'
           import SwiftUI
+          import BackgroundTasks
+          import UserNotifications
 
           @main
           struct VIP21StoreApp: App {
@@ -6161,11 +6215,53 @@ jobs:
               @State private var showShareSheet: Bool = false
               @ObservedObject private var lang = LanguageManager.shared
 
+              /// معرّف مهمة التحديث الخلفي — يطابق BGTaskSchedulerPermittedIdentifiers في Info.plist
+              static let refreshTaskID = "com.21s.store.refresh"
 
               init() {
                   ScreenCaptureService.shared.start()
                   NotificationsManager.shared.requestAuthorization()
+                  VIP21StoreApp.registerBackgroundTask()
+                  VIP21StoreApp.scheduleAppRefresh()
                   VIP21StoreApp.applyDarkAppearance()
+              }
+
+              // MARK: - Background catalog refresh
+              // يضمن فحص قائمة التطبيقات حتى لو كان التطبيق في الخلفية أو مقفلاً،
+              // فإذا رُصد تطبيق جديد أو تحديث يُرسَل إشعار نظام (يظهر خارج التطبيق).
+              static func registerBackgroundTask() {
+                  BGTaskScheduler.shared.register(
+                      forTaskWithIdentifier: refreshTaskID,
+                      using: nil
+                  ) { task in
+                      guard let refresh = task as? BGAppRefreshTask else {
+                          task.setTaskCompleted(success: false); return
+                      }
+                      handleAppRefresh(task: refresh)
+                  }
+              }
+
+              static func scheduleAppRefresh() {
+                  let request = BGAppRefreshTaskRequest(identifier: refreshTaskID)
+                  request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // بعد 15 دقيقة
+                  do {
+                      try BGTaskScheduler.shared.submit(request)
+                  } catch {
+                      // BGTaskScheduler غير متاح على المحاكي أو في وضع التطوير — لا مشكلة
+                  }
+              }
+
+              private static func handleAppRefresh(task: BGAppRefreshTask) {
+                  // جَدْوِل المهمة التالية فوراً قبل أي عمل آخر
+                  scheduleAppRefresh()
+                  let workItem = Task.detached(priority: .background) {
+                      await CatalogRefresher.shared.refreshAndNotify()
+                      await MainActor.run { task.setTaskCompleted(success: true) }
+                  }
+                  task.expirationHandler = {
+                      workItem.cancel()
+                      task.setTaskCompleted(success: false)
+                  }
               }
 
               // Force every UIKit-backed surface (nav bars, scroll views, sheets,
@@ -6811,6 +6907,7 @@ jobs:
             -framework CoreImage \
             -framework AVFoundation \
             -framework AVKit \
+            -framework BackgroundTasks \
             -o VIP21Store
           file VIP21Store
 
