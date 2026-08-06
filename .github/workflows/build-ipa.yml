@@ -2615,6 +2615,8 @@ jobs:
               let title: String
               let body: String
               let icon: String
+              var iconURL: String? = nil
+              var badgeText: String? = nil
               let date: Date = Date()
           }
 
@@ -2642,8 +2644,14 @@ jobs:
               }
 
               /// Shows a real local notification (when allowed) + an in-app banner.
-              func push(title: String, body: String, icon: String = "bell.fill", delay: TimeInterval = 0.4) {
-                  let item = AppNotificationItem(title: title, body: body, icon: icon)
+              func push(title: String,
+                        body: String,
+                        icon: String = "bell.fill",
+                        iconURL: String? = nil,
+                        badgeText: String? = nil,
+                        delay: TimeInterval = 0.4) {
+                  let item = AppNotificationItem(title: title, body: body, icon: icon,
+                                                 iconURL: iconURL, badgeText: badgeText)
                   history.insert(item, at: 0)
                   if history.count > 60 { history.removeLast(history.count - 60) }
 
@@ -2661,8 +2669,40 @@ jobs:
                   content.body = body
                   content.sound = .default
                   let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 0.2), repeats: false)
-                  let request = UNNotificationRequest(identifier: item.id.uuidString, content: content, trigger: trigger)
-                  UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+                  let identifier = item.id.uuidString
+
+                  if let iconURL, let url = URL(string: iconURL) {
+                      Task { @MainActor in
+                          var attachment: UNNotificationAttachment? = nil
+                          if let (data, _) = try? await URLSession.shared.data(from: url) {
+                              let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
+                              let tmp = FileManager.default.temporaryDirectory
+                                  .appendingPathComponent("notif-\(identifier).\(ext)")
+                              if (try? data.write(to: tmp)) != nil {
+                                  attachment = try? UNNotificationAttachment(identifier: identifier, url: tmp, options: nil)
+                              }
+                          }
+                          if let attachment { content.attachments = [attachment] }
+                          let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+                          UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+                      }
+                  } else {
+                      let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+                      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+                  }
+              }
+
+              /// Store event: a new app was published, or an existing one got an update.
+              func pushAppEvent(name: String, iconURL: String?, version: String?, isUpdate: Bool) {
+                  let tag = isUpdate ? LS("محدث") : LS("جديد")
+                  let versionText = (version?.isEmpty == false) ? " • \(version!)" : ""
+                  push(title: "\(name) — \(tag)",
+                       body: isUpdate
+                           ? "\(LS("صدر تحديث جديد للتطبيق في المتجر"))\(versionText)"
+                           : "\(LS("تمت إضافة التطبيق إلى المتجر الآن"))\(versionText)",
+                       icon: isUpdate ? "arrow.triangle.2.circlepath" : "sparkles",
+                       iconURL: iconURL,
+                       badgeText: tag)
               }
 
               func dismissBanner() {
@@ -2731,10 +2771,29 @@ jobs:
                           HStack(spacing: 12) {
                               ZStack {
                                   RoundedRectangle(cornerRadius: 12).fill(PinkTheme.gradient).frame(width: 38, height: 38)
-                                  Image(systemName: item.icon).font(.system(size: 16, weight: .bold)).foregroundColor(.white)
+                                  if let iconURL = item.iconURL, let url = URL(string: iconURL) {
+                                      AsyncImage(url: url) { image in
+                                          image.resizable().aspectRatio(contentMode: .fill)
+                                      } placeholder: {
+                                          Image(systemName: item.icon).font(.system(size: 16, weight: .bold)).foregroundColor(.white)
+                                      }
+                                      .frame(width: 38, height: 38)
+                                      .clipShape(RoundedRectangle(cornerRadius: 12))
+                                  } else {
+                                      Image(systemName: item.icon).font(.system(size: 16, weight: .bold)).foregroundColor(.white)
+                                  }
                               }
                               VStack(alignment: .leading, spacing: 2) {
-                                  Text(item.title).font(.system(size: 13, weight: .heavy)).foregroundColor(.storeText)
+                                  HStack(spacing: 6) {
+                                      Text(item.title).font(.system(size: 13, weight: .heavy)).foregroundColor(.storeText).lineLimit(1)
+                                      if let badgeText = item.badgeText {
+                                          Text(badgeText)
+                                              .font(.system(size: 9, weight: .heavy))
+                                              .foregroundColor(.white)
+                                              .padding(.horizontal, 7).padding(.vertical, 2)
+                                              .background(Capsule().fill(Color.storePrimary))
+                                      }
+                                  }
                                   Text(item.body).font(.system(size: 12)).foregroundColor(.storeSub).lineLimit(2)
                               }
                               Spacer(minLength: 0)
@@ -2801,10 +2860,29 @@ jobs:
                                       HStack(spacing: 12) {
                                           ZStack {
                                               Circle().fill(PinkTheme.gradient).frame(width: 36, height: 36)
-                                              Image(systemName: item.icon).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
+                                              if let iconURL = item.iconURL, let url = URL(string: iconURL) {
+                                                  AsyncImage(url: url) { image in
+                                                      image.resizable().aspectRatio(contentMode: .fill)
+                                                  } placeholder: {
+                                                      Image(systemName: item.icon).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
+                                                  }
+                                                  .frame(width: 36, height: 36)
+                                                  .clipShape(Circle())
+                                              } else {
+                                                  Image(systemName: item.icon).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
+                                              }
                                           }
                                           VStack(alignment: .leading, spacing: 3) {
-                                              Text(item.title).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
+                                              HStack(spacing: 6) {
+                                                  Text(item.title).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
+                                                  if let badgeText = item.badgeText {
+                                                      Text(badgeText)
+                                                          .font(.system(size: 9, weight: .heavy))
+                                                          .foregroundColor(.white)
+                                                          .padding(.horizontal, 7).padding(.vertical, 2)
+                                                          .background(Capsule().fill(Color.storePrimary))
+                                                  }
+                                              }
                                               Text(item.body).font(.system(size: 12)).foregroundColor(.storeSub)
                                           }
                                           Spacer(minLength: 0)
@@ -3311,7 +3389,48 @@ jobs:
               private let repos = RepositoriesStore.shared
               private let pageSize = AppConstants.feedPageSize
 
+              /// Snapshot of every known app id -> version, used to detect
+              /// newly published apps and version bumps between refreshes.
+              private let catalogKey = "store_catalog_snapshot_v1"
+              private var catalogSnapshot: [String: String] =
+                  (UserDefaults.standard.dictionary(forKey: "store_catalog_snapshot_v1") as? [String: String]) ?? [:]
+
               init() { loadCachedThenRefresh() }
+
+              private func snapshotVersion(_ app: StoreAPIApp) -> String {
+                  app.version ?? app.bundleVersion ?? app.versionDate ?? app.updatedAt ?? ""
+              }
+
+              /// Compares the freshly fetched catalog against the stored snapshot and
+              /// fires an instant store notification for every new / updated app.
+              private func announceCatalogChanges(_ incoming: [StoreAPIApp]) {
+                  var next: [String: String] = [:]
+                  for app in incoming { next["\(app.id)"] = snapshotVersion(app) }
+
+                  let isFirstRun = catalogSnapshot.isEmpty
+                  if !isFirstRun {
+                      var events: [(StoreAPIApp, Bool)] = []
+                      for app in incoming {
+                          let key = "\(app.id)"
+                          guard let previous = catalogSnapshot[key] else {
+                              events.append((app, false))
+                              continue
+                          }
+                          if previous != next[key] { events.append((app, true)) }
+                      }
+                      for (app, isUpdate) in events.prefix(8) {
+                          NotificationsManager.shared.pushAppEvent(
+                              name: app.name,
+                              iconURL: app.iconURL ?? app.icon,
+                              version: snapshotVersion(app),
+                              isUpdate: isUpdate
+                          )
+                      }
+                  }
+
+                  catalogSnapshot = next
+                  UserDefaults.standard.set(next, forKey: catalogKey)
+              }
 
               func loadCachedThenRefresh() {
                   if let data = try? Data(contentsOf: cacheURL),
@@ -3329,6 +3448,7 @@ jobs:
                   lastError = nil
                   do {
                       let merged = try await fetchMergedFromAllRepos()
+                      announceCatalogChanges(merged.apps)
                       self.apps = merged.apps
                       self.lastUpdated = merged.lastUpdated
                       self.totalAvailable = merged.apps.count
@@ -3473,7 +3593,7 @@ jobs:
                       }
                       .padding(.bottom, 90)
 
-                      StoreTabBar(tab: $tab, onSearch: { showSearch = true })
+                      StoreTabBar(tab: $tab)
 
                       StatusOverlayHost()
                           .ignoresSafeArea(.keyboard)
@@ -3518,11 +3638,10 @@ jobs:
           // ================= TAB BAR (animated, no account tab) =================
           struct StoreTabBar: View {
               @Binding var tab: Int
-              var onSearch: () -> Void
+              var onSearch: () -> Void = {}
               @ObservedObject private var favs = FavoritesStore.shared
               @State private var pop: [Int: Bool] = [:]
               @State private var spin: [Int: Double] = [:]
-              @State private var searchPop: Bool = false
               @Namespace private var tabNS
 
               var body: some View {
@@ -3530,7 +3649,6 @@ jobs:
                       HStack(spacing: 0) {
                           tabItem(icon: "house.fill", label: LS("الرئيسية"), index: 0)
                           tabItem(icon: "heart.fill", label: LS("المفضلة"), index: 1, badge: favs.items.count)
-                          Spacer().frame(width: 66)
                           tabItem(icon: "square.grid.2x2.fill", label: LS("التطبيقات"), index: 3)
                           tabItem(icon: "arrow.triangle.2.circlepath", label: LS("التحديثات"), index: 2)
                       }
@@ -3543,24 +3661,6 @@ jobs:
                       )
                       .padding(.horizontal, 12)
 
-                      Button(action: {
-                          HapticManager.shared.impact(.light)
-                          withAnimation(.spring(response: 0.3, dampingFraction: 0.45)) { searchPop = true }
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                              withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { searchPop = false }
-                          }
-                          onSearch()
-                      }) {
-                          Image(systemName: "magnifyingglass")
-                              .font(.system(size: 20, weight: .bold))
-                              .foregroundColor(.white)
-                              .rotationEffect(.degrees(searchPop ? 90 : 0))
-                              .frame(width: 58, height: 58)
-                              .background(Circle().fill(Color.storePrimary))
-                              .scaleEffect(searchPop ? 1.18 : 1.0)
-                              .shadow(color: Color.storePrimary.opacity(0.35), radius: 10, y: 6)
-                      }
-                      .offset(y: -18)
                   }
                   .padding(.bottom, 16)
               }
@@ -3957,6 +4057,34 @@ jobs:
               static let pill      = Color.white.opacity(0.10)
           }
 
+          // ---- Remote brand glyphs (borderless, free-floating images) ----
+          enum ONEsAssets {
+              static let actionGlyph = "https://up6.cc/2026/08/178601480555111.png"
+              static let brandGlyph  = "https://up6.cc/2026/08/178601510097731.png"
+          }
+
+          struct RemoteGlyph: View {
+              let url: String
+              var size: CGFloat = 30
+
+              var body: some View {
+                  AsyncImage(url: URL(string: url)) { phase in
+                      switch phase {
+                      case .success(let image):
+                          image
+                              .resizable()
+                              .renderingMode(.original)
+                              .aspectRatio(contentMode: .fit)
+                      default:
+                          Color.clear
+                      }
+                  }
+                  .frame(width: size, height: size)
+                  .background(Color.clear)
+                  .contentShape(Rectangle())
+              }
+          }
+
           // ---- Top bar with three-dots menu (replaces the old sheet trigger) ----
           struct ONEsTopBar: View {
               var onSearch: (() -> Void)? = nil
@@ -3971,30 +4099,13 @@ jobs:
                           HapticManager.shared.selection()
                           onSearch?()
                       } label: {
-                          Image(systemName: "magnifyingglass")
-                              .font(.system(size: 16, weight: .bold))
-                              .foregroundColor(ONEsUI.text)
-                              .frame(width: 38, height: 38)
-                              .background(Circle().fill(ONEsUI.card))
-                              .overlay(Circle().stroke(ONEsUI.stroke, lineWidth: 1))
+                          RemoteGlyph(url: ONEsAssets.actionGlyph, size: 30)
                       }
                       .buttonStyle(.plain)
 
                       Spacer()
 
-                      HStack(spacing: 8) {
-                          VStack(alignment: .trailing, spacing: -2) {
-                              Text("App Store")
-                                  .font(.system(size: 15, weight: .heavy))
-                                  .foregroundColor(ONEsUI.text)
-                              Text("ابستور")
-                                  .font(.system(size: 11, weight: .bold))
-                                  .foregroundColor(ONEsUI.sub)
-                          }
-                          Image(systemName: "a.circle.fill")
-                              .font(.system(size: 22, weight: .bold))
-                              .foregroundColor(ONEsUI.text)
-                      }
+                      RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
 
                       Spacer()
 
@@ -4306,8 +4417,6 @@ jobs:
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
-                                  LiveInstallStatusCard()
-
                                   FeaturedBannerCard(apps: feed.apps)
 
                                   ONEsCategoryPills(categories: categories, selected: $selectedCategory)
@@ -4327,20 +4436,6 @@ jobs:
                                       }
                                       .padding(.horizontal, 18)
                                   }
-
-                                  Button {
-                                      HapticManager.shared.selection()
-                                      onGoApps?()
-                                  } label: {
-                                      Text("عرض كل التطبيقات")
-                                          .font(.system(size: 13, weight: .heavy))
-                                          .foregroundColor(.white)
-                                          .frame(maxWidth: .infinity)
-                                          .padding(.vertical, 13)
-                                          .background(Capsule().fill(ONEsUI.purple))
-                                  }
-                                  .buttonStyle(.plain)
-                                  .padding(.horizontal, 18)
 
                                   Spacer(minLength: 20)
                               }
@@ -4527,8 +4622,6 @@ jobs:
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
-                                  LiveInstallStatusCard()
-
                                   HStack(spacing: 8) {
                                       Image(systemName: "magnifyingglass")
                                           .foregroundColor(ONEsUI.sub)
@@ -5002,6 +5095,7 @@ jobs:
               var onMenu: (() -> Void)? = nil
               var gifIcon: String? = nil
               var showBell: Bool = false
+              var showMenu: Bool = true
               @State private var gifPlaying: Bool = false
               @State private var showNotifications: Bool = false
               @ObservedObject private var notifier = NotificationsManager.shared
@@ -5028,7 +5122,7 @@ jobs:
                               }
                           }
                           .buttonStyle(.plain)
-                      } else {
+                      } else if showMenu {
                           Button {
                               if let onMenu { onMenu() }
                           } label: {
@@ -5039,6 +5133,8 @@ jobs:
                                   .background(Circle().fill(Color.storeCard))
                                   .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
                           }
+                      } else {
+                          Color.clear.frame(width: 42, height: 42)
                       }
                       Spacer()
                       HStack(spacing: 8) {
@@ -5579,7 +5675,8 @@ jobs:
               var body: some View {
                   VStack(spacing: 0) {
                       StoreHeader(title: "تحديثات التطبيقات",
-                                  onMenu: { onMenu?() })
+                                  onMenu: nil,
+                                  showMenu: false)
 
                       ScrollView(showsIndicators: false) {
                           VStack(alignment: .leading, spacing: 12) {
