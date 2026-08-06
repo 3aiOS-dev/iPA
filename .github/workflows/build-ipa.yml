@@ -3942,204 +3942,421 @@ jobs:
           }
 
           // ================= HOME VIEW (بنرات + إعلانات + تفاصيل) =================
+          // ================= ONEs APP-STORE STYLE UI =================
+          enum ONEsUI {
+              static let bg        = Color(red: 0.043, green: 0.043, blue: 0.051)
+              static let card      = Color(red: 0.106, green: 0.106, blue: 0.118)
+              static let cardAlt   = Color(red: 0.145, green: 0.145, blue: 0.161)
+              static let text      = Color.white
+              static let sub       = Color(red: 0.60, green: 0.60, blue: 0.64)
+              static let purple    = Color(red: 0.478, green: 0.196, blue: 0.925)
+              static let purpleDk  = Color(red: 0.298, green: 0.098, blue: 0.686)
+              static let teal      = Color(red: 0.043, green: 0.796, blue: 0.717)
+              static let pink      = Color(red: 0.882, green: 0.090, blue: 0.408)
+              static let stroke    = Color.white.opacity(0.08)
+              static let pill      = Color.white.opacity(0.10)
+          }
+
+          // ---- Top bar with three-dots menu (replaces the old sheet trigger) ----
+          struct ONEsTopBar: View {
+              var onSearch: (() -> Void)? = nil
+              var onSettings: (() -> Void)? = nil
+              var onNotifications: (() -> Void)? = nil
+              var onRefresh: (() -> Void)? = nil
+              @ObservedObject private var notifier = NotificationsManager.shared
+
+              var body: some View {
+                  HStack {
+                      Button {
+                          HapticManager.shared.selection()
+                          onSearch?()
+                      } label: {
+                          Image(systemName: "magnifyingglass")
+                              .font(.system(size: 16, weight: .bold))
+                              .foregroundColor(ONEsUI.text)
+                              .frame(width: 38, height: 38)
+                              .background(Circle().fill(ONEsUI.card))
+                              .overlay(Circle().stroke(ONEsUI.stroke, lineWidth: 1))
+                      }
+                      .buttonStyle(.plain)
+
+                      Spacer()
+
+                      HStack(spacing: 8) {
+                          VStack(alignment: .trailing, spacing: -2) {
+                              Text("App Store")
+                                  .font(.system(size: 15, weight: .heavy))
+                                  .foregroundColor(ONEsUI.text)
+                              Text("ابستور")
+                                  .font(.system(size: 11, weight: .bold))
+                                  .foregroundColor(ONEsUI.sub)
+                          }
+                          Image(systemName: "a.circle.fill")
+                              .font(.system(size: 22, weight: .bold))
+                              .foregroundColor(ONEsUI.text)
+                      }
+
+                      Spacer()
+
+                      Menu {
+                          Button {
+                              HapticManager.shared.selection()
+                              onSettings?()
+                          } label: { Label("الإعدادات", systemImage: "gearshape") }
+
+                          Button {
+                              HapticManager.shared.selection()
+                              onNotifications?()
+                          } label: {
+                              Label(notifier.history.isEmpty ? "الإشعارات" : "الإشعارات (\(notifier.history.count))",
+                                    systemImage: "bell")
+                          }
+
+                          Button {
+                              HapticManager.shared.selection()
+                              onSearch?()
+                          } label: { Label("بحث", systemImage: "magnifyingglass") }
+
+                          Button {
+                              HapticManager.shared.selection()
+                              onRefresh?()
+                          } label: { Label("تحديث المتجر", systemImage: "arrow.clockwise") }
+                      } label: {
+                          ZStack(alignment: .topTrailing) {
+                              Image(systemName: "ellipsis")
+                                  .font(.system(size: 18, weight: .black))
+                                  .foregroundColor(ONEsUI.text)
+                                  .frame(width: 38, height: 38)
+                                  .background(Circle().fill(ONEsUI.card))
+                                  .overlay(Circle().stroke(ONEsUI.stroke, lineWidth: 1))
+                              if !notifier.history.isEmpty {
+                                  Circle().fill(ONEsUI.pink)
+                                      .frame(width: 9, height: 9)
+                                      .offset(x: -1, y: 1)
+                              }
+                          }
+                      }
+                  }
+                  .padding(.horizontal, 18)
+                  .padding(.top, 6)
+                  .padding(.bottom, 8)
+              }
+          }
+
+          // ---- Featured banner: a different app every day ----
+          struct FeaturedBannerCard: View {
+              let apps: [StoreAPIApp]
+              var onOpen: ((StoreAPIApp) -> Void)? = nil
+
+              private var dayIndex: Int {
+                  let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
+                  return apps.isEmpty ? 0 : day % apps.count
+              }
+              private var featured: StoreAPIApp? { apps.isEmpty ? nil : apps[dayIndex] }
+
+              var body: some View {
+                  ZStack(alignment: .topTrailing) {
+                      RoundedRectangle(cornerRadius: 22, style: .continuous)
+                          .fill(LinearGradient(colors: [ONEsUI.purpleDk, Color(red: 0.09, green: 0.11, blue: 0.24), Color.black],
+                                               startPoint: .topTrailing, endPoint: .bottomLeading))
+
+                      Circle()
+                          .fill(ONEsUI.purple.opacity(0.35))
+                          .frame(width: 160, height: 160)
+                          .blur(radius: 50)
+                          .offset(x: -70, y: -40)
+
+                      VStack(alignment: .trailing, spacing: 8) {
+                          HStack {
+                              Image(systemName: "chevron.left")
+                                  .font(.system(size: 11, weight: .bold))
+                                  .foregroundColor(.white.opacity(0.8))
+                                  .frame(width: 26, height: 26)
+                                  .background(Circle().fill(Color.white.opacity(0.12)))
+                              Spacer()
+                              Text("تطبيق اليوم")
+                                  .font(.system(size: 10, weight: .heavy))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 10).padding(.vertical, 5)
+                                  .background(Capsule().fill(Color.white.opacity(0.16)))
+                          }
+
+                          HStack(alignment: .center, spacing: 12) {
+                              VStack(alignment: .trailing, spacing: 6) {
+                                  Text(featured?.name ?? "اشتراك مجاني للايباد")
+                                      .font(.system(size: 20, weight: .black))
+                                      .foregroundColor(.white)
+                                      .lineLimit(1)
+                                  Text(featured.map { "\($0.category ?? "التطبيقات") • \($0.cleanSize) • جاهز للتثبيت المباشر" }
+                                       ?? "يمكنك الآن الحصول على اشتراك مجاني بمجرد اشتراكك بالباقة الذهبية")
+                                      .font(.system(size: 11, weight: .semibold))
+                                      .foregroundColor(.white.opacity(0.75))
+                                      .lineLimit(2)
+                                      .multilineTextAlignment(.trailing)
+                              }
+                              if let f = featured {
+                                  RemoteIcon(url: f.icon, size: 58, cornerRadius: 15)
+                                      .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
+                              }
+                          }
+
+                          if let f = featured {
+                              Button {
+                                  HapticManager.shared.impact(.light)
+                                  onOpen?(f)
+                              } label: {
+                                  Text("عرض التطبيق")
+                                      .font(.system(size: 12, weight: .heavy))
+                                      .foregroundColor(.black)
+                                      .padding(.horizontal, 18).padding(.vertical, 8)
+                                      .background(Capsule().fill(Color.white))
+                              }
+                              .buttonStyle(.plain)
+                          }
+                      }
+                      .padding(16)
+                  }
+                  .frame(height: 176)
+                  .padding(.horizontal, 18)
+              }
+          }
+
+          // ---- Live install status card ----
+          struct LiveInstallStatusCard: View {
+              @ObservedObject private var downloads = DownloadsManager.shared
+              @ObservedObject private var installer = StoreInstaller.shared
+
+              private var activeItem: DownloadItem? { downloads.active.first }
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      ZStack {
+                          Circle().fill(ONEsUI.teal.opacity(0.18)).frame(width: 38, height: 38)
+                          Image(systemName: activeItem == nil && !installer.isWorking ? "checkmark.seal.fill" : "arrow.down.circle.fill")
+                              .font(.system(size: 17, weight: .bold))
+                              .foregroundColor(ONEsUI.teal)
+                      }
+                      VStack(alignment: .trailing, spacing: 4) {
+                          HStack(spacing: 6) {
+                              Spacer()
+                              Text(title)
+                                  .font(.system(size: 12.5, weight: .heavy))
+                                  .foregroundColor(ONEsUI.text)
+                                  .lineLimit(1)
+                              Circle().fill(ONEsUI.teal).frame(width: 7, height: 7)
+                          }
+                          if let item = activeItem {
+                              ProgressView(value: max(0.01, item.progress))
+                                  .progressViewStyle(.linear)
+                                  .tint(ONEsUI.teal)
+                              Text("\(Int(item.progress * 100))% • \(item.isPaused ? "متوقف مؤقتًا" : "جارٍ التنزيل")")
+                                  .font(.system(size: 10, weight: .semibold))
+                                  .foregroundColor(ONEsUI.sub)
+                          } else {
+                              Text(installer.isWorking ? "جارٍ تجهيز التثبيت المباشر..." : "لا توجد عمليات تثبيت جارية الآن")
+                                  .font(.system(size: 10, weight: .semibold))
+                                  .foregroundColor(ONEsUI.sub)
+                          }
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(ONEsUI.card))
+                  .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(ONEsUI.stroke, lineWidth: 1))
+                  .padding(.horizontal, 18)
+              }
+          }
+
+          private extension LiveInstallStatusCard {
+              var title: String {
+                  if let item = activeItem { return "حالة التثبيت: \(item.app.name)" }
+                  if installer.isWorking { return "حالة التثبيت المباشر" }
+                  return "الجهاز جاهز للتثبيت"
+              }
+          }
+
+          // ---- Colored category pills (App Store style) ----
+          struct ONEsCategoryPills: View {
+              let categories: [String]
+              @Binding var selected: String?
+
+              private func tone(_ i: Int) -> Color {
+                  [ONEsUI.purple, ONEsUI.pink, ONEsUI.teal, Color(red: 0.15, green: 0.4, blue: 0.95)][i % 4]
+              }
+
+              var body: some View {
+                  ScrollView(.horizontal, showsIndicators: false) {
+                      HStack(spacing: 9) {
+                          pill(label: "الكل", value: nil, color: ONEsUI.cardAlt)
+                          ForEach(Array(categories.enumerated()), id: \.element) { i, c in
+                              pill(label: c, value: c, color: tone(i))
+                          }
+                      }
+                      .padding(.horizontal, 18)
+                      .padding(.vertical, 4)
+                  }
+              }
+
+              private func pill(label: String, value: String?, color: Color) -> some View {
+                  let active = (value == nil && selected == nil) || (value != nil && selected == value)
+                  return Button {
+                      HapticManager.shared.selection()
+                      withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { selected = value }
+                  } label: {
+                      HStack(spacing: 6) {
+                          Text(label)
+                              .font(.system(size: 12.5, weight: .heavy))
+                              .foregroundColor(.white)
+                          Image(systemName: "square.grid.2x2.fill")
+                              .font(.system(size: 10, weight: .bold))
+                              .foregroundColor(.white.opacity(0.9))
+                      }
+                      .padding(.horizontal, 15)
+                      .padding(.vertical, 9)
+                      .background(Capsule().fill(active ? color : ONEsUI.cardAlt))
+                      .overlay(Capsule().stroke(active ? Color.white.opacity(0.25) : ONEsUI.stroke, lineWidth: 1))
+                      .shadow(color: active ? color.opacity(0.45) : .clear, radius: 10, y: 5)
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+
+          // ---- Dark App Store style row ----
+          struct ONEsAppRow: View {
+              let app: StoreAPIApp
+              var onInstall: (() -> Void)? = nil
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      Button {
+                          HapticManager.shared.impact(.light)
+                          onInstall?()
+                      } label: {
+                          Text("تثبيت")
+                              .font(.system(size: 12, weight: .heavy))
+                              .foregroundColor(ONEsUI.text)
+                              .padding(.horizontal, 18)
+                              .padding(.vertical, 8)
+                              .background(Capsule().fill(ONEsUI.cardAlt))
+                              .overlay(Capsule().stroke(ONEsUI.stroke, lineWidth: 1))
+                      }
+                      .buttonStyle(.plain)
+
+                      Spacer(minLength: 6)
+
+                      VStack(alignment: .trailing, spacing: 3) {
+                          HStack(spacing: 5) {
+                              Text("يعمل")
+                                  .font(.system(size: 9.5, weight: .bold))
+                                  .foregroundColor(ONEsUI.sub)
+                              Image(systemName: "a.circle.fill")
+                                  .font(.system(size: 10, weight: .bold))
+                                  .foregroundColor(ONEsUI.sub)
+                          }
+                          Text(app.name)
+                              .font(.system(size: 15.5, weight: .heavy))
+                              .foregroundColor(ONEsUI.text)
+                              .lineLimit(1)
+                          Text("\(app.category ?? "معدل") • ابستور بلس")
+                              .font(.system(size: 10, weight: .semibold))
+                              .foregroundColor(ONEsUI.sub)
+                              .lineLimit(1)
+                      }
+
+                      RemoteIcon(url: app.icon, size: 52, cornerRadius: 13)
+                          .overlay(RoundedRectangle(cornerRadius: 13).stroke(ONEsUI.stroke, lineWidth: 1))
+                  }
+                  .padding(.horizontal, 12)
+                  .padding(.vertical, 11)
+                  .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(ONEsUI.card))
+                  .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(ONEsUI.stroke, lineWidth: 0.8))
+              }
+          }
+
+          // ================= HOME (App Store style) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
-              @ObservedObject private var favs = FavoritesStore.shared
               var onMenu: (() -> Void)? = nil
               var onGoApps: (() -> Void)? = nil
               var onGoFiles: (() -> Void)? = nil
-              @State private var bannerIndex: Int = 0
-              @State private var appear = false
+              @State private var selectedCategory: String? = nil
+              @State private var showNotifications = false
 
-              private let banners: [(String, String, String)] = [
-                  ("متجر ONEs الجديد", "حمّل أفضل التطبيقات والتعديلات بسرعة وأمان تام.", "جديد"),
-                  ("تحديثات يومية", "نضيف إصدارات محدّثة كل يوم من مصادر موثوقة.", "محدّث"),
-                  ("تحميل بلا حدود", "مساحة ضخمة وسرعات عالية بدون إعلانات مزعجة.", "مميز")
-              ]
+              private var categories: [String] {
+                  Array(Set(feed.apps.compactMap { $0.category?.capitalized })).sorted()
+              }
 
-              private var greeting: String {
-                  let h = Calendar.current.component(.hour, from: Date())
-                  if h < 12 { return "صباح الخير" }
-                  if h < 18 { return "مساء الخير" }
-                  return "مساء النور"
+              private var rows: [StoreAPIApp] {
+                  let base = feed.apps
+                  let list: [StoreAPIApp]
+                  if let c = selectedCategory {
+                      list = base.filter { ($0.category ?? "").lowercased() == c.lowercased() }
+                  } else {
+                      list = base
+                  }
+                  return Array(list.prefix(30))
               }
 
               var body: some View {
                   NavigationStack {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 18) {
-                              StoreHeader(title: LS("الرئيسية"),
-                                          onMenu: { onMenu?() },
-                                          showBell: true)
+                      VStack(spacing: 0) {
+                          ONEsTopBar(onSearch: { onGoApps?() },
+                                     onSettings: { onMenu?() },
+                                     onNotifications: { showNotifications = true },
+                                     onRefresh: { Task { await feed.refresh() } })
 
-                              // ===== ترحيب =====
-                              HStack(spacing: 10) {
-                                  VStack(alignment: .leading, spacing: 2) {
-                                      Text(greeting)
-                                          .font(.system(size: 19, weight: .black))
-                                          .foregroundColor(.storeText)
-                                      Text("اكتشف أحدث ما وصل إلى متجر ONEs اليوم")
-                                          .font(.system(size: 11.5, weight: .semibold))
-                                          .foregroundColor(.storeSub)
-                                  }
-                                  Spacer()
-                                  Circle()
-                                      .fill(LinearGradient(colors: [Color.storePrimary, Color.storeCyan],
-                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                                      .frame(width: 40, height: 40)
-                                      .overlay(
-                                          Image(systemName: "sparkles")
-                                              .font(.system(size: 16, weight: .bold))
-                                              .foregroundColor(.white)
-                                      )
-                                      .shadow(color: Color.storePrimary.opacity(0.35), radius: 10, y: 5)
-                              }
-                              .padding(.horizontal, 20)
+                          ScrollView(showsIndicators: false) {
+                              VStack(spacing: 14) {
+                                  LiveInstallStatusCard()
 
-                              // ===== بنر متحرك HTML =====
-                              TabView(selection: $bannerIndex) {
-                                  ForEach(0..<banners.count, id: \.self) { i in
-                                      HTMLContentView(html: HomeHTML.hero(
-                                          title: banners[i].0,
-                                          subtitle: banners[i].1,
-                                          badge: banners[i].2,
-                                          hue: i), transparent: false)
-                                          .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                                          .shadow(color: Color.storePrimary.opacity(0.22), radius: 16, y: 8)
-                                          .padding(.horizontal, 20)
-                                          .tag(i)
-                                  }
-                              }
-                              .tabViewStyle(.page(indexDisplayMode: .never))
-                              .frame(height: 182)
-                              .onAppear {
-                                  Timer.scheduledTimer(withTimeInterval: 4.5, repeats: true) { _ in
-                                      withAnimation(.easeInOut) {
-                                          bannerIndex = (bannerIndex + 1) % 3
+                                  FeaturedBannerCard(apps: feed.apps)
+
+                                  ONEsCategoryPills(categories: categories, selected: $selectedCategory)
+
+                                  if feed.apps.isEmpty && feed.isLoading {
+                                      LoadingList()
+                                  } else if rows.isEmpty {
+                                      EmptyState(message: "لا توجد تطبيقات في هذا التصنيف.")
+                                  } else {
+                                      LazyVStack(spacing: 10) {
+                                          ForEach(rows) { app in
+                                              NavigationLink(value: app) {
+                                                  ONEsAppRow(app: app, onInstall: { StoreInstaller.shared.install(app: app) })
+                                              }
+                                              .buttonStyle(.plain)
+                                          }
                                       }
+                                      .padding(.horizontal, 18)
                                   }
-                              }
 
-                              HStack(spacing: 6) {
-                                  ForEach(0..<banners.count, id: \.self) { i in
-                                      Capsule()
-                                          .fill(i == bannerIndex ? Color.storePrimary : Color.storeDivider)
-                                          .frame(width: i == bannerIndex ? 22 : 7, height: 7)
-                                          .animation(.spring(response: 0.3), value: bannerIndex)
-                                  }
-                              }
-
-                              // ===== إجراءات سريعة =====
-                              HomeQuickActions(onApps: { onGoApps?() },
-                                               onFiles: { onGoFiles?() },
-                                               onFavorites: { onGoApps?() },
-                                               onMenu: { onMenu?() })
-
-                              // ===== شريط أخبار متحرك =====
-                              HTMLContentView(html: HomeHTML.ticker(items: [
-                                  "سرعة تحميل عالية", "بدون جيلبريك", "تحديث يومي",
-                                  "مصادر موثوقة", "دعم فني سريع", "مساحة 1000 جيجا"
-                              ]))
-                              .frame(height: 44)
-                              .padding(.horizontal, 20)
-
-                              // ===== إحصائيات HTML =====
-                              HTMLContentView(html: HomeHTML.statsPanel(
-                                  apps: feed.totalAvailable,
-                                  favorites: favs.items.count,
-                                  updates: max(0, feed.totalAvailable / 12)), transparent: false)
-                                  .frame(height: 104)
-                                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                                  .padding(.horizontal, 20)
-
-                              // ===== عرض اليوم =====
-                              HomeSectionTitle(title: "عرض اليوم", subtitle: "ينتهي عند منتصف الليل")
-                              HTMLContentView(html: HomeHTML.offerCountdown(
-                                  title: "تحميل غير محدود",
-                                  subtitle: "استمتع بسرعة مضاعفة طوال اليوم"), transparent: false)
-                                  .frame(height: 92)
-                                  .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                  .shadow(color: Color.storePrimary.opacity(0.18), radius: 12, y: 6)
-                                  .padding(.horizontal, 20)
-
-                              // ===== إعلانات =====
-                              HomeSectionTitle(title: "العروض والإعلانات", subtitle: "مختارات من فريق ONEs")
-
-                              VStack(spacing: 12) {
-                                  Button(action: { HapticManager.shared.selection(); onGoApps?() }) {
-                                      HTMLContentView(html: HomeHTML.ad(
-                                          title: "تصفّح كل التطبيقات",
-                                          subtitle: "المكتبة الكاملة داخل تبويب التطبيقات",
-                                          cta: "افتح", tone: 0), transparent: false)
-                                          .frame(height: 88)
-                                          .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                          .allowsHitTesting(false)
+                                  Button {
+                                      HapticManager.shared.selection()
+                                      onGoApps?()
+                                  } label: {
+                                      Text("عرض كل التطبيقات")
+                                          .font(.system(size: 13, weight: .heavy))
+                                          .foregroundColor(.white)
+                                          .frame(maxWidth: .infinity)
+                                          .padding(.vertical, 13)
+                                          .background(Capsule().fill(ONEsUI.purple))
                                   }
                                   .buttonStyle(.plain)
+                                  .padding(.horizontal, 18)
 
-                                  Button(action: { HapticManager.shared.selection(); onGoFiles?() }) {
-                                      HTMLContentView(html: HomeHTML.ad(
-                                          title: "التحديثات والملفات",
-                                          subtitle: "تابع تنزيلاتك وآخر الإصدارات",
-                                          cta: "عرض", tone: 1), transparent: false)
-                                          .frame(height: 88)
-                                          .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                          .allowsHitTesting(false)
-                                  }
-                                  .buttonStyle(.plain)
-
-                                  HTMLContentView(html: HomeHTML.ad(
-                                      title: "اشترك في قناة ONEs",
-                                      subtitle: "كل جديد أولاً بأول",
-                                      cta: "تابعنا", tone: 2), transparent: false)
-                                      .frame(height: 88)
-                                      .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                  Spacer(minLength: 20)
                               }
-                              .padding(.horizontal, 20)
-
-                              // ===== مزايا المتجر (HTML) =====
-                              HomeSectionTitle(title: "لماذا ONEs؟", subtitle: "مزايا تصنع الفرق")
-                              HTMLContentView(html: HomeHTML.featureGrid())
-                                  .frame(height: 156)
-                                  .padding(.horizontal, 20)
-
-                              // ===== معلومات المتجر =====
-                              HomeSectionTitle(title: "عن المتجر", subtitle: "كل ما تحتاج معرفته")
-                              VStack(alignment: .leading, spacing: 10) {
-                                  HomeInfoRow(icon: "bolt.fill", title: "تثبيت مباشر",
-                                              subtitle: "تثبيت التطبيقات بدون كمبيوتر أو جيلبريك.")
-                                  HomeInfoRow(icon: "shield.lefthalf.filled", title: "أمان كامل",
-                                              subtitle: "كل الملفات تُفحص قبل النشر داخل المتجر.")
-                                  HomeInfoRow(icon: "arrow.triangle.2.circlepath", title: "تحديثات تلقائية",
-                                              subtitle: "إشعار فوري عند صدور أي إصدار جديد.")
-                              }
-                              .padding(.horizontal, 20)
-
-                              // ===== أسئلة شائعة =====
-                              HomeSectionTitle(title: "أسئلة شائعة", subtitle: "إجابات سريعة")
-                              HTMLContentView(html: HomeHTML.faq())
-                                  .frame(height: 210)
-                                  .padding(.horizontal, 20)
-
-                              // ===== تذييل =====
-                              HTMLContentView(html: HomeHTML.brandFooter())
-                                  .frame(height: 110)
-                                  .padding(.horizontal, 20)
-
-                              Spacer(minLength: 12)
+                              .padding(.top, 4)
                           }
-                          .padding(.top, 8)
+                          .refreshable { await feed.refresh() }
                       }
-                      .refreshable { await feed.refresh() }
+                      .background(ONEsUI.bg.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
               }
           }
-
           // ================= HOME COMPONENTS =================
           struct HomeSectionTitle: View {
               let title: String
@@ -4259,6 +4476,7 @@ jobs:
               @State private var searchText: String = ""
               @State private var selectedCategory: String? = nil
               @State private var visiblePage: Int = 0
+              @State private var showNotifications = false
 
               private static let hiddenCategories: [String] = ["movies", "movie", "films", "film", "أفلام", "افلام"]
 
@@ -4302,59 +4520,51 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          StoreHeader(title: "التطبيقات",
-                                      onMenu: { onMenu?() })
+                          ONEsTopBar(onSearch: { },
+                                     onSettings: { onMenu?() },
+                                     onNotifications: { showNotifications = true },
+                                     onRefresh: { Task { await feed.refresh() } })
 
                           ScrollView(showsIndicators: false) {
-                              VStack(spacing: 0) {
-                                  // ---- search ----
-                                  HStack(spacing: 10) {
-                                      HStack(spacing: 8) {
-                                          Image(systemName: "magnifyingglass")
-                                              .foregroundColor(.storeSub)
-                                          TextField("ابحث في \(feed.totalAvailable) تطبيق...", text: $searchText)
-                                              .font(.system(size: 14))
-                                          if !searchText.isEmpty {
-                                              Button { searchText = "" } label: {
-                                                  Image(systemName: "xmark.circle.fill")
-                                                      .foregroundColor(.storeSub)
-                                              }
+                              VStack(spacing: 14) {
+                                  LiveInstallStatusCard()
+
+                                  HStack(spacing: 8) {
+                                      Image(systemName: "magnifyingglass")
+                                          .foregroundColor(ONEsUI.sub)
+                                      TextField("ابحث في \(feed.totalAvailable) تطبيق...", text: $searchText)
+                                          .font(.system(size: 14))
+                                          .foregroundColor(ONEsUI.text)
+                                      if !searchText.isEmpty {
+                                          Button { searchText = "" } label: {
+                                              Image(systemName: "xmark.circle.fill")
+                                                  .foregroundColor(ONEsUI.sub)
                                           }
                                       }
-                                      .padding(.horizontal, 14)
-                                      .frame(height: 46)
-                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                                      .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
-
                                   }
-                                  .padding(.horizontal, 20)
-                                  .padding(.top, 12)
+                                  .padding(.horizontal, 14)
+                                  .frame(height: 46)
+                                  .background(RoundedRectangle(cornerRadius: 16).fill(ONEsUI.card))
+                                  .overlay(RoundedRectangle(cornerRadius: 16).stroke(ONEsUI.stroke, lineWidth: 1))
+                                  .padding(.horizontal, 18)
+
+                                  FeaturedBannerCard(apps: filtered)
 
                                   if !categories.isEmpty {
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 8) {
-                                              categoryChip(label: "الكل", value: nil)
-                                              ForEach(categories, id: \.self) { c in
-                                                  categoryChip(label: c, value: c)
-                                              }
-                                          }
-                                          .padding(.horizontal, 20)
-                                          .padding(.vertical, 4)
-                                      }
-                                      .padding(.top, 10)
+                                      ONEsCategoryPills(categories: categories, selected: $selectedCategory)
+                                          .onChange(of: selectedCategory) { _, _ in visiblePage = 0 }
                                   }
 
                                   HStack {
+                                      Text("صفحة \(visiblePage + 1) / \(filteredPages)")
+                                          .font(.system(size: 11, weight: .heavy))
+                                          .foregroundColor(ONEsUI.purple)
+                                      Spacer()
                                       Text("يوجد \(feed.totalAvailable) تطبيق في الكتالوج")
                                           .font(.system(size: 11, weight: .semibold))
-                                          .foregroundColor(.storeSub)
-                                      Spacer()
-                                      Text("صفحة \(visiblePage + 1) / \(filteredPages)")
-                                          .font(.system(size: 11, weight: .semibold))
-                                          .foregroundColor(.storePrimary)
+                                          .foregroundColor(ONEsUI.sub)
                                   }
-                                  .padding(.horizontal, 20)
-                                  .padding(.top, 10)
+                                  .padding(.horizontal, 18)
 
                                   if feed.apps.isEmpty && feed.isLoading {
                                       LoadingList()
@@ -4363,52 +4573,28 @@ jobs:
                                   } else {
                                       LazyVStack(spacing: 10) {
                                           ForEach(visibleItems) { app in
-                                              NavigationLink(value: app) { AppListRow(app: app) }
-                                                  .buttonStyle(.plain)
-                                                  .onAppear { handleAppear(app: app) }
+                                              NavigationLink(value: app) {
+                                                  ONEsAppRow(app: app, onInstall: { StoreInstaller.shared.install(app: app) })
+                                              }
+                                              .buttonStyle(.plain)
+                                              .onAppear { handleAppear(app: app) }
                                           }
                                       }
-                                      .padding(.horizontal, 20)
-                                      .padding(.top, 12)
-                                      .padding(.bottom, 30)
+                                      .padding(.horizontal, 18)
+                                      .padding(.bottom, 24)
                                   }
                               }
+                              .padding(.top, 4)
                           }
                           .refreshable { await feed.refresh() }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsUI.bg.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app)
                       }
                   }
-              }
-
-              private func categoryChip(label: String, value: String?) -> some View {
-                  let active = (value == nil && selectedCategory == nil) || (value != nil && selectedCategory == value)
-                  return Button {
-                      HapticManager.shared.selection()
-                      withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                          selectedCategory = value
-                          visiblePage = 0
-                      }
-                  } label: {
-                      Text(label)
-                          .font(.system(size: 12, weight: .semibold))
-                          .foregroundColor(active ? .white : .storeText)
-                          .padding(.horizontal, 16)
-                          .padding(.vertical, 9)
-                          .background(
-                              Capsule().fill(active ? Color.storePrimary : Color.storeCard)
-                          )
-                          .overlay(
-                              Capsule().stroke(active ? Color.clear : Color.storeDivider, lineWidth: 1)
-                          )
-                          .scaleEffect(active ? 1.06 : 1.0)
-                          .rotation3DEffect(.degrees(active ? 0 : 12), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
-                          .shadow(color: active ? Color.storePrimary.opacity(0.35) : .clear, radius: 10, y: 5)
-                  }
-                  .buttonStyle(.plain)
+                  .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
               }
 
               private func handleAppear(app: StoreAPIApp) {
@@ -4420,7 +4606,6 @@ jobs:
                   }
               }
           }
-
           // ================= 3D APP CARD =================
           struct App3DCard: View {
               let app: StoreAPIApp
