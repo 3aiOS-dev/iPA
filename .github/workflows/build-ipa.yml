@@ -265,15 +265,6 @@ jobs:
                   <false/>
                   <key>NSExceptionDomains</key>
                   <dict>
-                      <key>repository.apptesters.org</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
                       <key>apptesters.org</key>
                       <dict>
                           <key>NSIncludesSubdomains</key>
@@ -1006,14 +997,6 @@ jobs:
                               maxGB: 500
                           ),
                           DownloadRepository(
-                              id: "apptesters-main",
-                              name: "AppTesters IPA Repo",
-                              feedURL: "https://repository.apptesters.org/apps.json",
-                              homepage: "https://apptesters.org",
-                              enabled: true,
-                              maxGB: 250
-                          ),
-                          DownloadRepository(
                               id: "apptesters-mirror",
                               name: "AppTesters Mirror",
                               feedURL: "https://repo.apptesters.org/index.json",
@@ -1570,6 +1553,172 @@ jobs:
                   .padding(14)
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.gray.opacity(0.15)))
                   .onAppear { activation.verify() }
+              }
+          }
+
+          /// شاشة وضع الاشتراك (تظهر قبل الدخول للمتجر إذا لم يكن مفعّلًا).
+          struct SubscriptionGateView: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              @State private var input: String = ""
+              @State private var shake: Bool = false
+              @FocusState private var focused: Bool
+
+              private var purple: Color { Color(red: 0.44, green: 0.20, blue: 0.92) }
+              private var deep: Color { Color(red: 0.16, green: 0.07, blue: 0.35) }
+
+              var body: some View {
+                  ZStack {
+                      LinearGradient(colors: [deep, purple.opacity(0.85), Color(red: 0.09, green: 0.04, blue: 0.20)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing)
+                          .ignoresSafeArea()
+
+                      Circle().fill(purple.opacity(0.35)).frame(width: 320, height: 320).blur(radius: 90)
+                          .offset(x: -120, y: -240)
+                      Circle().fill(Color(red: 0.95, green: 0.45, blue: 0.85).opacity(0.28))
+                          .frame(width: 280, height: 280).blur(radius: 90).offset(x: 130, y: 260)
+
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 22) {
+                              ZStack {
+                                  Circle().fill(.white.opacity(0.12)).frame(width: 108, height: 108)
+                                  Image(systemName: "crown.fill")
+                                      .font(.system(size: 44, weight: .bold))
+                                      .foregroundColor(.white)
+                              }
+                              .padding(.top, 48)
+
+                              VStack(spacing: 8) {
+                                  Text(LS("وضع الاشتراك"))
+                                      .font(.system(size: 28, weight: .heavy))
+                                      .foregroundColor(.white)
+                                  Text(LS("انسخ الاسم وألصقه هنا. المدة تبدأ من لحظة التفعيل (من 7 أيام إلى سنة) وتتوقف تلقائيًا بعد انتهائها."))
+                                      .font(.system(size: 13))
+                                      .multilineTextAlignment(.center)
+                                      .foregroundColor(.white.opacity(0.75))
+                                      .padding(.horizontal, 26)
+                              }
+
+                              VStack(spacing: 14) {
+                                  HStack(spacing: 10) {
+                                      Image(systemName: "key.fill").foregroundColor(.white.opacity(0.7))
+                                      TextField("", text: $input, prompt: Text(LS("اسم التفعيل")).foregroundColor(.white.opacity(0.45)))
+                                          .textInputAutocapitalization(.characters)
+                                          .disableAutocorrection(true)
+                                          .foregroundColor(.white)
+                                          .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                                          .focused($focused)
+                                      if !input.isEmpty {
+                                          Button { input = "" } label: {
+                                              Image(systemName: "xmark.circle.fill").foregroundColor(.white.opacity(0.5))
+                                          }
+                                      }
+                                  }
+                                  .padding(.horizontal, 16).padding(.vertical, 15)
+                                  .background(
+                                      RoundedRectangle(cornerRadius: 18)
+                                          .fill(.white.opacity(0.12))
+                                          .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.22), lineWidth: 1))
+                                  )
+                                  .offset(x: shake ? 8 : 0)
+
+                                  if !activation.lastError.isEmpty {
+                                      Text(activation.lastError)
+                                          .font(.system(size: 12, weight: .semibold))
+                                          .foregroundColor(Color(red: 1.0, green: 0.55, blue: 0.6))
+                                          .frame(maxWidth: .infinity, alignment: .leading)
+                                  }
+
+                                  Button {
+                                      focused = false
+                                      activation.activate(code: input) { ok in
+                                          if !ok {
+                                              withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
+                                              DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
+                                          }
+                                      }
+                                  } label: {
+                                      HStack(spacing: 8) {
+                                          if activation.isWorking { ProgressView().tint(purple) }
+                                          Text(activation.isWorking ? LS("جارٍ التفعيل…") : LS("تفعيل الاشتراك"))
+                                              .font(.system(size: 16, weight: .bold))
+                                      }
+                                      .frame(maxWidth: .infinity)
+                                      .padding(.vertical, 16)
+                                      .background(RoundedRectangle(cornerRadius: 18).fill(.white))
+                                      .foregroundColor(purple)
+                                  }
+                                  .disabled(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty)
+                                  .opacity(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty ? 0.6 : 1)
+
+                                  Button {
+                                      if let url = URL(string: ActivationManager.activationNameLink) {
+                                          UIApplication.shared.open(url)
+                                      }
+                                  } label: {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "paperplane.fill")
+                                          Text(LS("احصل على اسم التفعيل"))
+                                              .font(.system(size: 14, weight: .semibold))
+                                      }
+                                      .frame(maxWidth: .infinity)
+                                      .padding(.vertical, 14)
+                                      .background(RoundedRectangle(cornerRadius: 18).fill(.white.opacity(0.14)))
+                                      .foregroundColor(.white)
+                                  }
+                              }
+                              .padding(.horizontal, 22)
+
+                              VStack(spacing: 10) {
+                                  GateFeatureRow(icon: "bolt.fill", title: LS("تثبيت مباشر"), subtitle: LS("بدون كمبيوتر أو أدوات خارجية"))
+                                  GateFeatureRow(icon: "lock.shield.fill", title: LS("حماية كاملة"), subtitle: LS("اسم مرتبط بجهازك فقط"))
+                                  GateFeatureRow(icon: "arrow.triangle.2.circlepath", title: LS("تحديثات مستمرة"), subtitle: LS("أحدث الإصدارات أولًا بأول"))
+                              }
+                              .padding(.horizontal, 22)
+                              .padding(.bottom, 40)
+                          }
+                      }
+                  }
+                  .onAppear { activation.verify() }
+              }
+          }
+
+          struct GateFeatureRow: View {
+              let icon: String
+              let title: String
+              let subtitle: String
+              var body: some View {
+                  HStack(spacing: 12) {
+                      Image(systemName: icon)
+                          .font(.system(size: 16, weight: .bold))
+                          .foregroundColor(.white)
+                          .frame(width: 38, height: 38)
+                          .background(Circle().fill(.white.opacity(0.14)))
+                      VStack(alignment: .leading, spacing: 2) {
+                          Text(title).font(.system(size: 14, weight: .bold)).foregroundColor(.white)
+                          Text(subtitle).font(.system(size: 11)).foregroundColor(.white.opacity(0.65))
+                      }
+                      Spacer()
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(.white.opacity(0.08)))
+              }
+          }
+
+          /// يغلّف المحتوى: يعرض شاشة وضع الاشتراك إن لم يكن التطبيق مفعّلًا.
+          struct ActivationGateContainer<Content: View>: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              private let content: () -> Content
+              init(@ViewBuilder content: @escaping () -> Content) { self.content = content }
+
+              var body: some View {
+                  Group {
+                      if activation.isActive {
+                          content()
+                      } else {
+                          SubscriptionGateView()
+                      }
+                  }
+                  .animation(.easeInOut(duration: 0.35), value: activation.isActive)
               }
           }
           ACTEOF
@@ -5899,7 +6048,7 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      NavigationView { AuthView() }
+                      ActivationGateContainer { NavigationView { AuthView() } }
                           .navigationViewStyle(.stack)
                           .overlay(alignment: .center) {
                               if captureService.showThanksOverlay {
