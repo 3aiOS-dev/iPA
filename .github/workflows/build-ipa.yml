@@ -1472,10 +1472,24 @@ jobs:
                   return nil
               }
 
-              private func apply(_ json: [String: Any]) -> Bool {
-                  guard (json["ok"] as? Bool) == true else { return false }
+              private func apply(_ raw json0: [String: Any], fallbackCode: String? = nil) -> Bool {
+                  guard (json0["ok"] as? Bool) == true else { return false }
+                  // لوحة التحكم ترجع بيانات الحساب داخل مفتاح "account" عند التفعيل،
+                  // وبشكل مسطّح عند التحقق. ندمج الاثنين قبل القراءة وإلا تفشل
+                  // القراءة ويظهر خطأ «الاسم غير صالح» رغم نجاح التفعيل.
+                  var json = json0
+                  if let acc = json0["account"] as? [String: Any] {
+                      for (k, v) in acc { json[k] = v }
+                  }
                   if let active = json["active"] as? Bool, active == false { return false }
-                  if let c = json["code"] as? String { code = c }
+                  if let c = json["code"] as? String, !c.isEmpty {
+                      code = c
+                  } else if let fb = fallbackCode, !fb.isEmpty {
+                      code = fb
+                  }
+                  if let u = json["udid"] as? String, !u.isEmpty {
+                      udid = u
+                  }
                   if let days = json["duration_days"] as? Int { durationDays = days }
                   if let name = json["full_name"] as? String, !name.isEmpty {
                       fullName = name
@@ -1527,7 +1541,7 @@ jobs:
                               self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
                               completion?(false); return
                           }
-                          if self.apply(json) {
+                          if self.apply(json, fallbackCode: clean) {
                               HapticManager.shared.success()
                               completion?(true)
                           } else {
