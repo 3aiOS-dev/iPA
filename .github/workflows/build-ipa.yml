@@ -2680,11 +2680,11 @@ jobs:
                           }
                           if let attachment { content.attachments = [attachment] }
                           let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-                          UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+                          try? await UNUserNotificationCenter.current().add(request)
                       }
                   } else {
                       let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-                      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+                      Task { try? await UNUserNotificationCenter.current().add(request) }
                   }
               }
 
@@ -3557,6 +3557,7 @@ jobs:
               @ObservedObject private var lang = LanguageManager.shared
               @StateObject private var feed = StoreFeed()
               @StateObject private var reposStore = RepositoriesStore.shared
+              @ObservedObject private var favs = FavoritesStore.shared
               @State private var tab: Int = 0
               @State private var showSearch = false
               @State private var showSettings = false
@@ -3564,32 +3565,28 @@ jobs:
               @State private var showSettingsOnboarding: Bool = false
 
               var body: some View {
-                  ZStack(alignment: .bottom) {
-                      Color.storeBg.edgesIgnoringSafeArea(.all)
-
-                      ZStack {
+                  ZStack {
+                      TabView(selection: $tab) {
                           StoreHomeView(feed: feed,
                                        onMenu: { openSettings() },
                                        onGoApps: { tab = 3 },
                                        onGoFiles: { tab = 2 })
-                              .opacity(tab == 0 ? 1 : 0)
-                              .allowsHitTesting(tab == 0)
-                          FavoritesView(feed: feed,
-                                        onMenu: { openSettings() })
-                              .opacity(tab == 1 ? 1 : 0)
-                              .allowsHitTesting(tab == 1)
-                          AlertsView(feed: feed,
-                                      onMenu: { openSettings() })
-                              .opacity(tab == 2 ? 1 : 0)
-                              .allowsHitTesting(tab == 2)
-                          AppsListView(feed: feed,
-                                       onMenu: { openSettings() })
-                              .opacity(tab == 3 ? 1 : 0)
-                              .allowsHitTesting(tab == 3)
-                      }
-                      .padding(.bottom, 90)
+                              .tabItem { Label(LS("الرئيسية"), systemImage: "house.fill") }
+                              .tag(0)
 
-                      StoreTabBar(tab: $tab)
+                          FavoritesView(feed: feed, onMenu: { openSettings() })
+                              .tabItem { Label(LS("المفضلة"), systemImage: "heart.fill") }
+                              .badge(favs.items.count)
+                              .tag(1)
+
+                          AppsListView(feed: feed, onMenu: { openSettings() })
+                              .tabItem { Label(LS("التطبيقات"), systemImage: "square.grid.2x2.fill") }
+                              .tag(3)
+
+                          AlertsView(feed: feed, onMenu: { openSettings() })
+                              .tabItem { Label(LS("التحديثات"), systemImage: "arrow.triangle.2.circlepath") }
+                              .tag(2)
+                      }
 
                       StatusOverlayHost()
                           .ignoresSafeArea(.keyboard)
@@ -3628,100 +3625,6 @@ jobs:
                   } else {
                       showSettingsOnboarding = true
                   }
-              }
-          }
-
-          // ================= TAB BAR (animated, no account tab) =================
-          struct StoreTabBar: View {
-              @Binding var tab: Int
-              var onSearch: () -> Void = {}
-              @ObservedObject private var favs = FavoritesStore.shared
-              @State private var pop: [Int: Bool] = [:]
-              @State private var spin: [Int: Double] = [:]
-              @Namespace private var tabNS
-
-              var body: some View {
-                  ZStack {
-                      HStack(spacing: 0) {
-                          tabItem(icon: "house.fill", label: LS("الرئيسية"), index: 0)
-                          tabItem(icon: "heart.fill", label: LS("المفضلة"), index: 1, badge: favs.items.count)
-                          tabItem(icon: "square.grid.2x2.fill", label: LS("التطبيقات"), index: 3)
-                          tabItem(icon: "arrow.triangle.2.circlepath", label: LS("التحديثات"), index: 2)
-                      }
-                      .padding(.horizontal, 14)
-                      .padding(.vertical, 12)
-                      .background(
-                          RoundedRectangle(cornerRadius: 28)
-                              .fill(Color.storeCard)
-                              .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: -2)
-                      )
-                      .padding(.horizontal, 12)
-
-                  }
-                  .padding(.bottom, 16)
-              }
-
-              private func fire(_ index: Int) {
-                  HapticManager.shared.selection()
-                  withAnimation(.spring(response: 0.28, dampingFraction: 0.4)) {
-                      pop[index] = true
-                      spin[index] = (spin[index] ?? 0) + 360
-                  }
-                  tab = index
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                      withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) { pop[index] = false }
-                  }
-              }
-
-              @ViewBuilder
-              private func tabItem(icon: String, label: String, index: Int, badge: Int = 0) -> some View {
-                  let active = tab == index
-                  let popped = pop[index] == true
-                  Button {
-                      fire(index)
-                  } label: {
-                      VStack(spacing: 4) {
-                          ZStack(alignment: .topTrailing) {
-                              Image(systemName: icon)
-                                  .font(.system(size: 18, weight: .semibold))
-                                  .scaleEffect(popped ? 1.5 : (active ? 1.14 : 1.0))
-                                  .offset(y: popped ? -6 : 0)
-                                  .rotation3DEffect(.degrees(spin[index] ?? 0),
-                                                    axis: (x: 0, y: 1, z: 0),
-                                                    perspective: 0.6)
-                                  .animation(.spring(response: 0.55, dampingFraction: 0.55), value: spin[index])
-                              if badge > 0 {
-                                  Text(badge > 99 ? "99+" : "\(badge)")
-                                      .font(.system(size: 9, weight: .heavy))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 4)
-                                      .frame(minWidth: 16, minHeight: 16)
-                                      .background(Capsule().fill(Color.storePink))
-                                      .offset(x: 12, y: -8)
-                                      .scaleEffect(popped ? 1.15 : 1.0)
-                              }
-                          }
-                          Text(label)
-                              .font(.system(size: 10, weight: active ? .bold : .medium))
-                              .lineLimit(1)
-                              .minimumScaleFactor(0.8)
-                              .opacity(active ? 1 : 0.85)
-                      }
-                      .foregroundColor(active ? .storePrimary : .storeSub)
-                      .padding(.vertical, 6)
-                      .frame(maxWidth: .infinity)
-                      .background(
-                          ZStack {
-                              if active {
-                                  RoundedRectangle(cornerRadius: 16)
-                                      .fill(Color.storePrimary.opacity(0.12))
-                                      .matchedGeometryEffect(id: "tabPill", in: tabNS)
-                              }
-                          }
-                      )
-                      .animation(.spring(response: 0.35, dampingFraction: 0.75), value: tab)
-                  }
-                  .buttonStyle(.plain)
               }
           }
 
@@ -4848,9 +4751,9 @@ jobs:
                       VStack(spacing: 0) {
                           StoreHeader(
                               title: "المفضلة",
-                              showMenu: false,
                               onRefresh: nil,
-                              onMenu: { onMenu?() }
+                              onMenu: { onMenu?() },
+                              showMenu: false
                           )
 
                           HStack(spacing: 10) {
