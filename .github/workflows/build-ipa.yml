@@ -1400,8 +1400,20 @@ jobs:
                   refreshLocalState()
               }
 
-              /// معرّف الجهاز (يربط الاسم بجهاز واحد فقط).
+              /// UDID الرسمي للجهاز كما هو مسجّل في لوحة التحكم (يُلصق مرة واحدة).
+              /// السيرفر يربط كود الاشتراك بهذا الـ UDID بالضبط، لذلك لا يصح استخدام
+              /// identifierForVendor إلا كقيمة احتياطية عندما لا يُدخل المستخدم UDID.
+              @Published public var udid: String = UserDefaults.standard.string(forKey: "official_udid_v1") ?? "" {
+                  didSet {
+                      let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                      UserDefaults.standard.set(clean, forKey: "official_udid_v1")
+                  }
+              }
+
+              /// معرّف الجهاز المُرسل للسيرفر (يربط الكود بجهاز واحد فقط).
               public var deviceID: String {
+                  let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                  if !clean.isEmpty { return clean }
                   if let saved = UserDefaults.standard.string(forKey: "activation_device_id_v1"), !saved.isEmpty {
                       return saved
                   }
@@ -1409,6 +1421,9 @@ jobs:
                   UserDefaults.standard.set(generated, forKey: "activation_device_id_v1")
                   return generated
               }
+
+              /// اسم صاحب الحساب القادم من لوحة التحكم.
+              @Published public private(set) var fullName: String = UserDefaults.standard.string(forKey: "activation_full_name_v1") ?? ""
 
               public var daysLeft: Int {
                   guard let exp = expiresAt else { return 0 }
@@ -1438,14 +1453,37 @@ jobs:
                   d.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: kExpires)
               }
 
+              /// يقبل صيغتي التاريخ القادمتين من اللوحة: "2026-08-15" أو ISO8601 كامل.
+              private static func parseDate(_ raw: String) -> Date? {
+                  let iso = ISO8601DateFormatter()
+                  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                  if let d = iso.date(from: raw) { return d }
+                  if let d = ISO8601DateFormatter().date(from: raw) { return d }
+                  let f = DateFormatter()
+                  f.locale = Locale(identifier: "en_US_POSIX")
+                  f.timeZone = TimeZone(secondsFromGMT: 0)
+                  for fmt in ["yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"] {
+                      f.dateFormat = fmt
+                      if let d = f.date(from: raw) {
+                          // تاريخ بدون وقت = صالح حتى نهاية ذلك اليوم
+                          return fmt == "yyyy-MM-dd" ? d.addingTimeInterval(86_399) : d
+                      }
+                  }
+                  return nil
+              }
+
               private func apply(_ json: [String: Any]) -> Bool {
                   guard (json["ok"] as? Bool) == true else { return false }
+                  if let active = json["active"] as? Bool, active == false { return false }
                   if let c = json["code"] as? String { code = c }
                   if let days = json["duration_days"] as? Int { durationDays = days }
-                  if let iso = json["expires_at"] as? String {
-                      let f = ISO8601DateFormatter()
-                      f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                      expiresAt = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+                  if let name = json["full_name"] as? String, !name.isEmpty {
+                      fullName = name
+                      UserDefaults.standard.set(name, forKey: "activation_full_name_v1")
+                  }
+                  if let raw = json["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
+                      expiresAt = d
+                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
                   }
                   persist()
                   refreshLocalState()
@@ -1456,7 +1494,12 @@ jobs:
               public func activate(code newCode: String, completion: ((Bool) -> Void)? = nil) {
                   let clean = newCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
                   guard clean.count >= 6 else {
-                      lastError = LS("أدخل اسمًا صحيحًا")
+                      lastError = LS("أدخل كود اشتراك صحيح")
+                      completion?(false)
+                      return
+                  }
+                  guard !udid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                      lastError = LS("ألصق UDID الرسمي للجهاز أولًا (نفس المسجّل في لوحة التحكم)")
                       completion?(false)
                       return
                   }
@@ -1468,9 +1511,13 @@ jobs:
                   var req = URLRequest(url: url)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  // السيرفر (لوحة التحكم) يتوقع الحقل "udid" — إرسال device_id فقط
+                  // كان يعيد دائمًا: «بيانات غير صحيحة».
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "code": clean,
-                      "device_id": deviceID
+                      "udid": deviceID,
+                      "device_id": deviceID,
+                      "device_model": UIDevice.current.model
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, error in
                       Task { @MainActor in
@@ -1497,6 +1544,7 @@ jobs:
                   var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
+                      URLQueryItem(name: "udid", value: deviceID),
                       URLQueryItem(name: "device_id", value: deviceID)
                   ]
                   guard let url = comps?.url else { completion?(false); return }
@@ -1563,6 +1611,7 @@ jobs:
               @State private var shake: Bool = false
               @State private var copied: Bool = false
               @FocusState private var focused: Bool
+              @FocusState private var udidFocused: Bool
 
               private var purple: Color { Color(red: 0.44, green: 0.20, blue: 0.92) }
               private var deep: Color { Color(red: 0.16, green: 0.07, blue: 0.35) }
@@ -1611,15 +1660,44 @@ jobs:
                                       Image(systemName: "iphone.gen3").foregroundColor(.white.opacity(0.6))
                                   }
 
-                                  Text(activation.deviceID)
-                                      .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                      .foregroundColor(.white.opacity(0.9))
+                                  // إدخال الـ UDID الرسمي (نفس الحقل الموجود في لوحة التحكم)
+                                  HStack(spacing: 10) {
+                                      Image(systemName: "number").foregroundColor(.white.opacity(0.7))
+                                      TextField("", text: $activation.udid,
+                                                prompt: Text(LS("ألصق UDID الرسمي للجهاز")).foregroundColor(.white.opacity(0.45)))
+                                          .textInputAutocapitalization(.characters)
+                                          .disableAutocorrection(true)
+                                          .foregroundColor(.white)
+                                          .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                          .focused($udidFocused)
+                                      if !activation.udid.isEmpty {
+                                          Button { activation.udid = "" } label: {
+                                              Image(systemName: "xmark.circle.fill").foregroundColor(.white.opacity(0.5))
+                                          }
+                                      }
+                                  }
+                                  .padding(.horizontal, 12).padding(.vertical, 12)
+                                  .background(RoundedRectangle(cornerRadius: 14).fill(.black.opacity(0.22)))
+
+                                  Button {
+                                      if let s = UIPasteboard.general.string, !s.isEmpty {
+                                          activation.udid = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                                      }
+                                  } label: {
+                                      HStack(spacing: 6) {
+                                          Image(systemName: "doc.on.clipboard")
+                                          Text(LS("لصق UDID من الحافظة")).font(.system(size: 13, weight: .bold))
+                                      }
+                                      .foregroundColor(.white.opacity(0.85))
+                                  }
+
+                                  Text(LS("معرّف هذا الجهاز الاحتياطي:") + " " + activation.deviceID)
+                                      .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                      .foregroundColor(.white.opacity(0.65))
                                       .lineLimit(2)
                                       .minimumScaleFactor(0.7)
                                       .textSelection(.enabled)
                                       .frame(maxWidth: .infinity, alignment: .leading)
-                                      .padding(.horizontal, 12).padding(.vertical, 12)
-                                      .background(RoundedRectangle(cornerRadius: 14).fill(.black.opacity(0.22)))
 
                                   HStack(spacing: 10) {
                                       Button {
