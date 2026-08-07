@@ -484,6 +484,10 @@ jobs:
               "مفعّل — متبقٍ": "Active — remaining",
               "يوم": "days",
               "ينتهي في": "Expires on",
+              "صدر تحديث جديد للتطبيق في المتجر": "A new update is available for this app on the store",
+              "تمت إضافة التطبيق إلى المتجر الآن": "This app was just added to the store",
+              "جديد": "New",
+              "محدث": "Updated",
           ]
 
           /// LS = Localized String. يعيد العربية كما هي، أو الترجمة الإنجليزية.
@@ -633,6 +637,7 @@ jobs:
           cat > HapticManager.swift << 'VIPEOF'
           import SwiftUI
           import UIKit
+          import UserNotifications
 
           class HapticManager {
               static let shared = HapticManager()
@@ -645,6 +650,25 @@ jobs:
               func selection() { UISelectionFeedbackGenerator().selectionChanged() }
               func success() { notification(.success) }
               func error() { notification(.error) }
+          }
+
+          /// Shows local notifications even when the app is in the foreground so
+          /// store events (new / updated app) appear in the system notification
+          /// centre and on the lock screen — i.e. "من خارج المتجر".
+          final class ForegroundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+              static let shared = ForegroundNotificationDelegate()
+
+              func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                          willPresent notification: UNNotification,
+                                          withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+                  completionHandler([.banner, .list, .sound, .badge])
+              }
+
+              func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                          didReceive response: UNNotificationResponse,
+                                          withCompletionHandler completionHandler: @escaping () -> Void) {
+                  completionHandler()
+              }
           }
 
           struct XcodeCardModifier: ViewModifier {
@@ -1456,7 +1480,7 @@ jobs:
               }
 
               /// يقبل صيغتي التاريخ القادمتين من اللوحة: "2026-08-15" أو ISO8601 كامل.
-              private static func parseDate(_ raw: String) -> Date? {
+              static func parseDate(_ raw: String) -> Date? {
                   let iso = ISO8601DateFormatter()
                   iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                   if let d = iso.date(from: raw) { return d }
@@ -3157,10 +3181,66 @@ jobs:
               private var catalogSnapshot: [String: String] =
                   (UserDefaults.standard.dictionary(forKey: "store_catalog_snapshot_v1") as? [String: String]) ?? [:]
 
+              /// First-seen timestamps per app id — يُستخدم لتحديد التطبيقات المضافة في
+              /// آخر 24 ساعة لعرضها في تبويب التحديثات مع رقم تنبيه.
+              private let firstSeenKey = "store_catalog_first_seen_v1"
+              private var firstSeen: [String: Date] =
+                  (UserDefaults.standard.dictionary(forKey: "store_catalog_first_seen_v1") as? [String: Double])?
+                      .mapValues { Date(timeIntervalSince1970: $0) } ?? [:]
+
+              /// كل التطبيقات التي انضافت أو تحدّثت خلال آخر 24 ساعة (تُعرض في تبويب التحديثات).
+              @Published private(set) var recentApps: [StoreAPIApp] = []
+
               init() { loadCachedThenRefresh() }
 
               private func snapshotVersion(_ app: StoreAPIApp) -> String {
                   app.version ?? app.bundleVersion ?? app.versionDate ?? app.updatedAt ?? ""
+              }
+
+              /// تاريخ إضافة التطبيق إلى المتجر (من السيرفر أو من أول مرة رصدناه فيها).
+              private func publishedDate(for app: StoreAPIApp) -> Date? {
+                  let raw = app.createdAt ?? app.updatedAt ?? app.versionDate ?? app.fullDate
+                  if let raw, let d = ActivationManager.parseDate(raw) { return d }
+                  return firstSeen["\(app.id)"]
+              }
+
+              /// هل أُضيف/تحدّث هذا التطبيق خلال آخر 24 ساعة؟
+              func isRecent(_ app: StoreAPIApp, now: Date = Date()) -> Bool {
+                  guard let d = publishedDate(for: app) else { return false }
+                  return now.timeIntervalSince(d) <= 24 * 60 * 60
+              }
+
+              /// عدد التطبيقات الحديثة (أضيفت/تحدّثت في آخر 24 ساعة) — للرقم جنب أيقونة التحديثات.
+              var recentCount: Int { recentApps.count }
+
+              /// يعيد بناء قائمة التطبيقات الحديثة بناءً على الـ snapshot الحالي.
+              private func rebuildRecentApps(from incoming: [StoreAPIApp]) {
+                  let now = Date()
+                  let cutoff = now.addingTimeInterval(-24 * 60 * 60)
+                  var updatedFirstSeen = firstSeen
+                  var recent: [StoreAPIApp] = []
+                  for app in incoming {
+                      let key = "\(app.id)"
+                      let date: Date = {
+                          if let raw = app.createdAt ?? app.updatedAt ?? app.versionDate ?? app.fullDate,
+                             let parsed = ActivationManager.parseDate(raw) { return parsed }
+                          if let existing = updatedFirstSeen[key] { return existing }
+                          let now2 = Date()
+                          updatedFirstSeen[key] = now2
+                          return now2
+                      }()
+                      if date >= cutoff { recent.append(app) }
+                  }
+                  self.firstSeen = updatedFirstSeen
+                  if let data = try? JSONEncoder().encode(
+                      updatedFirstSeen.mapValues { $0.timeIntervalSince1970 }) {
+                      UserDefaults.standard.set(data, forKey: firstSeenKey)
+                  }
+                  self.recentApps = recent.sorted { (a, b) in
+                      let da = publishedDate(for: a) ?? .distantPast
+                      let db = publishedDate(for: b) ?? .distantPast
+                      return da > db
+                  }
               }
 
               /// Compares the freshly fetched catalog against the stored snapshot and
@@ -3188,10 +3268,26 @@ jobs:
                               isUpdate: isUpdate
                           )
                       }
+                  } else {
+                      // عند أول تشغيل نُعلم فقط بالتطبيقات المضافة خلال آخر 24 ساعة.
+                      let now = Date()
+                      let cutoff = now.addingTimeInterval(-24 * 60 * 60)
+                      for app in incoming.prefix(8) {
+                          if let raw = app.createdAt ?? app.updatedAt ?? app.versionDate ?? app.fullDate,
+                             let d = ActivationManager.parseDate(raw), d >= cutoff {
+                              NotificationsManager.shared.pushAppEvent(
+                                  name: app.name,
+                                  iconURL: app.iconURL ?? app.icon,
+                                  version: snapshotVersion(app),
+                                  isUpdate: false
+                              )
+                          }
+                      }
                   }
 
                   catalogSnapshot = next
                   UserDefaults.standard.set(next, forKey: catalogKey)
+                  rebuildRecentApps(from: incoming)
               }
 
               func loadCachedThenRefresh() {
@@ -3395,6 +3491,7 @@ jobs:
               @StateObject private var feed = StoreFeed()
               @StateObject private var reposStore = RepositoriesStore.shared
               @ObservedObject private var favs = FavoritesStore.shared
+              @ObservedObject private var updates = UpdatesFeed.shared
               @State private var tab: Int = 0
               @State private var showSearch = false
 
@@ -3419,6 +3516,7 @@ jobs:
 
                           AlertsView(feed: feed, onMenu: {  })
                               .tabItem { Label(LS("التحديثات"), systemImage: "arrow.triangle.2.circlepath") }
+                              .badge(updates.recentCount)
                               .tag(2)
                       }
 
@@ -5376,6 +5474,18 @@ jobs:
               @Published var lastError: String = ""
               private init() {}
 
+              /// التطبيق أُضيف/تحدّث خلال آخر 24 ساعة؟ (للرقم وللقائمة)
+              func isRecent(_ item: StoreUpdateItem, now: Date = Date()) -> Bool {
+                  guard let raw = item.released_at, let d = ActivationManager.parseDate(raw) else { return true }
+                  return now.timeIntervalSince(d) <= 24 * 60 * 60
+              }
+
+              /// القائمة المفلترة (24 ساعة فقط) — هي التي تظهر فعلاً في تبويب التحديثات.
+              var recentItems: [StoreUpdateItem] { items.filter { isRecent($0) } }
+
+              /// عدد التحديثات الأخيرة — يظهر جنب أيقونة التحديثات.
+              var recentCount: Int { recentItems.count }
+
               func load() async {
                   isLoading = true
                   lastError = ""
@@ -5387,11 +5497,82 @@ jobs:
                       req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
                       let (data, _) = try await URLSession.shared.data(for: req)
                       let parsed = try JSONDecoder().decode(StoreUpdatesResponse.self, from: data)
-                      self.items = parsed.updates
+                      // نُبقي فقط الإضافات/التحديثات خلال آخر 24 ساعة.
+                      self.items = parsed.updates.filter { isRecent($0) }
                   } catch {
                       self.lastError = error.localizedDescription
                   }
                   isLoading = false
+              }
+          }
+
+          // ================= LIVE CATALOG MONITOR =================
+          // يستعلم لوحة تحكم المتجر كل 90 ثانية (حتى لو التطبيق في الواجهة)
+          // فإذا رُصد تطبيق جديد/محدّث يُرسل إشعار نظام فوري (يظهر خارج المتجر
+          // في بانر iOS + شاشة القفل + مركز الإشعارات).
+          @MainActor
+          final class LiveCatalogMonitor: ObservableObject {
+              static let shared = LiveCatalogMonitor()
+              private var timer: Timer?
+              private var lastFingerprint: String = UserDefaults.standard.string(forKey: "live_catalog_fp") ?? ""
+              private init() {}
+
+              func start() {
+                  guard timer == nil else { return }
+                  // أول فحص بعد 8 ثوانٍ ثم كل 90 ثانية
+                  Task { @MainActor in
+                      try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
+                      await self.tick()
+                  }
+                  timer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+                      guard let self = self else { return }
+                      Task { @MainActor in await self.tick() }
+                  }
+                  if let t = timer {
+                      RunLoop.main.add(t, forMode: .common)
+                  }
+              }
+
+              func stop() {
+                  timer?.invalidate()
+                  timer = nil
+              }
+
+              private func tick() async {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/updates") else { return }
+                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                  do {
+                      let (data, _) = try await URLSession.shared.data(for: req)
+                      guard let parsed = try? JSONDecoder().decode(StoreUpdatesResponse.self, from: data) else { return }
+                      let recent = parsed.updates.filter { UpdatesFeed.shared.isRecent($0) }
+                      let fp = recent.map { "\($0.id):\($0.version)" }.joined(separator: "|")
+                      guard !fp.isEmpty, fp != lastFingerprint else {
+                          // حدّث القائمة حتى بدون إشعار لتجديد العداد
+                          if UpdatesFeed.shared.items.map({ "\($0.id):\($0.version)" }).joined(separator: "|") != fp {
+                              await UpdatesFeed.shared.load()
+                          }
+                          return
+                      }
+                      // فرق: حدّث القائمة ثم أرسل إشعار فوري لكل عنصر
+                      await UpdatesFeed.shared.load()
+                      let prev = Set(lastFingerprint.split(separator: "|").map { String($0) })
+                      for item in recent {
+                          let key = "\(item.id):\(item.version)"
+                          if prev.contains(key) { continue }
+                          let isNew = (item.is_new == true) || (item.released_at == nil)
+                          NotificationsManager.shared.pushAppEvent(
+                              name: item.app_name,
+                              iconURL: item.icon,
+                              version: item.version,
+                              isUpdate: !isNew
+                          )
+                      }
+                      lastFingerprint = fp
+                      UserDefaults.standard.set(fp, forKey: "live_catalog_fp")
+                  } catch {
+                      // صامت — سنحاول مرة ثانية بعد 90 ثانية
+                  }
               }
           }
 
@@ -5408,7 +5589,7 @@ jobs:
 
                       ScrollView(showsIndicators: false) {
                           VStack(alignment: .leading, spacing: 12) {
-                              if updates.items.isEmpty && updates.isLoading {
+                              if updates.recentItems.isEmpty && updates.isLoading {
                                   ForEach(0..<4, id: \.self) { _ in
                                       HStack(spacing: 12) {
                                           RoundedRectangle(cornerRadius: 14).fill(Color.storeDivider).frame(width: 52, height: 52)
@@ -5422,13 +5603,13 @@ jobs:
                                       .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
                                       .padding(.horizontal, 20)
                                   }
-                              } else if updates.items.isEmpty {
+                              } else if updates.recentItems.isEmpty {
                                   EmptyState(message: updates.lastError.isEmpty
                                              ? "لا توجد تحديثات جديدة حاليًا."
                                              : "تعذّر جلب التحديثات: \(updates.lastError)")
                                       .padding(.horizontal, 20)
                               } else {
-                                  ForEach(updates.items) { item in
+                                  ForEach(updates.recentItems) { item in
                                       UpdateRow(item: item)
                                           .padding(.horizontal, 20)
                                   }
@@ -6220,10 +6401,15 @@ jobs:
 
               init() {
                   ScreenCaptureService.shared.start()
+                  // اعرض الإشعارات حتى لو التطبيق مفتوح (بانر + شاشة القفل + مركز الإشعارات).
+                  UNUserNotificationCenter.current().delegate = ForegroundNotificationDelegate.shared
                   NotificationsManager.shared.requestAuthorization()
                   VIP21StoreApp.registerBackgroundTask()
                   VIP21StoreApp.scheduleAppRefresh()
                   VIP21StoreApp.applyDarkAppearance()
+                  // ابدأ المؤقت الذي يفحص لوحة تحكم المتجر كل 90 ثانية ويرسل إشعار فوري
+                  // لكل تطبيق جديد أو محدّث (يظهر خارج المتجر مباشرة).
+                  LiveCatalogMonitor.shared.start()
               }
 
               // MARK: - Background catalog refresh
