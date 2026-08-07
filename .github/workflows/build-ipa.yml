@@ -4263,7 +4263,7 @@ jobs:
                       .background(ONEsUI.bg.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
-                          AppDetailView(app: app)
+                          AppDetailView(app: app, feed: feed)
                       }
                   }
                   .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
@@ -4500,7 +4500,7 @@ jobs:
                       .background(ONEsUI.bg.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
-                          AppDetailView(app: app)
+                          AppDetailView(app: app, feed: feed)
                       }
                   }
                   .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
@@ -4751,7 +4751,7 @@ jobs:
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
-                          AppDetailView(app: app)
+                          AppDetailView(app: app, feed: feed)
                       }
                   }
                   .alert("حذف كل المفضلة؟", isPresented: $confirmClear) {
@@ -5133,9 +5133,41 @@ jobs:
 
           struct AppDetailView: View {
               let app: StoreAPIApp
+              /// مصدر التطبيقات لحساب قسم «تطبيقات مشابهة». اختياري — إذا غاب يُخفي القسم تلقائيًا.
+              var feed: StoreFeed? = nil
               @Environment(\.dismiss) private var dismiss
               @State private var showScreenshots = false
               @State private var screenshotStartIndex = 0
+
+              /// تطبيقات من نفس الفئة (ونفس فكرة التطبيق) — بحد أقصى 6، مع استبعاد التطبيق الحالي.
+              /// إذا لم تتوفر فئة للتطبيق نبحث بتقاطع الكلمات في الاسم/الوصف.
+              private var similarApps: [StoreAPIApp] {
+                  guard let feed = feed, !feed.apps.isEmpty else { return [] }
+                  let currentCat = (app.category ?? "").lowercased()
+                  let nameTokens = app.name.lowercased()
+                      .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                      .map(String.init)
+                      .filter { $0.count >= 3 }
+
+                  // 1) تطابق الفئة أولاً (نفس الفكرة)
+                  let sameCategory: [StoreAPIApp] = feed.apps.filter { other in
+                      guard other.id != app.id else { return false }
+                      let oCat = (other.category ?? "").lowercased()
+                      if currentCat.isEmpty { return false }
+                      return oCat == currentCat
+                  }
+
+                  // 2) إذا لم نجد ما يكفي، نبحث بتقاطع الكلمات (نفس الفكرة الإسمية)
+                  if sameCategory.count >= 4 { return Array(sameCategory.prefix(6)) }
+                  let nameMatches: [StoreAPIApp] = feed.apps.filter { other in
+                      guard other.id != app.id else { return false }
+                      if sameCategory.contains(where: { $0.id == other.id }) { return false }
+                      let otherName = other.name.lowercased()
+                      return nameTokens.contains { tok in otherName.contains(tok) }
+                  }
+                  let merged = sameCategory + nameMatches
+                  return Array(merged.prefix(6))
+              }
 
               var body: some View {
                   ScrollView {
@@ -5258,14 +5290,126 @@ jobs:
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
-                          .padding(.bottom, 40)
+
+                          // ====== قسم «تطبيقات مشابهة» — أسفل الوصف مباشرة ======
+                          if !similarApps.isEmpty {
+                              VStack(alignment: .leading, spacing: 12) {
+                                  HStack(spacing: 8) {
+                                      Capsule()
+                                          .fill(LinearGradient(colors: [Color.storePrimary, Color.storeCyan],
+                                                               startPoint: .top, endPoint: .bottom))
+                                          .frame(width: 4, height: 22)
+                                      Text("تطبيقات مشابهة")
+                                          .font(.system(size: 16, weight: .heavy))
+                                          .foregroundColor(.storeText)
+                                      Text("بنفس الفكرة")
+                                          .font(.system(size: 11, weight: .semibold))
+                                          .foregroundColor(.storeSub)
+                                      Spacer()
+                                      Text("\(similarApps.count)")
+                                          .font(.system(size: 11, weight: .bold))
+                                          .foregroundColor(.storeSub)
+                                          .padding(.horizontal, 8).padding(.vertical, 3)
+                                          .background(Capsule().fill(Color.storeDivider))
+                                  }
+                                  .padding(.horizontal, 20)
+                                  .padding(.top, 22)
+
+                                  ScrollView(.horizontal, showsIndicators: false) {
+                                      HStack(spacing: 12) {
+                                          ForEach(similarApps) { other in
+                                              NavigationLink(value: other) {
+                                                  SimilarAppTile(app: other)
+                                              }
+                                              .buttonStyle(.plain)
+                                          }
+                                      }
+                                      .padding(.horizontal, 20)
+                                  }
+                              }
+                              .padding(.bottom, 8)
+                          }
                       }
+                      .padding(.bottom, 40)
                   }
                   .background(Color.storeBg.ignoresSafeArea())
                   .navigationBarHidden(true)
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
                   }
+              }
+          }
+
+          /// بطاقة تطبيق في قسم «تطبيقات مشابهة» — مضغوطة وفيها زر تثبيت سريع.
+          struct SimilarAppTile: View {
+              let app: StoreAPIApp
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      ZStack(alignment: .topTrailing) {
+                          RoundedRectangle(cornerRadius: 18)
+                              .fill(
+                                  LinearGradient(
+                                      gradient: Gradient(colors: [colorForCategory(app.category).opacity(0.30),
+                                                                   colorForCategory(app.category).opacity(0.05)]),
+                                      startPoint: .topLeading,
+                                      endPoint: .bottomTrailing
+                                  )
+                              )
+                              .frame(width: 160, height: 110)
+                          RemoteIcon(url: app.icon, size: 64, cornerRadius: 15)
+                              .frame(width: 64, height: 64, alignment: .center)
+                              .position(x: 80, y: 55)
+                              .overlay(
+                                  RoundedRectangle(cornerRadius: 15)
+                                      .stroke(Color.storeDivider, lineWidth: 0.6)
+                              )
+                      }
+                      Text(app.name)
+                          .font(.system(size: 13, weight: .bold))
+                          .foregroundColor(.storeText)
+                          .lineLimit(1)
+                      HStack(spacing: 4) {
+                          Image(systemName: "square.grid.2x2.fill")
+                              .font(.system(size: 9, weight: .bold))
+                          Text(app.category ?? "تطبيق")
+                              .font(.system(size: 10, weight: .semibold))
+                              .lineLimit(1)
+                      }
+                      .foregroundColor(colorForCategory(app.category))
+
+                      HStack {
+                          Text(app.cleanSize)
+                              .font(.system(size: 9, weight: .semibold))
+                              .foregroundColor(.storeSub)
+                          Spacer()
+                          Button {
+                              HapticManager.shared.impact(.light)
+                              StoreInstaller.shared.install(app: app)
+                          } label: {
+                              HStack(spacing: 3) {
+                                  Image(systemName: "arrow.down.to.line")
+                                      .font(.system(size: 9, weight: .bold))
+                                  Text("تثبيت")
+                                      .font(.system(size: 10, weight: .heavy))
+                              }
+                              .foregroundColor(.white)
+                              .padding(.horizontal, 10).padding(.vertical, 5)
+                              .background(Capsule().fill(colorForCategory(app.category)))
+                          }
+                          .buttonStyle(.plain)
+                      }
+                  }
+                  .frame(width: 160)
+                  .padding(10)
+                  .background(
+                      RoundedRectangle(cornerRadius: 20)
+                          .fill(Color.storeCard)
+                          .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+                  )
+                  .overlay(
+                      RoundedRectangle(cornerRadius: 20)
+                          .stroke(Color.storeDivider, lineWidth: 0.6)
+                  )
               }
           }
 
@@ -5480,8 +5624,25 @@ jobs:
                   return now.timeIntervalSince(d) <= 24 * 60 * 60
               }
 
-              /// القائمة المفلترة (24 ساعة فقط) — هي التي تظهر فعلاً في تبويب التحديثات.
-              var recentItems: [StoreUpdateItem] { items.filter { isRecent($0) } }
+              /// ترتيب القائمة: التطبيقات المضافة حديثاً أولاً، ثم التحديثات، ثم الباقي حسب التاريخ.
+              private func sortForDisplay(_ list: [StoreUpdateItem]) -> [StoreUpdateItem] {
+                  return list.sorted { (a, b) in
+                      // 1) التطبيقات الجديدة (is_new == true) تظهر قبل التحديثات
+                      let aNew = (a.is_new == true)
+                      let bNew = (b.is_new == true)
+                      if aNew != bNew { return aNew && !bNew }
+                      // 2) الأحدث تاريخاً أولاً
+                      let ad = a.released_at.flatMap(ActivationManager.parseDate) ?? .distantPast
+                      let bd = b.released_at.flatMap(ActivationManager.parseDate) ?? .distantPast
+                      return ad > bd
+                  }
+              }
+
+              /// القائمة المفلترة (24 ساعة فقط) — مرتّبة بحيث التطبيقات المضافة مؤخراً تظهر أولاً.
+              var recentItems: [StoreUpdateItem] { sortForDisplay(items.filter { isRecent($0) }) }
+
+              /// التطبيقات المضافة فقط (بدون تحديثات الإصدارات السابقة) — للعرض في قسم «المضافة مؤخراً».
+              var newlyAddedItems: [StoreUpdateItem] { recentItems.filter { $0.is_new == true } }
 
               /// عدد التحديثات الأخيرة — يظهر جنب أيقونة التحديثات.
               var recentCount: Int { recentItems.count }
@@ -5497,8 +5658,8 @@ jobs:
                       req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
                       let (data, _) = try await URLSession.shared.data(for: req)
                       let parsed = try JSONDecoder().decode(StoreUpdatesResponse.self, from: data)
-                      // نُبقي فقط الإضافات/التحديثات خلال آخر 24 ساعة.
-                      self.items = parsed.updates.filter { isRecent($0) }
+                      // نُبقي فقط الإضافات/التحديثات خلال آخر 24 ساعة، ثم نرتبها (المضافة أولاً).
+                      self.items = sortForDisplay(parsed.updates.filter { isRecent($0) })
                   } catch {
                       self.lastError = error.localizedDescription
                   }
@@ -5507,9 +5668,12 @@ jobs:
           }
 
           // ================= LIVE CATALOG MONITOR =================
-          // يستعلم لوحة تحكم المتجر كل 90 ثانية (حتى لو التطبيق في الواجهة)
-          // فإذا رُصد تطبيق جديد/محدّث يُرسل إشعار نظام فوري (يظهر خارج المتجر
-          // في بانر iOS + شاشة القفل + مركز الإشعارات).
+          // يستعلم لوحة تحكم المتجر بشكل دوري حتى لو التطبيق في الخلفية:
+          //   1) فحص فوري عند فتح التطبيق مباشرةً (لالتقاط أي تحديثات فاتها المستخدم وهو خارج المتجر).
+          //   2) فحص كل 90 ثانية أثناء وجود التطبيق في الواجهة/الخلفية.
+          //   3) BGAppRefreshTask كل 15 دقيقة (في VIP21StoreApp.swift) للتشغيل التام في الخلفية.
+          // فإذا رُصد تطبيق جديد/محدّث يُرسل إشعار نظام فوري يظهر في بانر iOS +
+          // شاشة القفل + مركز الإشعارات حتى لو كان المتجر مغلقًا.
           @MainActor
           final class LiveCatalogMonitor: ObservableObject {
               static let shared = LiveCatalogMonitor()
@@ -5519,11 +5683,13 @@ jobs:
 
               func start() {
                   guard timer == nil else { return }
-                  // أول فحص بعد 8 ثوانٍ ثم كل 90 ثانية
+                  // 1) فحص فوري عند فتح التطبيق — يضمن ظهور إشعار فوري لأي تحديث تراكم
+                  //    أثناء ما كان المتجر مغلقًا أو في الخلفية. هذا يلبّي طلب المستخدم:
+                  //    «يرسل إشعار حتى لو كان خارج ولم يُفتح بعد».
                   Task { @MainActor in
-                      try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
                       await self.tick()
                   }
+                  // 2) فحص دوري كل 90 ثانية أثناء عمل التطبيق (واجهة أو خلفية)
                   timer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
                       guard let self = self else { return }
                       Task { @MainActor in await self.tick() }
@@ -5609,9 +5775,51 @@ jobs:
                                              : "تعذّر جلب التحديثات: \(updates.lastError)")
                                       .padding(.horizontal, 20)
                               } else {
-                                  ForEach(updates.recentItems) { item in
-                                      UpdateRow(item: item)
-                                          .padding(.horizontal, 20)
+                                  // ====== قسم «المضافة مؤخراً» (is_new == true) يظهر أولاً ======
+                                  if !updates.newlyAddedItems.isEmpty {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "sparkles")
+                                              .font(.system(size: 13, weight: .bold))
+                                              .foregroundColor(.storePrimary)
+                                          Text("المضافة مؤخراً")
+                                              .font(.system(size: 15, weight: .heavy))
+                                              .foregroundColor(.storeText)
+                                          Text("(\(updates.newlyAddedItems.count))")
+                                              .font(.system(size: 12, weight: .bold))
+                                              .foregroundColor(.storeSub)
+                                          Spacer()
+                                      }
+                                      .padding(.horizontal, 22)
+                                      .padding(.top, 4)
+
+                                      ForEach(updates.newlyAddedItems) { item in
+                                          UpdateRow(item: item, highlight: .new)
+                                              .padding(.horizontal, 20)
+                                      }
+                                  }
+
+                                  // ====== قسم «التحديثات» (التطبيقات التي حصلت على إصدار جديد) ======
+                                  let updatedOnly = updates.recentItems.filter { $0.is_new != true }
+                                  if !updatedOnly.isEmpty {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "arrow.triangle.2.circlepath")
+                                              .font(.system(size: 13, weight: .bold))
+                                              .foregroundColor(.storeCyan)
+                                          Text("تحديثات الإصدارات")
+                                              .font(.system(size: 15, weight: .heavy))
+                                              .foregroundColor(.storeText)
+                                          Text("(\(updatedOnly.count))")
+                                              .font(.system(size: 12, weight: .bold))
+                                              .foregroundColor(.storeSub)
+                                          Spacer()
+                                      }
+                                      .padding(.horizontal, 22)
+                                      .padding(.top, updates.newlyAddedItems.isEmpty ? 4 : 14)
+
+                                      ForEach(updatedOnly) { item in
+                                          UpdateRow(item: item, highlight: .updated)
+                                              .padding(.horizontal, 20)
+                                      }
                                   }
                               }
                           }
@@ -5627,6 +5835,8 @@ jobs:
 
           struct UpdateRow: View {
               let item: StoreUpdateItem
+              var highlight: Highlight = .none
+              enum Highlight { case none, new, updated }
 
               var body: some View {
                   HStack(spacing: 12) {
@@ -5642,6 +5852,12 @@ jobs:
                                       .foregroundColor(.white)
                                       .padding(.horizontal, 6).padding(.vertical, 2)
                                       .background(Capsule().fill(Color.storePink))
+                              } else if highlight == .updated {
+                                  Text("محدّث")
+                                      .font(.system(size: 9, weight: .heavy))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 6).padding(.vertical, 2)
+                                      .background(Capsule().fill(Color.storeCyan))
                               }
                           }
                           Text("الإصدار \(item.version)")
@@ -5659,17 +5875,27 @@ jobs:
                           HapticManager.shared.success()
                           StoreInstaller.shared.install(bundleId: item.bundle_id, name: item.app_name)
                       } label: {
-                          Text("تحديث")
+                          Text(item.is_new == true ? "تثبيت" : "تحديث")
                               .font(.system(size: 12, weight: .bold))
                               .foregroundColor(.white)
                               .padding(.horizontal, 14).padding(.vertical, 8)
-                              .background(Capsule().fill(Color.storePrimary))
+                              .background(Capsule().fill(item.is_new == true ? Color.storePink : Color.storePrimary))
                       }
                       .buttonStyle(.plain)
                   }
                   .padding(12)
-                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
+                  .background(
+                      RoundedRectangle(cornerRadius: 18)
+                          .fill(highlight == .new
+                                ? LinearGradient(colors: [Color.storePink.opacity(0.10), Color.storeCard],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing)
+                                : LinearGradient(colors: [Color.storeCard], startPoint: .top, endPoint: .bottom))
+                  )
+                  .overlay(
+                      RoundedRectangle(cornerRadius: 18)
+                          .stroke(highlight == .new ? Color.storePink.opacity(0.35) : Color.storeDivider,
+                                  lineWidth: highlight == .new ? 1.2 : 1)
+                  )
               }
           }
 
@@ -6237,7 +6463,7 @@ jobs:
                           ScrollView {
                               LazyVStack(spacing: 10) {
                                   ForEach(results) { app in
-                                      NavigationLink(destination: AppDetailView(app: app)) {
+                                      NavigationLink(destination: AppDetailView(app: app, feed: feed)) {
                                           HStack {
                                               RemoteIcon(url: app.icon, size: 50, cornerRadius: 12)
                                               VStack(alignment: .leading) {
