@@ -52,6 +52,9 @@ jobs:
       # GENERATE SOURCE FILES FOR SCRAPER APP
       # =========================================================
 
+      - name: Create Resources directory
+        run: mkdir -p Resources
+
       - name: Generate Info.plist
         run: |
           cat > Resources/Info.plist << 'PEOF'
@@ -92,8 +95,6 @@ jobs:
           </dict>
           </plist>
           PEOF
-          mkdir -p Resources
-          cp Resources/Info.plist .  # will be picked later
 
       - name: Generate ScraperApp.swift
         run: |
@@ -112,429 +113,6 @@ jobs:
 
       - name: Generate ContentView.swift
         run: |
-          cat > ContentView.swift << 'EOF'
-          import SwiftUI
-          import WebKit
-
-          struct ContentView: View {
-              @State private var urlString: String = "https://example.com"
-              @State private var isLoading: Bool = false
-              @State private var extractedLinks: [String] = []
-              @State private var jsonLinks: [String] = []
-              @State private var parsedApps: [AppInfo] = []
-              @State private var selectedTab: Tab = .browser
-              @State private var jsonInput: String = ""
-              @State private var jsonParseResult: String = ""
-
-              enum Tab: String, CaseIterable {
-                  case browser = "متصفح"
-                  case links = "الروابط"
-                  case json = "JSON"
-              }
-
-              var body: some View {
-                  NavigationView {
-                      VStack(spacing: 0) {
-                          // Address bar
-                          HStack {
-                              TextField("أدخل الرابط", text: $urlString)
-                                  .textFieldStyle(RoundedBorderTextFieldStyle())
-                                  .autocapitalization(.none)
-                                  .disableAutocorrection(true)
-                              Button(action: loadPage) {
-                                  Image(systemName: "arrow.right.circle.fill")
-                                      .font(.title2)
-                              }
-                              .disabled(isLoading)
-                          }
-                          .padding(.horizontal)
-                          .padding(.top, 8)
-
-                          // Tab selector
-                          Picker("", selection: $selectedTab) {
-                              ForEach(Tab.allCases, id: \.self) { tab in
-                                  Text(tab.rawValue).tag(tab)
-                              }
-                          }
-                          .pickerStyle(SegmentedPickerStyle())
-                          .padding(.horizontal)
-                          .padding(.vertical, 4)
-
-                          // Content
-                          Group {
-                              switch selectedTab {
-                              case .browser:
-                                  WebView(urlString: $urlString, isLoading: $isLoading)
-                                      .frame(maxWidth: .infinity, maxHeight: .infinity)
-                              case .links:
-                                  LinksListView(links: extractedLinks, jsonLinks: jsonLinks)
-                              case .json:
-                                  JSONView(jsonInput: $jsonInput, parsedApps: $parsedApps, jsonParseResult: $jsonParseResult)
-                              }
-                          }
-                          .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                          // Action buttons (only in browser tab)
-                          if selectedTab == .browser {
-                              HStack {
-                                  Button("استخراج الروابط") {
-                                      extractLinksFromCurrentPage()
-                                  }
-                                  .buttonStyle(.borderedProminent)
-                                  Button("استخراج JSON") {
-                                      extractJSONLinksFromCurrentPage()
-                                  }
-                                  .buttonStyle(.bordered)
-                              }
-                              .padding(.horizontal)
-                              .padding(.bottom, 4)
-                          }
-                      }
-                      .navigationTitle("Scraper")
-                      .navigationBarTitleDisplayMode(.inline)
-                  }
-              }
-
-              private func loadPage() {
-                  // WebView will automatically load when urlString changes
-                  // We'll trigger a reload by updating the binding
-                  let current = urlString
-                  urlString = ""
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                      urlString = current
-                  }
-              }
-
-              private func extractLinksFromCurrentPage() {
-                  // This will be called from the WebView via a delegate or using JavaScript injection
-                  // For simplicity, we'll use a notification or a shared manager
-                  NotificationCenter.default.post(name: .extractLinks, object: nil)
-              }
-
-              private func extractJSONLinksFromCurrentPage() {
-                  NotificationCenter.default.post(name: .extractJSONLinks, object: nil)
-              }
-          }
-
-          extension Notification.Name {
-              static let extractLinks = Notification.Name("extractLinks")
-              static let extractJSONLinks = Notification.Name("extractJSONLinks")
-          }
-
-          struct LinksListView: View {
-              let links: [String]
-              let jsonLinks: [String]
-
-              var body: some View {
-                  List {
-                      if !links.isEmpty {
-                          Section(header: Text("كل الروابط (\(links.count))")) {
-                              ForEach(links, id: \.self) { link in
-                                  Text(link)
-                                      .font(.caption)
-                                      .lineLimit(1)
-                                      .contextMenu {
-                                          Button("نسخ") {
-                                              UIPasteboard.general.string = link
-                                          }
-                                      }
-                              }
-                          }
-                      }
-                      if !jsonLinks.isEmpty {
-                          Section(header: Text("روابط JSON (\(jsonLinks.count))")) {
-                              ForEach(jsonLinks, id: \.self) { link in
-                                  Text(link)
-                                      .font(.caption)
-                                      .foregroundColor(.blue)
-                                      .lineLimit(1)
-                                      .contextMenu {
-                                          Button("نسخ") {
-                                              UIPasteboard.general.string = link
-                                          }
-                                      }
-                              }
-                          }
-                      }
-                      if links.isEmpty && jsonLinks.isEmpty {
-                          Text("لا توجد روابط مستخرجة بعد")
-                              .foregroundColor(.gray)
-                              .padding()
-                      }
-                  }
-                  .listStyle(PlainListStyle())
-              }
-          }
-
-          struct JSONView: View {
-              @Binding var jsonInput: String
-              @Binding var parsedApps: [AppInfo]
-              @Binding var jsonParseResult: String
-
-              var body: some View {
-                  VStack {
-                      HStack {
-                          TextField("أدخل رابط JSON", text: $jsonInput)
-                              .textFieldStyle(RoundedBorderTextFieldStyle())
-                              .autocapitalization(.none)
-                              .disableAutocorrection(true)
-                          Button("تحليل") {
-                              parseJSON(from: jsonInput)
-                          }
-                          .buttonStyle(.borderedProminent)
-                      }
-                      .padding(.horizontal)
-
-                      if !jsonParseResult.isEmpty {
-                          Text(jsonParseResult)
-                              .font(.caption)
-                              .foregroundColor(.green)
-                              .padding(.horizontal)
-                      }
-
-                      if parsedApps.isEmpty {
-                          Text("لا توجد تطبيقات مستخرجة")
-                              .foregroundColor(.gray)
-                              .padding()
-                      } else {
-                          List(parsedApps, id: \.id) { app in
-                              HStack {
-                                  AsyncImage(url: URL(string: app.iconURL ?? "")) { phase in
-                                      switch phase {
-                                      case .success(let image):
-                                          image.resizable().aspectRatio(contentMode: .fit)
-                                      default:
-                                          Color.gray
-                                      }
-                                  }
-                                  .frame(width: 40, height: 40)
-                                  .cornerRadius(8)
-
-                                  VStack(alignment: .leading) {
-                                      Text(app.name).font(.headline)
-                                      if let bundle = app.bundleId {
-                                          Text(bundle).font(.caption).foregroundColor(.gray)
-                                      }
-                                      if let version = app.version {
-                                          Text("الإصدار: \(version)").font(.caption2)
-                                      }
-                                  }
-                                  Spacer()
-                                  if let url = app.ipaURL, !url.isEmpty {
-                                      Button("تحميل IPA") {
-                                          if let url = URL(string: url) {
-                                              UIApplication.shared.open(url)
-                                          }
-                                      }
-                                      .buttonStyle(.bordered)
-                                      .font(.caption)
-                                  }
-                              }
-                              .padding(.vertical, 4)
-                          }
-                      }
-                  }
-                  .padding(.top)
-              }
-
-              private func parseJSON(from urlString: String) {
-                  guard let url = URL(string: urlString) else {
-                      jsonParseResult = "رابط غير صحيح"
-                      return
-                  }
-                  jsonParseResult = "جارٍ التحليل..."
-                  URLSession.shared.dataTask(with: url) { data, _, error in
-                      DispatchQueue.main.async {
-                          if let error = error {
-                              jsonParseResult = "خطأ: \(error.localizedDescription)"
-                              return
-                          }
-                          guard let data = data else {
-                              jsonParseResult = "لا توجد بيانات"
-                              return
-                          }
-                          do {
-                              // Try to parse as an array of apps or an object with 'apps' key
-                              let decoder = JSONDecoder()
-                              if let appArray = try? decoder.decode([AppInfo].self, from: data) {
-                                  parsedApps = appArray
-                                  jsonParseResult = "تم استخراج \(appArray.count) تطبيق"
-                              } else if let wrapper = try? decoder.decode([String: [AppInfo]].self, from: data),
-                                        let apps = wrapper["apps"] {
-                                  parsedApps = apps
-                                  jsonParseResult = "تم استخراج \(apps.count) تطبيق"
-                              } else {
-                                  jsonParseResult = "صيغة JSON غير مدعومة"
-                              }
-                          } catch {
-                              jsonParseResult = "خطأ في التحليل: \(error.localizedDescription)"
-                          }
-                      }
-                  }.resume()
-              }
-          }
-
-          struct AppInfo: Codable, Identifiable {
-              let id: Int
-              let name: String
-              let bundleId: String?
-              let version: String?
-              let iconURL: String?
-              let ipaURL: String?
-              let description: String?
-
-              enum CodingKeys: String, CodingKey {
-                  case id
-                  case name
-                  case bundleId = "bundle_id"
-                  case version
-                  case iconURL = "icon_url"
-                  case ipaURL = "ipa_url"
-                  case description
-              }
-          }
-          EOF
-
-      - name: Generate WebView.swift
-        run: |
-          cat > WebView.swift << 'EOF'
-          import SwiftUI
-          import WebKit
-
-          struct WebView: UIViewRepresentable {
-              @Binding var urlString: String
-              @Binding var isLoading: Bool
-
-              func makeCoordinator() -> Coordinator {
-                  Coordinator(self)
-              }
-
-              func makeUIView(context: Context) -> WKWebView {
-                  let config = WKWebViewConfiguration()
-                  config.preferences.javaScriptEnabled = true
-                  let webView = WKWebView(frame: .zero, configuration: config)
-                  webView.navigationDelegate = context.coordinator
-                  webView.load(URLRequest(url: URL(string: urlString) ?? URL(string: "https://example.com")!))
-                  return webView
-              }
-
-              func updateUIView(_ uiView: WKWebView, context: Context) {
-                  if let url = URL(string: urlString), uiView.url != url {
-                      uiView.load(URLRequest(url: url))
-                  }
-              }
-
-              class Coordinator: NSObject, WKNavigationDelegate {
-                  var parent: WebView
-
-                  init(_ parent: WebView) {
-                      self.parent = parent
-                      super.init()
-                      NotificationCenter.default.addObserver(self, selector: #selector(extractLinks), name: .extractLinks, object: nil)
-                      NotificationCenter.default.addObserver(self, selector: #selector(extractJSON), name: .extractJSONLinks, object: nil)
-                  }
-
-                  @objc func extractLinks() {
-                      parent.webView?.evaluateJavaScript("""
-                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'));
-                      """) { (result, error) in
-                          if let links = result as? [String] {
-                              DispatchQueue.main.async {
-                                  // We need to update ContentView's extractedLinks
-                                  // Using a shared observable or notification
-                                  NotificationCenter.default.post(name: .linksExtracted, object: links)
-                              }
-                          }
-                      }
-                  }
-
-                  @objc func extractJSON() {
-                      parent.webView?.evaluateJavaScript("""
-                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && (h.endsWith('.json') || h.includes('/api/') || h.includes('json')));
-                      """) { (result, error) in
-                          if let links = result as? [String] {
-                              DispatchQueue.main.async {
-                                  NotificationCenter.default.post(name: .jsonLinksExtracted, object: links)
-                              }
-                          }
-                      }
-                  }
-
-                  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-                      DispatchQueue.main.async {
-                          self.parent.isLoading = true
-                      }
-                  }
-
-                  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                      DispatchQueue.main.async {
-                          self.parent.isLoading = false
-                          self.parent.urlString = webView.url?.absoluteString ?? ""
-                      }
-                  }
-
-                  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-                      DispatchQueue.main.async {
-                          self.parent.isLoading = false
-                      }
-                  }
-              }
-
-              private var webView: WKWebView? {
-                  // Not directly accessible; we'll use the coordinator to hold a weak reference
-                  // We'll add a property to the coordinator
-                  // Simpler: use a singleton or just rely on the notification passing
-                  return nil
-              }
-          }
-
-          // Extend Notification names
-          extension Notification.Name {
-              static let linksExtracted = Notification.Name("linksExtracted")
-              static let jsonLinksExtracted = Notification.Name("jsonLinksExtracted")
-          }
-          EOF
-
-      - name: Generate LinkExtractor.swift (handles notifications)
-        run: |
-          cat > LinkExtractor.swift << 'EOF'
-          import SwiftUI
-
-          // This file handles the extracted links and updates the ContentView state.
-          // We'll use a shared observable object to manage extracted data.
-          class LinkStore: ObservableObject {
-              static let shared = LinkStore()
-              @Published var allLinks: [String] = []
-              @Published var jsonLinks: [String] = []
-
-              private init() {
-                  NotificationCenter.default.addObserver(self, selector: #selector(linksReceived(_:)), name: .linksExtracted, object: nil)
-                  NotificationCenter.default.addObserver(self, selector: #selector(jsonReceived(_:)), name: .jsonLinksExtracted, object: nil)
-              }
-
-              @objc private func linksReceived(_ notification: Notification) {
-                  if let links = notification.object as? [String] {
-                      DispatchQueue.main.async {
-                          self.allLinks = links
-                      }
-                  }
-              }
-
-              @objc private func jsonReceived(_ notification: Notification) {
-                  if let links = notification.object as? [String] {
-                      DispatchQueue.main.async {
-                          self.jsonLinks = links
-                      }
-                  }
-              }
-          }
-          EOF
-
-      - name: Update ContentView to use LinkStore
-        run: |
-          # We'll modify ContentView to use LinkStore.shared
-          # Since we already generated ContentView, we can append a modification or regenerate.
-          # Let's just replace ContentView with an updated version that uses LinkStore.
           cat > ContentView.swift << 'EOF'
           import SwiftUI
           import WebKit
@@ -833,6 +411,95 @@ jobs:
           }
           EOF
 
+      - name: Generate WebView.swift
+        run: |
+          cat > WebView.swift << 'EOF'
+          import SwiftUI
+          import WebKit
+
+          struct WebView: UIViewRepresentable {
+              @Binding var urlString: String
+              @Binding var isLoading: Bool
+
+              func makeCoordinator() -> Coordinator {
+                  Coordinator(self)
+              }
+
+              func makeUIView(context: Context) -> WKWebView {
+                  let config = WKWebViewConfiguration()
+                  config.preferences.javaScriptEnabled = true
+                  let webView = WKWebView(frame: .zero, configuration: config)
+                  webView.navigationDelegate = context.coordinator
+                  if let url = URL(string: urlString) {
+                      webView.load(URLRequest(url: url))
+                  }
+                  return webView
+              }
+
+              func updateUIView(_ uiView: WKWebView, context: Context) {
+                  if let url = URL(string: urlString), uiView.url?.absoluteString != urlString {
+                      uiView.load(URLRequest(url: url))
+                  }
+              }
+
+              class Coordinator: NSObject, WKNavigationDelegate {
+                  var parent: WebView
+                  weak var webView: WKWebView?
+
+                  init(_ parent: WebView) {
+                      self.parent = parent
+                      super.init()
+                      NotificationCenter.default.addObserver(self, selector: #selector(extractLinks), name: .extractLinks, object: nil)
+                      NotificationCenter.default.addObserver(self, selector: #selector(extractJSON), name: .extractJSONLinks, object: nil)
+                  }
+
+                  @objc func extractLinks() {
+                      webView?.evaluateJavaScript("""
+                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'));
+                      """) { (result, error) in
+                          if let links = result as? [String] {
+                              DispatchQueue.main.async {
+                                  NotificationCenter.default.post(name: .linksExtracted, object: links)
+                              }
+                          }
+                      }
+                  }
+
+                  @objc func extractJSON() {
+                      webView?.evaluateJavaScript("""
+                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && (h.endsWith('.json') || h.includes('/api/') || h.includes('json')));
+                      """) { (result, error) in
+                          if let links = result as? [String] {
+                              DispatchQueue.main.async {
+                                  NotificationCenter.default.post(name: .jsonLinksExtracted, object: links)
+                              }
+                          }
+                      }
+                  }
+
+                  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+                      DispatchQueue.main.async {
+                          self.parent.isLoading = true
+                      }
+                  }
+
+                  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+                      DispatchQueue.main.async {
+                          self.parent.isLoading = false
+                          self.parent.urlString = webView.url?.absoluteString ?? ""
+                      }
+                      self.webView = webView
+                  }
+
+                  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+                      DispatchQueue.main.async {
+                          self.parent.isLoading = false
+                      }
+                  }
+              }
+          }
+          EOF
+
       - name: Build the app
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -860,8 +527,8 @@ jobs:
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
 
-          # Generate unsigned IPA (no code sign)
           rm -f artifacts/scraper.ipa
+          mkdir -p artifacts
           cd build-output && zip -r -X -q -fz- -Z deflate ../artifacts/scraper.ipa Payload && cd ..
           unzip -tq artifacts/scraper.ipa >/dev/null 2>&1 || { echo "IPA corrupt"; exit 1; }
           ls -lh artifacts/scraper.ipa
