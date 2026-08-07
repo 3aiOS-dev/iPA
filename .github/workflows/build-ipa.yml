@@ -1,4 +1,4 @@
-name: Scraper Browser - Build IPA
+name: Scraper Pro - Build IPA
 
 "on":
   push:
@@ -6,8 +6,8 @@ name: Scraper Browser - Build IPA
   workflow_dispatch:
 
 env:
-  NEW_BUNDLE_ID: "com.scraper.app"
-  NEW_APP_NAME:  "Scraper"
+  NEW_BUNDLE_ID: "com.scraper.pro"
+  NEW_APP_NAME:  "ScraperPro"
 
 jobs:
   build:
@@ -48,10 +48,6 @@ jobs:
           command -v ldid || { echo "ldid not installed"; exit 1; }
           command -v zip || { echo "zip not installed"; exit 1; }
 
-      # =========================================================
-      # GENERATE SOURCE FILES FOR SCRAPER APP
-      # =========================================================
-
       - name: Create Resources directory
         run: mkdir -p Resources
 
@@ -63,11 +59,11 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleDevelopmentRegion</key>     <string>en</string>
-              <key>CFBundleExecutable</key>            <string>Scraper</string>
+              <key>CFBundleExecutable</key>            <string>ScraperPro</string>
               <key>CFBundleIdentifier</key>            <string>${{ env.NEW_BUNDLE_ID }}</string>
               <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
-              <key>CFBundleName</key>                  <string>Scraper</string>
-              <key>CFBundleDisplayName</key>           <string>Scraper</string>
+              <key>CFBundleName</key>                  <string>ScraperPro</string>
+              <key>CFBundleDisplayName</key>           <string>Scraper Pro</string>
               <key>CFBundlePackageType</key>           <string>APPL</string>
               <key>CFBundleSignature</key>             <string>????</string>
               <key>CFBundleShortVersionString</key>    <string>1.0</string>
@@ -79,6 +75,8 @@ jobs:
               <key>NSAppTransportSecurity</key>
               <dict>
                   <key>NSAllowsArbitraryLoads</key>   <true/>
+                  <key>NSAllowsArbitraryLoadsForMedia</key> <true/>
+                  <key>NSAllowsArbitraryLoadsInWebContent</key> <true/>
               </dict>
               <key>MinimumOSVersion</key>              <string>16.0</string>
               <key>UIDeviceFamily</key>
@@ -96,13 +94,13 @@ jobs:
           </plist>
           PEOF
 
-      - name: Generate ScraperApp.swift
+      - name: Generate ScraperProApp.swift
         run: |
-          cat > ScraperApp.swift << 'EOF'
+          cat > ScraperProApp.swift << 'EOF'
           import SwiftUI
 
           @main
-          struct ScraperApp: App {
+          struct ScraperProApp: App {
               var body: some Scene {
                   WindowGroup {
                       ContentView()
@@ -117,20 +115,145 @@ jobs:
           import SwiftUI
           import WebKit
 
+          // MARK: - Data Models
+          struct AppInfo: Codable, Identifiable, Hashable {
+              let id: Int
+              let name: String
+              let bundleId: String?
+              let version: String?
+              let iconURL: String?
+              let ipaURL: String?
+              let description: String?
+              let size: String?
+              let category: String?
+              let developer: String?
+              let date: String?
+
+              enum CodingKeys: String, CodingKey {
+                  case id
+                  case name
+                  case bundleId = "bundle_id"
+                  case bundleID = "bundleID"
+                  case bundleIdentifier = "bundle_identifier"
+                  case version
+                  case versionString = "version_string"
+                  case iconURL = "icon_url"
+                  case icon
+                  case ipaURL = "ipa_url"
+                  case ipaUrl = "ipaUrl"
+                  case downloadURL = "download_url"
+                  case download
+                  case downloadUrl = "downloadUrl"
+                  case description
+                  case localizedDescription = "localized_description"
+                  case size
+                  case ipaSize = "ipa_size"
+                  case category
+                  case developer
+                  case developerName = "developer_name"
+                  case date
+                  case createdAt = "created_at"
+                  case updatedAt = "updated_at"
+              }
+
+              init(from decoder: Decoder) throws {
+                  let container = try decoder.container(keyedBy: CodingKeys.self)
+                  id = (try? container.decode(Int.self, forKey: .id)) ?? Int.random(in: 1...999999)
+                  name = (try? container.decode(String.self, forKey: .name)) ?? "Unknown App"
+                  bundleId = (try? container.decode(String.self, forKey: .bundleId))
+                      ?? (try? container.decode(String.self, forKey: .bundleID))
+                      ?? (try? container.decode(String.self, forKey: .bundleIdentifier))
+                  version = (try? container.decode(String.self, forKey: .version))
+                      ?? (try? container.decode(String.self, forKey: .versionString))
+                  iconURL = (try? container.decode(String.self, forKey: .iconURL))
+                      ?? (try? container.decode(String.self, forKey: .icon))
+                  ipaURL = (try? container.decode(String.self, forKey: .ipaURL))
+                      ?? (try? container.decode(String.self, forKey: .ipaUrl))
+                      ?? (try? container.decode(String.self, forKey: .downloadURL))
+                      ?? (try? container.decode(String.self, forKey: .download))
+                      ?? (try? container.decode(String.self, forKey: .downloadUrl))
+                  description = (try? container.decode(String.self, forKey: .description))
+                      ?? (try? container.decode(String.self, forKey: .localizedDescription))
+                  size = (try? container.decode(String.self, forKey: .size))
+                      ?? (try? container.decode(String.self, forKey: .ipaSize))
+                  category = try? container.decode(String.self, forKey: .category)
+                  developer = (try? container.decode(String.self, forKey: .developer))
+                      ?? (try? container.decode(String.self, forKey: .developerName))
+                  date = (try? container.decode(String.self, forKey: .date))
+                      ?? (try? container.decode(String.self, forKey: .createdAt))
+                      ?? (try? container.decode(String.self, forKey: .updatedAt))
+              }
+
+              func encode(to encoder: Encoder) throws {
+                  var container = encoder.container(keyedBy: CodingKeys.self)
+                  try container.encode(id, forKey: .id)
+                  try container.encode(name, forKey: .name)
+                  try container.encodeIfPresent(bundleId, forKey: .bundleId)
+                  try container.encodeIfPresent(version, forKey: .version)
+                  try container.encodeIfPresent(iconURL, forKey: .iconURL)
+                  try container.encodeIfPresent(ipaURL, forKey: .ipaURL)
+                  try container.encodeIfPresent(description, forKey: .description)
+                  try container.encodeIfPresent(size, forKey: .size)
+                  try container.encodeIfPresent(category, forKey: .category)
+                  try container.encodeIfPresent(developer, forKey: .developer)
+                  try container.encodeIfPresent(date, forKey: .date)
+              }
+
+              var cleanSize: String {
+                  if let s = size, !s.isEmpty { return s }
+                  return "غير معروف"
+              }
+
+              var displayVersion: String {
+                  if let v = version, !v.isEmpty { return v }
+                  return "1.0"
+              }
+          }
+
+          struct ScrapedItem: Identifiable {
+              let id = UUID()
+              let url: String
+              let type: ItemType
+              let title: String?
+              let appInfo: AppInfo?
+
+              enum ItemType: String {
+                  case ipa = "📦 IPA"
+                  case json = "📄 JSON"
+                  case plist = "📋 PLIST"
+                  case manifest = "📱 Manifest"
+                  case app = "📲 App"
+                  case unknown = "❓ Unknown"
+              }
+          }
+
+          // MARK: - Link Store
           class LinkStore: ObservableObject {
               static let shared = LinkStore()
               @Published var allLinks: [String] = []
               @Published var jsonLinks: [String] = []
+              @Published var ipaLinks: [String] = []
+              @Published var plistLinks: [String] = []
+              @Published var manifestLinks: [String] = []
+              @Published var scrapedApps: [AppInfo] = []
+              @Published var scrapedItems: [ScrapedItem] = []
+              @Published var isLoading: Bool = false
+              @Published var statusMessage: String = ""
 
               private init() {
                   NotificationCenter.default.addObserver(self, selector: #selector(linksReceived(_:)), name: .linksExtracted, object: nil)
                   NotificationCenter.default.addObserver(self, selector: #selector(jsonReceived(_:)), name: .jsonLinksExtracted, object: nil)
+                  NotificationCenter.default.addObserver(self, selector: #selector(ipaReceived(_:)), name: .ipaLinksExtracted, object: nil)
+                  NotificationCenter.default.addObserver(self, selector: #selector(plistReceived(_:)), name: .plistLinksExtracted, object: nil)
+                  NotificationCenter.default.addObserver(self, selector: #selector(manifestReceived(_:)), name: .manifestLinksExtracted, object: nil)
+                  NotificationCenter.default.addObserver(self, selector: #selector(appsReceived(_:)), name: .appsExtracted, object: nil)
               }
 
               @objc private func linksReceived(_ notification: Notification) {
                   if let links = notification.object as? [String] {
                       DispatchQueue.main.async {
                           self.allLinks = links
+                          self.classifyLinks(links)
                       }
                   }
               }
@@ -142,8 +265,90 @@ jobs:
                       }
                   }
               }
+
+              @objc private func ipaReceived(_ notification: Notification) {
+                  if let links = notification.object as? [String] {
+                      DispatchQueue.main.async {
+                          self.ipalinks = links
+                      }
+                  }
+              }
+
+              @objc private func plistReceived(_ notification: Notification) {
+                  if let links = notification.object as? [String] {
+                      DispatchQueue.main.async {
+                          self.plistLinks = links
+                      }
+                  }
+              }
+
+              @objc private func manifestReceived(_ notification: Notification) {
+                  if let links = notification.object as? [String] {
+                      DispatchQueue.main.async {
+                          self.manifestLinks = links
+                      }
+                  }
+              }
+
+              @objc private func appsReceived(_ notification: Notification) {
+                  if let apps = notification.object as? [AppInfo] {
+                      DispatchQueue.main.async {
+                          self.scrapedApps = apps
+                      }
+                  }
+              }
+
+              private func classifyLinks(_ links: [String]) {
+                  var ipas: [String] = []
+                  var jsons: [String] = []
+                  var plists: [String] = []
+                  var manifests: [String] = []
+
+                  for link in links {
+                      let lower = link.lowercased()
+                      if lower.hasSuffix(".ipa") || lower.contains("/ipa/") || lower.contains(".ipa?") {
+                          ipas.append(link)
+                      } else if lower.hasSuffix(".json") || lower.contains("/api/") || lower.contains("/json/") {
+                          jsons.append(link)
+                      } else if lower.hasSuffix(".plist") || lower.contains(".plist?") {
+                          plists.append(link)
+                      } else if lower.contains("manifest") || lower.contains("itms-services") {
+                          manifests.append(link)
+                      }
+                  }
+
+                  DispatchQueue.main.async {
+                      self.ipalinks = ipas
+                      self.jsonLinks = jsons
+                      self.plistLinks = plists
+                      self.manifestLinks = manifests
+                  }
+              }
+
+              func addScrapedItem(url: String, type: ScrapedItem.ItemType, title: String? = nil, appInfo: AppInfo? = nil) {
+                  let item = ScrapedItem(url: url, type: type, title: title, appInfo: appInfo)
+                  DispatchQueue.main.async {
+                      self.scrapedItems.insert(item, at: 0)
+                      if let app = appInfo {
+                          self.scrapedApps.insert(app, at: 0)
+                      }
+                  }
+              }
+
+              func clearAll() {
+                  DispatchQueue.main.async {
+                      self.allLinks = []
+                      self.jsonLinks = []
+                      self.ipalinks = []
+                      self.plistLinks = []
+                      self.manifestLinks = []
+                      self.scrapedApps = []
+                      self.scrapedItems = []
+                  }
+              }
           }
 
+          // MARK: - ContentView
           struct ContentView: View {
               @State private var urlString: String = "https://example.com"
               @State private var isLoading: Bool = false
@@ -152,11 +357,15 @@ jobs:
               @State private var jsonParseResult: String = ""
               @State private var parsedApps: [AppInfo] = []
               @ObservedObject private var linkStore = LinkStore.shared
+              @State private var showingCopyAlert: Bool = false
+              @State private var copyMessage: String = ""
 
               enum Tab: String, CaseIterable {
-                  case browser = "متصفح"
-                  case links = "الروابط"
-                  case json = "JSON"
+                  case browser = "🌐 متصفح"
+                  case links = "🔗 روابط"
+                  case apps = "📱 تطبيقات"
+                  case json = "📄 JSON"
+                  case scraped = "🔄 مستخرج"
               }
 
               var body: some View {
@@ -177,6 +386,15 @@ jobs:
                           .padding(.horizontal)
                           .padding(.top, 8)
 
+                          // Status bar
+                          if !linkStore.statusMessage.isEmpty {
+                              Text(linkStore.statusMessage)
+                                  .font(.caption)
+                                  .foregroundColor(.blue)
+                                  .padding(.horizontal)
+                                  .padding(.top, 2)
+                          }
+
                           // Tab selector
                           Picker("", selection: $selectedTab) {
                               ForEach(Tab.allCases, id: \.self) { tab in
@@ -194,31 +412,58 @@ jobs:
                                   WebView(urlString: $urlString, isLoading: $isLoading)
                                       .frame(maxWidth: .infinity, maxHeight: .infinity)
                               case .links:
-                                  LinksListView(links: linkStore.allLinks, jsonLinks: linkStore.jsonLinks)
+                                  LinksListView()
+                              case .apps:
+                                  AppsListView()
                               case .json:
                                   JSONView(jsonInput: $jsonInput, parsedApps: $parsedApps, jsonParseResult: $jsonParseResult)
+                              case .scraped:
+                                  ScrapedItemsView()
                               }
                           }
                           .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                           // Action buttons (only in browser tab)
                           if selectedTab == .browser {
-                              HStack {
-                                  Button("استخراج الروابط") {
-                                      NotificationCenter.default.post(name: .extractLinks, object: nil)
+                              HStack(spacing: 8) {
+                                  Button("🔍 استخراج الكل") {
+                                      extractAllFromPage()
                                   }
                                   .buttonStyle(.borderedProminent)
-                                  Button("استخراج JSON") {
-                                      NotificationCenter.default.post(name: .extractJSONLinks, object: nil)
+                                  Button("📦 IPA") {
+                                      extractIPALinks()
                                   }
                                   .buttonStyle(.bordered)
+                                  Button("📄 JSON") {
+                                      extractJSONLinks()
+                                  }
+                                  .buttonStyle(.bordered)
+                                  Button("🧹 مسح") {
+                                      linkStore.clearAll()
+                                  }
+                                  .buttonStyle(.bordered)
+                                  .foregroundColor(.red)
                               }
                               .padding(.horizontal)
                               .padding(.bottom, 4)
                           }
                       }
-                      .navigationTitle("Scraper")
+                      .navigationTitle("Scraper Pro")
                       .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button(action: {
+                                  let allUrls = linkStore.allLinks.joined(separator: "\n")
+                                  UIPasteboard.general.string = allUrls
+                                  showCopyAlert(message: "تم نسخ \(linkStore.allLinks.count) رابط")
+                              }) {
+                                  Image(systemName: "doc.on.doc")
+                              }
+                          }
+                      }
+                  }
+                  .alert(isPresented: $showingCopyAlert) {
+                      Alert(title: Text("نسخ"), message: Text(copyMessage), dismissButton: .default(Text("حسنًا")))
                   }
               }
 
@@ -229,64 +474,271 @@ jobs:
                       urlString = current
                   }
               }
+
+              private func extractAllFromPage() {
+                  linkStore.statusMessage = "جارٍ استخراج جميع الروابط..."
+                  NotificationCenter.default.post(name: .extractAllLinks, object: nil)
+              }
+
+              private func extractIPALinks() {
+                  linkStore.statusMessage = "جارٍ البحث عن روابط IPA..."
+                  NotificationCenter.default.post(name: .extractIPALinks, object: nil)
+              }
+
+              private func extractJSONLinks() {
+                  linkStore.statusMessage = "جارٍ البحث عن روابط JSON..."
+                  NotificationCenter.default.post(name: .extractJSONLinks, object: nil)
+              }
+
+              private func showCopyAlert(message: String) {
+                  copyMessage = message
+                  showingCopyAlert = true
+              }
           }
 
-          extension Notification.Name {
-              static let extractLinks = Notification.Name("extractLinks")
-              static let extractJSONLinks = Notification.Name("extractJSONLinks")
-              static let linksExtracted = Notification.Name("linksExtracted")
-              static let jsonLinksExtracted = Notification.Name("jsonLinksExtracted")
-          }
-
+          // MARK: - LinksListView
           struct LinksListView: View {
-              let links: [String]
-              let jsonLinks: [String]
+              @ObservedObject private var linkStore = LinkStore.shared
+              @State private var filterType: String = "الكل"
+
+              var filteredLinks: [(String, ScrapedItem.ItemType)] {
+                  let all = linkStore.allLinks.map { ($0, ScrapedItem.ItemType.unknown) }
+                  let ipas = linkStore.ipalinks.map { ($0, ScrapedItem.ItemType.ipa) }
+                  let jsons = linkStore.jsonLinks.map { ($0, ScrapedItem.ItemType.json) }
+                  let plists = linkStore.plistLinks.map { ($0, ScrapedItem.ItemType.plist) }
+                  let manifests = linkStore.manifestLinks.map { ($0, ScrapedItem.ItemType.manifest) }
+
+                  var combined = all + ipas + jsons + plists + manifests
+                  // Remove duplicates
+                  var seen = Set<String>()
+                  combined = combined.filter { seen.insert($0.0).inserted }
+
+                  switch filterType {
+                  case "📦 IPA":
+                      return combined.filter { $0.1 == .ipa }
+                  case "📄 JSON":
+                      return combined.filter { $0.1 == .json }
+                  case "📋 PLIST":
+                      return combined.filter { $0.1 == .plist }
+                  case "📱 Manifest":
+                      return combined.filter { $0.1 == .manifest }
+                  default:
+                      return combined
+                  }
+              }
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      // Filter bar
+                      ScrollView(.horizontal, showsIndicators: false) {
+                          HStack(spacing: 8) {
+                              ForEach(["الكل", "📦 IPA", "📄 JSON", "📋 PLIST", "📱 Manifest"], id: \.self) { type in
+                                  Button(type) {
+                                      filterType = type
+                                  }
+                                  .buttonStyle(.bordered)
+                                  .font(.caption)
+                                  .foregroundColor(filterType == type ? .blue : .primary)
+                              }
+                          }
+                          .padding(.horizontal)
+                          .padding(.vertical, 4)
+                      }
+
+                      List {
+                          if filteredLinks.isEmpty {
+                              Text("لا توجد روابط مستخرجة")
+                                  .foregroundColor(.gray)
+                                  .padding()
+                          } else {
+                              ForEach(filteredLinks, id: \.0) { link, type in
+                                  HStack {
+                                      Text(type.rawValue)
+                                          .font(.caption)
+                                          .foregroundColor(type == .ipa ? .green : type == .json ? .blue : .orange)
+                                      Text(link)
+                                          .font(.caption)
+                                          .lineLimit(1)
+                                          .foregroundColor(type == .ipa ? .blue : .primary)
+                                      Spacer()
+                                      Button(action: {
+                                          UIPasteboard.general.string = link
+                                      }) {
+                                          Image(systemName: "doc.on.doc")
+                                              .font(.caption)
+                                      }
+                                  }
+                                  .contextMenu {
+                                      Button("نسخ") {
+                                          UIPasteboard.general.string = link
+                                      }
+                                      if type == .ipa || type == .json || type == .plist {
+                                          Button("تحليل") {
+                                              if type == .ipa {
+                                                  // Try to extract app info from IPA URL
+                                                  NotificationCenter.default.post(name: .analyzeLink, object: link)
+                                              } else if type == .json {
+                                                  // Parse JSON from this URL
+                                                  NotificationCenter.default.post(name: .analyzeLink, object: link)
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      .listStyle(PlainListStyle())
+                  }
+              }
+          }
+
+          // MARK: - AppsListView
+          struct AppsListView: View {
+              @ObservedObject private var linkStore = LinkStore.shared
 
               var body: some View {
                   List {
-                      if !links.isEmpty {
-                          Section(header: Text("كل الروابط (\(links.count))")) {
-                              ForEach(links, id: \.self) { link in
-                                  Text(link)
-                                      .font(.caption)
-                                      .lineLimit(1)
-                                      .contextMenu {
-                                          Button("نسخ") {
-                                              UIPasteboard.general.string = link
-                                          }
-                                      }
-                              }
-                          }
-                      }
-                      if !jsonLinks.isEmpty {
-                          Section(header: Text("روابط JSON (\(jsonLinks.count))")) {
-                              ForEach(jsonLinks, id: \.self) { link in
-                                  Text(link)
-                                      .font(.caption)
-                                      .foregroundColor(.blue)
-                                      .lineLimit(1)
-                                      .contextMenu {
-                                          Button("نسخ") {
-                                              UIPasteboard.general.string = link
-                                          }
-                                      }
-                              }
-                          }
-                      }
-                      if links.isEmpty && jsonLinks.isEmpty {
-                          Text("لا توجد روابط مستخرجة بعد")
+                      if linkStore.scrapedApps.isEmpty {
+                          Text("لا توجد تطبيقات مستخرجة")
                               .foregroundColor(.gray)
                               .padding()
+                      } else {
+                          ForEach(linkStore.scrapedApps, id: \.id) { app in
+                              AppRowView(app: app)
+                          }
                       }
                   }
                   .listStyle(PlainListStyle())
               }
           }
 
+          struct AppRowView: View {
+              let app: AppInfo
+              @State private var showDetails: Bool = false
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 6) {
+                      HStack {
+                          // Icon
+                          if let iconURL = app.iconURL, !iconURL.isEmpty {
+                              AsyncImage(url: URL(string: iconURL)) { phase in
+                                  switch phase {
+                                  case .success(let image):
+                                      image.resizable().aspectRatio(contentMode: .fit)
+                                  default:
+                                      Color.gray
+                                  }
+                              }
+                              .frame(width: 50, height: 50)
+                              .cornerRadius(10)
+                          } else {
+                              RoundedRectangle(cornerRadius: 10)
+                                  .fill(Color.gray.opacity(0.3))
+                                  .frame(width: 50, height: 50)
+                                  .overlay(
+                                      Text(String(app.name.prefix(1)))
+                                          .font(.title)
+                                          .foregroundColor(.gray)
+                                  )
+                          }
+
+                          VStack(alignment: .leading, spacing: 2) {
+                              Text(app.name)
+                                  .font(.headline)
+                                  .lineLimit(1)
+                              if let bundle = app.bundleId, !bundle.isEmpty {
+                                  Text(bundle)
+                                      .font(.caption)
+                                      .foregroundColor(.gray)
+                                      .lineLimit(1)
+                              }
+                              HStack(spacing: 6) {
+                                  if let version = app.displayVersion, !version.isEmpty {
+                                      Text("v\(version)")
+                                          .font(.caption2)
+                                          .foregroundColor(.blue)
+                                  }
+                                  if let size = app.cleanSize, !size.isEmpty && size != "غير معروف" {
+                                      Text("• \(size)")
+                                          .font(.caption2)
+                                          .foregroundColor(.gray)
+                                  }
+                              }
+                          }
+
+                          Spacer()
+
+                          if let ipaURL = app.ipaURL, !ipaURL.isEmpty {
+                              Button("تحميل") {
+                                  if let url = URL(string: ipaURL) {
+                                      UIApplication.shared.open(url)
+                                  }
+                              }
+                              .buttonStyle(.bordered)
+                              .font(.caption)
+                          }
+                      }
+
+                      if showDetails {
+                          VStack(alignment: .leading, spacing: 4) {
+                              if let desc = app.description, !desc.isEmpty {
+                                  Text(desc)
+                                      .font(.caption)
+                                      .foregroundColor(.gray)
+                                      .lineLimit(3)
+                              }
+                              if let dev = app.developer, !dev.isEmpty {
+                                  Text("المطور: \(dev)")
+                                      .font(.caption2)
+                                      .foregroundColor(.gray)
+                              }
+                              if let cat = app.category, !cat.isEmpty {
+                                  Text("التصنيف: \(cat)")
+                                      .font(.caption2)
+                                      .foregroundColor(.gray)
+                              }
+                              if let ipa = app.ipaURL, !ipa.isEmpty {
+                                  Button("نسخ رابط IPA") {
+                                      UIPasteboard.general.string = ipa
+                                  }
+                                  .font(.caption2)
+                              }
+                          }
+                          .padding(.top, 4)
+                      }
+
+                      Button(action: { showDetails.toggle() }) {
+                          Text(showDetails ? "إخفاء التفاصيل" : "عرض التفاصيل")
+                              .font(.caption2)
+                              .foregroundColor(.blue)
+                      }
+                  }
+                  .padding(.vertical, 4)
+                  .contextMenu {
+                      Button("نسخ الاسم") {
+                          UIPasteboard.general.string = app.name
+                      }
+                      if let bundle = app.bundleId, !bundle.isEmpty {
+                          Button("نسخ البندل") {
+                              UIPasteboard.general.string = bundle
+                          }
+                      }
+                      if let ipa = app.ipaURL, !ipa.isEmpty {
+                          Button("نسخ رابط IPA") {
+                              UIPasteboard.general.string = ipa
+                          }
+                      }
+                  }
+              }
+          }
+
+          // MARK: - JSONView
           struct JSONView: View {
               @Binding var jsonInput: String
               @Binding var parsedApps: [AppInfo]
               @Binding var jsonParseResult: String
+              @State private var isParsing: Bool = false
+              @ObservedObject private var linkStore = LinkStore.shared
 
               var body: some View {
                   VStack {
@@ -299,8 +751,14 @@ jobs:
                               parseJSON(from: jsonInput)
                           }
                           .buttonStyle(.borderedProminent)
+                          .disabled(isParsing)
                       }
                       .padding(.horizontal)
+
+                      if isParsing {
+                          ProgressView("جارٍ التحليل...")
+                              .padding()
+                      }
 
                       if !jsonParseResult.isEmpty {
                           Text(jsonParseResult)
@@ -309,46 +767,15 @@ jobs:
                               .padding(.horizontal)
                       }
 
-                      if parsedApps.isEmpty {
+                      if parsedApps.isEmpty && !isParsing {
                           Text("لا توجد تطبيقات مستخرجة")
                               .foregroundColor(.gray)
                               .padding()
                       } else {
                           List(parsedApps, id: \.id) { app in
-                              HStack {
-                                  AsyncImage(url: URL(string: app.iconURL ?? "")) { phase in
-                                      switch phase {
-                                      case .success(let image):
-                                          image.resizable().aspectRatio(contentMode: .fit)
-                                      default:
-                                          Color.gray
-                                      }
-                                  }
-                                  .frame(width: 40, height: 40)
-                                  .cornerRadius(8)
-
-                                  VStack(alignment: .leading) {
-                                      Text(app.name).font(.headline)
-                                      if let bundle = app.bundleId {
-                                          Text(bundle).font(.caption).foregroundColor(.gray)
-                                      }
-                                      if let version = app.version {
-                                          Text("الإصدار: \(version)").font(.caption2)
-                                      }
-                                  }
-                                  Spacer()
-                                  if let url = app.ipaURL, !url.isEmpty {
-                                      Button("تحميل IPA") {
-                                          if let url = URL(string: url) {
-                                              UIApplication.shared.open(url)
-                                          }
-                                      }
-                                      .buttonStyle(.bordered)
-                                      .font(.caption)
-                                  }
-                              }
-                              .padding(.vertical, 4)
+                              AppRowView(app: app)
                           }
+                          .listStyle(PlainListStyle())
                       }
                   }
                   .padding(.top)
@@ -359,9 +786,11 @@ jobs:
                       jsonParseResult = "رابط غير صحيح"
                       return
                   }
+                  isParsing = true
                   jsonParseResult = "جارٍ التحليل..."
                   URLSession.shared.dataTask(with: url) { data, _, error in
                       DispatchQueue.main.async {
+                          isParsing = false
                           if let error = error {
                               jsonParseResult = "خطأ: \(error.localizedDescription)"
                               return
@@ -374,11 +803,30 @@ jobs:
                               let decoder = JSONDecoder()
                               if let appArray = try? decoder.decode([AppInfo].self, from: data) {
                                   parsedApps = appArray
+                                  linkStore.scrapedApps = appArray
                                   jsonParseResult = "تم استخراج \(appArray.count) تطبيق"
                               } else if let wrapper = try? decoder.decode([String: [AppInfo]].self, from: data),
                                         let apps = wrapper["apps"] {
                                   parsedApps = apps
+                                  linkStore.scrapedApps = apps
                                   jsonParseResult = "تم استخراج \(apps.count) تطبيق"
+                              } else if let wrapper = try? decoder.decode([String: Any].self, from: data) {
+                                  // Try to find any array of apps
+                                  var found = false
+                                  for (key, value) in wrapper {
+                                      if let apps = value as? [[String: Any]], !apps.isEmpty {
+                                          let data2 = try JSONSerialization.data(withJSONObject: apps)
+                                          let decoded = try decoder.decode([AppInfo].self, from: data2)
+                                          parsedApps = decoded
+                                          linkStore.scrapedApps = decoded
+                                          jsonParseResult = "تم استخراج \(decoded.count) تطبيق من \(key)"
+                                          found = true
+                                          break
+                                      }
+                                  }
+                                  if !found {
+                                      jsonParseResult = "صيغة JSON غير مدعومة"
+                                  }
                               } else {
                                   jsonParseResult = "صيغة JSON غير مدعومة"
                               }
@@ -390,33 +838,69 @@ jobs:
               }
           }
 
-          struct AppInfo: Codable, Identifiable {
-              let id: Int
-              let name: String
-              let bundleId: String?
-              let version: String?
-              let iconURL: String?
-              let ipaURL: String?
-              let description: String?
+          // MARK: - ScrapedItemsView
+          struct ScrapedItemsView: View {
+              @ObservedObject private var linkStore = LinkStore.shared
 
-              enum CodingKeys: String, CodingKey {
-                  case id
-                  case name
-                  case bundleId = "bundle_id"
-                  case version
-                  case iconURL = "icon_url"
-                  case ipaURL = "ipa_url"
-                  case description
+              var body: some View {
+                  List {
+                      if linkStore.scrapedItems.isEmpty {
+                          Text("لا توجد عناصر مستخرجة")
+                              .foregroundColor(.gray)
+                              .padding()
+                      } else {
+                          ForEach(linkStore.scrapedItems) { item in
+                              VStack(alignment: .leading, spacing: 4) {
+                                  HStack {
+                                      Text(item.type.rawValue)
+                                          .font(.caption)
+                                          .foregroundColor(
+                                              item.type == .ipa ? .green :
+                                              item.type == .json ? .blue :
+                                              item.type == .plist ? .orange :
+                                              item.type == .manifest ? .purple :
+                                              .gray
+                                          )
+                                      Text(item.title ?? "عنصر")
+                                          .font(.headline)
+                                          .lineLimit(1)
+                                      Spacer()
+                                      Button(action: {
+                                          UIPasteboard.general.string = item.url
+                                      }) {
+                                          Image(systemName: "doc.on.doc")
+                                              .font(.caption)
+                                      }
+                                  }
+                                  Text(item.url)
+                                      .font(.caption)
+                                      .foregroundColor(.gray)
+                                      .lineLimit(2)
+
+                                  if let app = item.appInfo {
+                                      HStack {
+                                          if let bundle = app.bundleId, !bundle.isEmpty {
+                                              Text("📦 \(bundle)")
+                                                  .font(.caption2)
+                                                  .foregroundColor(.gray)
+                                          }
+                                          if let version = app.version, !version.isEmpty {
+                                              Text("🔢 v\(version)")
+                                                  .font(.caption2)
+                                                  .foregroundColor(.gray)
+                                          }
+                                      }
+                                  }
+                              }
+                              .padding(.vertical, 4)
+                          }
+                      }
+                  }
+                  .listStyle(PlainListStyle())
               }
           }
-          EOF
 
-      - name: Generate WebView.swift
-        run: |
-          cat > WebView.swift << 'EOF'
-          import SwiftUI
-          import WebKit
-
+          // MARK: - WebView
           struct WebView: UIViewRepresentable {
               @Binding var urlString: String
               @Binding var isLoading: Bool
@@ -428,8 +912,10 @@ jobs:
               func makeUIView(context: Context) -> WKWebView {
                   let config = WKWebViewConfiguration()
                   config.preferences.javaScriptEnabled = true
+                  config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   let webView = WKWebView(frame: .zero, configuration: config)
                   webView.navigationDelegate = context.coordinator
+                  webView.uiDelegate = context.coordinator
                   if let url = URL(string: urlString) {
                       webView.load(URLRequest(url: url))
                   }
@@ -442,36 +928,346 @@ jobs:
                   }
               }
 
-              class Coordinator: NSObject, WKNavigationDelegate {
+              class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
                   var parent: WebView
                   weak var webView: WKWebView?
 
                   init(_ parent: WebView) {
                       self.parent = parent
                       super.init()
-                      NotificationCenter.default.addObserver(self, selector: #selector(extractLinks), name: .extractLinks, object: nil)
-                      NotificationCenter.default.addObserver(self, selector: #selector(extractJSON), name: .extractJSONLinks, object: nil)
+                      NotificationCenter.default.addObserver(self, selector: #selector(extractAll), name: .extractAllLinks, object: nil)
+                      NotificationCenter.default.addObserver(self, selector: #selector(extractIPAs), name: .extractIPALinks, object: nil)
+                      NotificationCenter.default.addObserver(self, selector: #selector(extractJSONs), name: .extractJSONLinks, object: nil)
+                      NotificationCenter.default.addObserver(self, selector: #selector(analyzeLink), name: .analyzeLink, object: nil)
                   }
 
-                  @objc func extractLinks() {
-                      webView?.evaluateJavaScript("""
-                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'));
-                      """) { (result, error) in
+                  @objc func extractAll() {
+                      let js = """
+                      (function() {
+                          var links = Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'));
+                          var scripts = Array.from(document.querySelectorAll('script')).map(s => s.src).filter(s => s);
+                          var iframes = Array.from(document.querySelectorAll('iframe')).map(f => f.src).filter(f => f);
+                          var imgs = Array.from(document.querySelectorAll('img')).map(i => i.src).filter(i => i);
+                          return links.concat(scripts).concat(iframes).concat(imgs);
+                      })();
+                      """
+                      webView?.evaluateJavaScript(js) { (result, error) in
                           if let links = result as? [String] {
+                              let unique = Array(Set(links)).filter { !$0.isEmpty }
                               DispatchQueue.main.async {
-                                  NotificationCenter.default.post(name: .linksExtracted, object: links)
+                                  NotificationCenter.default.post(name: .linksExtracted, object: unique)
+                                  LinkStore.shared.statusMessage = "تم استخراج \(unique.count) رابط"
+                              }
+                          }
+                      }
+
+                      // Also extract app data from page content
+                      extractAppDataFromPage()
+                  }
+
+                  @objc func extractIPAs() {
+                      let js = """
+                      (function() {
+                          var links = Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h =>
+                              h && (h.endsWith('.ipa') || h.includes('/ipa/') || h.includes('.ipa?'))
+                          );
+                          var scripts = Array.from(document.querySelectorAll('script')).map(s => s.src).filter(s =>
+                              s && (s.endsWith('.ipa') || s.includes('/ipa/'))
+                          );
+                          return links.concat(scripts);
+                      })();
+                      """
+                      webView?.evaluateJavaScript(js) { (result, error) in
+                          if let links = result as? [String] {
+                              let unique = Array(Set(links)).filter { !$0.isEmpty }
+                              DispatchQueue.main.async {
+                                  NotificationCenter.default.post(name: .ipaLinksExtracted, object: unique)
+                                  LinkStore.shared.statusMessage = "تم العثور على \(unique.count) رابط IPA"
                               }
                           }
                       }
                   }
 
-                  @objc func extractJSON() {
-                      webView?.evaluateJavaScript("""
-                          Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && (h.endsWith('.json') || h.includes('/api/') || h.includes('json')));
-                      """) { (result, error) in
+                  @objc func extractJSONs() {
+                      let js = """
+                      (function() {
+                          var links = Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h =>
+                              h && (h.endsWith('.json') || h.includes('/api/') || h.includes('/json/') || h.includes('data='))
+                          );
+                          var scripts = Array.from(document.querySelectorAll('script')).map(s => s.src).filter(s =>
+                              s && (s.endsWith('.json') || s.includes('/api/'))
+                          );
+                          return links.concat(scripts);
+                      })();
+                      """
+                      webView?.evaluateJavaScript(js) { (result, error) in
                           if let links = result as? [String] {
+                              let unique = Array(Set(links)).filter { !$0.isEmpty }
                               DispatchQueue.main.async {
-                                  NotificationCenter.default.post(name: .jsonLinksExtracted, object: links)
+                                  NotificationCenter.default.post(name: .jsonLinksExtracted, object: unique)
+                                  LinkStore.shared.statusMessage = "تم العثور على \(unique.count) رابط JSON"
+                              }
+                          }
+                      }
+                  }
+
+                  @objc func analyzeLink(_ notification: Notification) {
+                      guard let link = notification.object as? String else { return }
+                      LinkStore.shared.statusMessage = "جارٍ تحليل: \(link)"
+
+                      if link.lowercased().hasSuffix(".json") || link.contains("/api/") {
+                          // Parse JSON from URL
+                          parseJSONFromURL(link)
+                      } else if link.lowercased().hasSuffix(".ipa") || link.contains("/ipa/") {
+                          // Extract app info from IPA link
+                          extractAppInfoFromIPALink(link)
+                      } else if link.lowercased().hasSuffix(".plist") {
+                          // Parse plist
+                          parsePlistFromURL(link)
+                      } else {
+                          // Try to scrape the page for app info
+                          scrapePageForAppInfo(link)
+                      }
+                  }
+
+                  private func parseJSONFromURL(_ urlString: String) {
+                      guard let url = URL(string: urlString) else { return }
+                      URLSession.shared.dataTask(with: url) { data, _, error in
+                          guard let data = data, error == nil else { return }
+                          do {
+                              let decoder = JSONDecoder()
+                              if let apps = try? decoder.decode([AppInfo].self, from: data) {
+                                  DispatchQueue.main.async {
+                                      NotificationCenter.default.post(name: .appsExtracted, object: apps)
+                                      for app in apps {
+                                          LinkStore.shared.addScrapedItem(
+                                              url: urlString,
+                                              type: .json,
+                                              title: app.name,
+                                              appInfo: app
+                                          )
+                                      }
+                                      LinkStore.shared.statusMessage = "تم استخراج \(apps.count) تطبيق من JSON"
+                                  }
+                              } else if let wrapper = try? decoder.decode([String: [AppInfo]].self, from: data),
+                                        let apps = wrapper["apps"] {
+                                  DispatchQueue.main.async {
+                                      NotificationCenter.default.post(name: .appsExtracted, object: apps)
+                                      for app in apps {
+                                          LinkStore.shared.addScrapedItem(
+                                              url: urlString,
+                                              type: .json,
+                                              title: app.name,
+                                              appInfo: app
+                                          )
+                                      }
+                                      LinkStore.shared.statusMessage = "تم استخراج \(apps.count) تطبيق من JSON"
+                                  }
+                              }
+                          } catch {
+                              print("JSON parse error: \(error)")
+                          }
+                      }.resume()
+                  }
+
+                  private func parsePlistFromURL(_ urlString: String) {
+                      guard let url = URL(string: urlString) else { return }
+                      URLSession.shared.dataTask(with: url) { data, _, error in
+                          guard let data = data, error == nil else { return }
+                          do {
+                              let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                              if let dict = plist as? [String: Any] {
+                                  // Try to extract app info from plist
+                                  if let items = dict["items"] as? [[String: Any]] {
+                                      for item in items {
+                                          if let assets = item["assets"] as? [[String: Any]],
+                                             let metadata = item["metadata"] as? [String: Any] {
+                                              var app = AppInfo(
+                                                  id: Int.random(in: 1...999999),
+                                                  name: (metadata["title"] as? String) ?? "Unknown",
+                                                  bundleId: metadata["bundle-identifier"] as? String,
+                                                  version: metadata["bundle-version"] as? String,
+                                                  iconURL: assets.first(where: { ($0["kind"] as? String) == "display-image" })?["url"] as? String,
+                                                  ipaURL: assets.first(where: { ($0["kind"] as? String) == "software-package" })?["url"] as? String,
+                                                  description: nil,
+                                                  size: nil,
+                                                  category: nil,
+                                                  developer: nil,
+                                                  date: nil
+                                              )
+                                              DispatchQueue.main.async {
+                                                  LinkStore.shared.addScrapedItem(
+                                                      url: urlString,
+                                                      type: .plist,
+                                                      title: app.name,
+                                                      appInfo: app
+                                                  )
+                                                  LinkStore.shared.statusMessage = "تم استخراج تطبيق من PLIST"
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          } catch {
+                              print("Plist parse error: \(error)")
+                          }
+                      }.resume()
+                  }
+
+                  private func extractAppInfoFromIPALink(_ link: String) {
+                      // Try to extract app name from URL
+                      let url = URL(string: link)!
+                      let name = url.deletingPathExtension().lastPathComponent
+                      let bundleId = name.replacingOccurrences(of: "-", with: ".")
+                      let app = AppInfo(
+                          id: Int.random(in: 1...999999),
+                          name: name.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " "),
+                          bundleId: bundleId,
+                          version: nil,
+                          iconURL: nil,
+                          ipaURL: link,
+                          description: nil,
+                          size: nil,
+                          category: nil,
+                          developer: nil,
+                          date: nil
+                      )
+                      DispatchQueue.main.async {
+                          LinkStore.shared.addScrapedItem(
+                              url: link,
+                              type: .ipa,
+                              title: app.name,
+                              appInfo: app
+                          )
+                          LinkStore.shared.statusMessage = "تم استخراج تطبيق من رابط IPA"
+                      }
+                  }
+
+                  private func scrapePageForAppInfo(_ urlString: String) {
+                      guard let url = URL(string: urlString) else { return }
+                      URLSession.shared.dataTask(with: url) { data, _, error in
+                          guard let data = data, let html = String(data: data, encoding: .utf8) else { return }
+
+                          // Try to extract app info from HTML
+                          var name = ""
+                          var bundleId = ""
+                          var version = ""
+                          var iconURL = ""
+                          var ipaURL = ""
+
+                          // Look for bundle ID patterns
+                          if let match = html.range(of: #"bundle[-_]?id[=:]\s*["']([^"']+)["']"#, options: .regularExpression) {
+                              bundleId = String(html[match]).replacingOccurrences(of: #"bundle[-_]?id[=:]\s*["']"#, with: "", options: .regularExpression)
+                              bundleId = bundleId.replacingOccurrences(of: #"["']"#, with: "", options: .regularExpression)
+                          }
+
+                          // Look for app name
+                          if let match = html.range(of: #"<title>([^<]+)</title>"#, options: .regularExpression) {
+                              name = String(html[match]).replacingOccurrences(of: #"<title>|</title>"#, with: "", options: .regularExpression)
+                          }
+
+                          // Look for version
+                          if let match = html.range(of: #"version[=:]\s*["']([^"']+)["']"#, options: .regularExpression) {
+                              version = String(html[match]).replacingOccurrences(of: #"version[=:]\s*["']"#, with: "", options: .regularExpression)
+                              version = version.replacingOccurrences(of: #"["']"#, with: "", options: .regularExpression)
+                          }
+
+                          // Look for icon
+                          if let match = html.range(of: #"(?:icon|logo)[=:]\s*["']([^"']+)["']"#, options: .regularExpression) {
+                              iconURL = String(html[match]).replacingOccurrences(of: #"(?:icon|logo)[=:]\s*["']"#, with: "", options: .regularExpression)
+                              iconURL = iconURL.replacingOccurrences(of: #"["']"#, with: "", options: .regularExpression)
+                          }
+
+                          // Look for IPA link
+                          if let match = html.range(of: #"href\s*=\s*["']([^"']+\.ipa[^"']*)["']"#, options: .regularExpression) {
+                              ipaURL = String(html[match]).replacingOccurrences(of: #"href\s*=\s*["']"#, with: "", options: .regularExpression)
+                              ipaURL = ipaURL.replacingOccurrences(of: #"["']"#, with: "", options: .regularExpression)
+                          }
+
+                          if !name.isEmpty || !bundleId.isEmpty {
+                              let app = AppInfo(
+                                  id: Int.random(in: 1...999999),
+                                  name: name.isEmpty ? "Unknown App" : name,
+                                  bundleId: bundleId.isEmpty ? nil : bundleId,
+                                  version: version.isEmpty ? nil : version,
+                                  iconURL: iconURL.isEmpty ? nil : iconURL,
+                                  ipaURL: ipaURL.isEmpty ? nil : ipaURL,
+                                  description: nil,
+                                  size: nil,
+                                  category: nil,
+                                  developer: nil,
+                                  date: nil
+                              )
+                              DispatchQueue.main.async {
+                                  LinkStore.shared.addScrapedItem(
+                                      url: urlString,
+                                      type: .app,
+                                      title: app.name,
+                                      appInfo: app
+                                  )
+                                  LinkStore.shared.statusMessage = "تم استخراج بيانات التطبيق من الصفحة"
+                              }
+                          }
+                      }.resume()
+                  }
+
+                  private func extractAppDataFromPage() {
+                      let js = """
+                      (function() {
+                          var data = {};
+                          // Try to find app data in script tags
+                          var scripts = document.querySelectorAll('script');
+                          for (var i = 0; i < scripts.length; i++) {
+                              var content = scripts[i].textContent || scripts[i].innerHTML;
+                              if (content.includes('bundleId') || content.includes('bundle_id') || content.includes('app')) {
+                                  // Try to extract data
+                                  var matches = content.match(/bundle[-_]?id[=:]["']([^"']+)["']/i);
+                                  if (matches) data.bundleId = matches[1];
+                                  matches = content.match(/version[=:]["']([^"']+)["']/i);
+                                  if (matches) data.version = matches[1];
+                                  matches = content.match(/name[=:]["']([^"']+)["']/i);
+                                  if (matches) data.name = matches[1];
+                              }
+                          }
+                          // Try to find meta tags
+                          var metas = document.querySelectorAll('meta');
+                          for (var i = 0; i < metas.length; i++) {
+                              var name = metas[i].getAttribute('name') || metas[i].getAttribute('property');
+                              var content = metas[i].getAttribute('content');
+                              if (name && content) {
+                                  if (name.includes('bundle')) data.bundleId = content;
+                                  if (name.includes('version')) data.version = content;
+                                  if (name.includes('title') || name.includes('app-name')) data.name = content;
+                              }
+                          }
+                          return data;
+                      })();
+                      """
+                      webView?.evaluateJavaScript(js) { (result, error) in
+                          if let data = result as? [String: String] {
+                              let name = data["name"] ?? "Unknown App"
+                              let bundleId = data["bundleId"]
+                              let version = data["version"]
+                              let app = AppInfo(
+                                  id: Int.random(in: 1...999999),
+                                  name: name,
+                                  bundleId: bundleId,
+                                  version: version,
+                                  iconURL: nil,
+                                  ipaURL: nil,
+                                  description: nil,
+                                  size: nil,
+                                  category: nil,
+                                  developer: nil,
+                                  date: nil
+                              )
+                              DispatchQueue.main.async {
+                                  LinkStore.shared.addScrapedItem(
+                                      url: "page",
+                                      type: .app,
+                                      title: app.name,
+                                      appInfo: app
+                                  )
                               }
                           }
                       }
@@ -487,6 +1283,7 @@ jobs:
                       DispatchQueue.main.async {
                           self.parent.isLoading = false
                           self.parent.urlString = webView.url?.absoluteString ?? ""
+                          LinkStore.shared.statusMessage = "تم تحميل الصفحة"
                       }
                       self.webView = webView
                   }
@@ -494,9 +1291,31 @@ jobs:
                   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
                       DispatchQueue.main.async {
                           self.parent.isLoading = false
+                          LinkStore.shared.statusMessage = "خطأ في التحميل: \(error.localizedDescription)"
                       }
                   }
+
+                  func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+                      if navigationAction.targetFrame == nil {
+                          webView.load(navigationAction.request)
+                      }
+                      return nil
+                  }
               }
+          }
+
+          // MARK: - Notification Names
+          extension Notification.Name {
+              static let extractAllLinks = Notification.Name("extractAllLinks")
+              static let extractIPALinks = Notification.Name("extractIPALinks")
+              static let extractJSONLinks = Notification.Name("extractJSONLinks")
+              static let linksExtracted = Notification.Name("linksExtracted")
+              static let jsonLinksExtracted = Notification.Name("jsonLinksExtracted")
+              static let ipaLinksExtracted = Notification.Name("ipaLinksExtracted")
+              static let plistLinksExtracted = Notification.Name("plistLinksExtracted")
+              static let manifestLinksExtracted = Notification.Name("manifestLinksExtracted")
+              static let appsExtracted = Notification.Name("appsExtracted")
+              static let analyzeLink = Notification.Name("analyzeLink")
           }
           EOF
 
@@ -504,39 +1323,38 @@ jobs:
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun swiftc \
-            ScraperApp.swift \
+            ScraperProApp.swift \
             ContentView.swift \
-            WebView.swift \
             -sdk "$SDK" \
             -target arm64-apple-ios16.0 \
             -O \
-            -module-name Scraper \
+            -module-name ScraperPro \
             -framework SwiftUI \
             -framework UIKit \
             -framework Foundation \
             -framework WebKit \
-            -o Scraper
+            -o ScraperPro
 
       - name: Create IPA package
         run: |
           set -euo pipefail
           export COPYFILE_DISABLE=1
-          mkdir -p build-output/Payload/Scraper.app
-          cp -X Scraper build-output/Payload/Scraper.app/Scraper
-          cp -X Resources/Info.plist build-output/Payload/Scraper.app/Info.plist
+          mkdir -p build-output/Payload/ScraperPro.app
+          cp -X ScraperPro build-output/Payload/ScraperPro.app/ScraperPro
+          cp -X Resources/Info.plist build-output/Payload/ScraperPro.app/Info.plist
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
 
-          rm -f artifacts/scraper.ipa
+          rm -f artifacts/scraperpro.ipa
           mkdir -p artifacts
-          cd build-output && zip -r -X -q -fz- -Z deflate ../artifacts/scraper.ipa Payload && cd ..
-          unzip -tq artifacts/scraper.ipa >/dev/null 2>&1 || { echo "IPA corrupt"; exit 1; }
-          ls -lh artifacts/scraper.ipa
+          cd build-output && zip -r -X -q -fz- -Z deflate ../artifacts/scraperpro.ipa Payload && cd ..
+          unzip -tq artifacts/scraperpro.ipa >/dev/null 2>&1 || { echo "IPA corrupt"; exit 1; }
+          ls -lh artifacts/scraperpro.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Scraper-IPA
-          path: artifacts/scraper.ipa
+          name: ScraperPro-IPA
+          path: artifacts/scraperpro.ipa
           compression-level: 0
           retention-days: 90
