@@ -5291,6 +5291,9 @@ jobs:
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
 
+                          // ====== قسم التعليقات ======
+                          AppCommentsSection(app: app)
+
                           // ====== قسم «تطبيقات مشابهة» — أسفل الوصف مباشرة ======
                           if !similarApps.isEmpty {
                               VStack(alignment: .leading, spacing: 12) {
@@ -5899,6 +5902,151 @@ jobs:
               }
           }
 
+          // ============ تعليقات المتجر ============
+          struct StoreComment: Identifiable, Decodable, Hashable {
+              let id: String
+              let author: String
+              let body: String
+              let reply: String?
+              let created_at: String?
+          }
+
+          private struct StoreCommentsResponse: Decodable { let comments: [StoreComment] }
+
+          @MainActor
+          final class StoreCommentsStore: ObservableObject {
+              @Published var comments: [StoreComment] = []
+              @Published var isLoading = false
+              @Published var isSending = false
+
+              func load(appId: Int) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/comments?app=\(appId)") else { return }
+                  isLoading = true
+                  URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 25)) { data, _, _ in
+                      let list = data.flatMap { try? JSONDecoder().decode(StoreCommentsResponse.self, from: $0).comments } ?? []
+                      DispatchQueue.main.async {
+                          self.comments = list
+                          self.isLoading = false
+                      }
+                  }.resume()
+              }
+
+              func send(appId: Int, text: String, done: @escaping (Bool) -> Void) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/comments") else { done(false); return }
+                  isSending = true
+                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "app_id": appId,
+                      "body": text,
+                      "code": ActivationManager.shared.code,
+                      "udid": ActivationManager.shared.deviceID
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      var ok = false
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                          ok = (obj["ok"] as? Bool) == true
+                      }
+                      DispatchQueue.main.async {
+                          self.isSending = false
+                          if ok { self.load(appId: appId) }
+                          done(ok)
+                      }
+                  }.resume()
+              }
+          }
+
+          struct AppCommentsSection: View {
+              let app: StoreAPIApp
+              @StateObject private var store = StoreCommentsStore()
+              @State private var draft: String = ""
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 12) {
+                      HStack(spacing: 8) {
+                          Capsule()
+                              .fill(LinearGradient(colors: [Color.storePrimary, Color.storeCyan],
+                                                   startPoint: .top, endPoint: .bottom))
+                              .frame(width: 4, height: 22)
+                          Text("التعليقات")
+                              .font(.system(size: 16, weight: .heavy))
+                              .foregroundColor(.storeText)
+                          Spacer()
+                          Text("\(store.comments.count)")
+                              .font(.system(size: 11, weight: .bold))
+                              .foregroundColor(.storeSub)
+                              .padding(.horizontal, 8).padding(.vertical, 3)
+                              .background(Capsule().fill(Color.storeDivider))
+                      }
+
+                      HStack(spacing: 8) {
+                          TextField("اكتب تعليقك...", text: $draft)
+                              .font(.system(size: 13))
+                              .foregroundColor(.storeText)
+                              .padding(.horizontal, 12).padding(.vertical, 10)
+                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
+                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 1))
+                          Button {
+                              let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                              guard !text.isEmpty else { return }
+                              store.send(appId: app.id, text: text) { ok in
+                                  if ok { draft = "" }
+                                  StatusCenter.shared.show(text: ok ? "تم نشر تعليقك" : "التعليق يتطلب حساباً مفعّلاً")
+                              }
+                          } label: {
+                              Text(store.isSending ? "..." : "نشر")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 16).padding(.vertical, 10)
+                                  .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                          .disabled(store.isSending)
+                      }
+
+                      if store.comments.isEmpty && !store.isLoading {
+                          Text("لا توجد تعليقات بعد — كن أول من يعلّق")
+                              .font(.system(size: 12))
+                              .foregroundColor(.storeSub)
+                      }
+
+                      ForEach(store.comments) { c in
+                          VStack(alignment: .leading, spacing: 6) {
+                              Text(c.author)
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.storeText)
+                              Text(c.body)
+                                  .font(.system(size: 12))
+                                  .foregroundColor(.storeSub)
+                                  .fixedSize(horizontal: false, vertical: true)
+                              if let reply = c.reply, !reply.isEmpty {
+                                  HStack(alignment: .top, spacing: 6) {
+                                      Text("رد الإدارة:")
+                                          .font(.system(size: 11, weight: .bold))
+                                          .foregroundColor(.storePrimary)
+                                      Text(reply)
+                                          .font(.system(size: 11))
+                                          .foregroundColor(.storeSub)
+                                  }
+                                  .padding(8)
+                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeDivider.opacity(0.35)))
+                              }
+                          }
+                          .frame(maxWidth: .infinity, alignment: .leading)
+                          .padding(12)
+                          .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                          .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
+                      }
+                  }
+                  .environment(\.layoutDirection, .rightToLeft)
+                  .padding(.horizontal, 20)
+                  .padding(.top, 22)
+                  .onAppear { store.load(appId: app.id) }
+              }
+          }
+
           // ============ التثبيت الرسمي المباشر عبر سيرفر المتجر ============
           @MainActor
           final class StoreInstaller: ObservableObject {
@@ -5910,10 +6058,46 @@ jobs:
                   install(bundleId: app.bundleId, name: app.name)
               }
 
+              /// يجلب شهادة الجهاز المرتبطة بالـ UDID قبل التثبيت (شهادة خاصة، ثم شهادة المتجر المجانية).
+              func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
+                      done(nil); return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "udid": ActivationManager.shared.deviceID,
+                      "code": ActivationManager.shared.code
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      var result: [String: Any]? = nil
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                         (obj["ok"] as? Bool) == true {
+                          result = obj["certificate"] as? [String: Any]
+                      }
+                      DispatchQueue.main.async { done(result) }
+                  }.resume()
+              }
+
               func install(bundleId: String?, name: String) {
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
+                  fetchCertificate { cert in
+                      guard cert != nil else {
+                          self.isWorking = false
+                          StatusCenter.shared.show(text: "لا توجد شهادة مرتبطة بجهازك، تواصل مع الإدارة")
+                          return
+                      }
+                      self.performInstall(bundleId: bundleId, name: name)
+                  }
+              }
+
+              private func performInstall(bundleId: String?, name: String) {
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت المباشر...")
+                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
                   var req = URLRequest(url: url, timeoutInterval: 30)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
