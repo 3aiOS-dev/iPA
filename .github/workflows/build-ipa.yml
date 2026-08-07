@@ -285,7 +285,7 @@ jobs:
           }
           VIPEOF
 
-      - name: Generate code - Models.swift (store models only)
+      - name: Generate code - Models.swift (store models only, with convenience init)
         run: |
           cat > Models.swift << 'VIPEOF'
           import Foundation
@@ -298,6 +298,12 @@ jobs:
               enum CodingKeys: String, CodingKey {
                   case lastUpdated = "last_updated"
                   case apps
+              }
+
+              // Convenience initializer for building the object manually
+              init(lastUpdated: String?, apps: [StoreAPIApp]) {
+                  self.lastUpdated = lastUpdated
+                  self.apps = apps
               }
 
               init(from decoder: Decoder) throws {
@@ -595,7 +601,7 @@ jobs:
           }
           FAVEOF
 
-      - name: Generate code - StoreFeed + Utilities
+      - name: Generate code - StoreUtilities.swift
         run: |
           cat > StoreUtilities.swift << 'UTILEOF'
           import SwiftUI
@@ -617,7 +623,7 @@ jobs:
               private let diskIndexKey = "apptesters-icon-disk-index"
               private var diskIndex: [String: String] = [:]
               private let inflightQueue = DispatchQueue(label: "com.21s.iconcache.inflight")
-              private var inflightSet: Set<String> = []
+              private var inflightSet: Set<String> = [:]
 
               init() {
                   let cfg = URLSessionConfiguration.default
@@ -771,16 +777,7 @@ jobs:
                   ("21s Originals", "https://21s.app/repo/apps.json")
               ]
 
-              /// Snapshot for detecting new/updated apps (for notifications, but we might not use it)
-              private let catalogKey = "store_catalog_snapshot_v1"
-              private var catalogSnapshot: [String: String] =
-                  (UserDefaults.standard.dictionary(forKey: "store_catalog_snapshot_v1") as? [String: String]) ?? [:]
-
               init() { loadCachedThenRefresh() }
-
-              private func snapshotVersion(_ app: StoreAPIApp) -> String {
-                  app.version ?? app.bundleVersion ?? app.versionDate ?? app.updatedAt ?? ""
-              }
 
               func loadCachedThenRefresh() {
                   if let data = try? Data(contentsOf: cacheURL),
@@ -797,12 +794,6 @@ jobs:
                   lastError = nil
                   do {
                       let merged = try await fetchMergedFromAllRepos()
-                      // Update snapshot (but we don't push notifications)
-                      var next: [String: String] = [:]
-                      for app in merged.apps { next["\(app.id)"] = snapshotVersion(app) }
-                      catalogSnapshot = next
-                      UserDefaults.standard.set(next, forKey: catalogKey)
-
                       self.apps = merged.apps
                       self.lastUpdated = merged.lastUpdated
                       self.totalAvailable = merged.apps.count
@@ -874,8 +865,6 @@ jobs:
               }
 
               func newlyAddedApps(now: Date = Date()) -> [StoreAPIApp] {
-                  // We assume that if createdAt is recent, it's new; if only updatedAt is recent, it's an update.
-                  // Since we don't have an explicit is_new flag, we use createdAt.
                   apps.filter { app in
                       guard let raw = app.createdAt else { return false }
                       let parser = ISO8601DateFormatter()
@@ -899,7 +888,6 @@ jobs:
               }
 
               func updatedApps(now: Date = Date()) -> [StoreAPIApp] {
-                  // Apps that have updatedAt recent but createdAt older than 24h
                   apps.filter { app in
                       guard let raw = app.updatedAt else { return false }
                       let parser = ISO8601DateFormatter()
@@ -941,7 +929,7 @@ jobs:
                               return now.timeIntervalSince(cd) > 24 * 60 * 60
                           }
                       }
-                      return true // assume it's an update if no createdAt
+                      return true
                   }
               }
           }
@@ -1234,8 +1222,6 @@ jobs:
                   NavigationStack {
                       ScrollView {
                           VStack(spacing: 12) {
-                              // Search bar? (optional but we can omit for simplicity)
-                              // List
                               LazyVStack(spacing: 12) {
                                   ForEach(sortedApps) { app in
                                       AppRow(app: app, onTap: {
@@ -1349,7 +1335,7 @@ jobs:
               }
           }
 
-          // MARK: - Favorites Tab (unchanged, but using simplified UI)
+          // MARK: - Favorites Tab
           struct FavoritesView: View {
               @ObservedObject private var favs = FavoritesStore.shared
               @ObservedObject var feed: StoreFeed
@@ -1656,7 +1642,6 @@ jobs:
                   var req = URLRequest(url: url, timeoutInterval: 25)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  // No auth required; we'll send device ID as placeholder
                   let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "app_id": appId,
@@ -1688,7 +1673,7 @@ jobs:
 
           struct StoreCommentsResponse: Decodable { let comments: [StoreComment] }
 
-          // MARK: - Status Center (simplified, no toast overlay)
+          // MARK: - Status Center
           @MainActor
           final class StatusCenter: ObservableObject {
               static let shared = StatusCenter()
@@ -1748,7 +1733,7 @@ jobs:
 
           enum StatusKind { case ok, noInternet }
 
-          // NoInternet overlay (simple)
+          // NoInternet overlay
           struct NoInternetScreen: View {
               var onRetry: () -> Void
               var body: some View {
@@ -1780,7 +1765,7 @@ jobs:
               }
           }
 
-          // MARK: - Store Installer (no UDID, just open install URL)
+          // MARK: - Store Installer
           @MainActor
           final class StoreInstaller: ObservableObject {
               static let shared = StoreInstaller()
@@ -1807,7 +1792,7 @@ jobs:
               }
           }
 
-          // MARK: - Status overlay (simple toast)
+          // MARK: - Status overlay
           struct StatusOverlayHost: View {
               @ObservedObject var center = StatusCenter.shared
               var body: some View {
@@ -1834,9 +1819,6 @@ jobs:
                   .animation(.easeInOut(duration: 0.25), value: center.toastText)
               }
           }
-
-          // MARK: - Main App Entry
-          // We'll define the App in VIP21StoreApp.swift
           STOREVIEWEOF
 
       - name: Generate code - VIP21StoreApp.swift (no auth, no background tasks)
