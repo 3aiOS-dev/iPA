@@ -906,7 +906,7 @@ jobs:
           FAVEOF
 
       # =========================================================
-      # SOURCE CODE - ActivationManager.swift (status only - real server verification)
+      # SOURCE CODE - ActivationManager.swift (full server-based activation)
       # =========================================================
       - name: Generate code - ActivationManager.swift
         run: |
@@ -916,7 +916,6 @@ jobs:
           import Combine
           import UIKit
 
-          /// مدير أسماء التفعيل - يعرض الحالة فقط، مع تحقق حقيقي من السيرفر.
           @MainActor
           public final class ActivationManager: ObservableObject {
               public static let shared = MainActor.assumeIsolated { ActivationManager() }
@@ -926,11 +925,35 @@ jobs:
               @Published public private(set) var expiresAt: Date? = nil
               @Published public private(set) var durationDays: Int = 0
               @Published public private(set) var fullName: String = ""
+              @Published public var isWorking: Bool = false
+              @Published public var lastError: String = ""
+
+              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+              public static let activationNameLink = "https://t.me/deviosx"
 
               private let kCode = "activation_code_v1"
               private let kExpires = "activation_expires_v1"
               private let kDays = "activation_days_v1"
               private let kName = "activation_full_name_v1"
+
+              /// UDID الرسمي للجهاز كما هو مسجّل في لوحة التحكم
+              @Published public var udid: String = UserDefaults.standard.string(forKey: "official_udid_v1") ?? "" {
+                  didSet {
+                      let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                      UserDefaults.standard.set(clean, forKey: "official_udid_v1")
+                  }
+              }
+
+              public var deviceID: String {
+                  let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                  if !clean.isEmpty { return clean }
+                  if let saved = UserDefaults.standard.string(forKey: "activation_device_id_v1"), !saved.isEmpty {
+                      return saved
+                  }
+                  let generated = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+                  UserDefaults.standard.set(generated, forKey: "activation_device_id_v1")
+                  return generated
+              }
 
               private init() {
                   let d = UserDefaults.standard
@@ -941,21 +964,6 @@ jobs:
                       expiresAt = Date(timeIntervalSince1970: ts)
                   }
                   refreshLocalState()
-                  // تحقق فوري من السيرفر عند إنشاء المدير
-                  fetchStatus()
-              }
-
-              public var daysLeft: Int {
-                  guard let exp = expiresAt else { return 0 }
-                  return max(0, Int(ceil(exp.timeIntervalSinceNow / 86400.0)))
-              }
-
-              public var expiryText: String {
-                  guard let exp = expiresAt else { return "غير مفعّل" }
-                  let f = DateFormatter()
-                  f.locale = Locale(identifier: "ar")
-                  f.dateStyle = .medium
-                  return f.string(from: exp)
               }
 
               private func refreshLocalState() {
@@ -974,67 +982,6 @@ jobs:
                   d.set(fullName, forKey: kName)
               }
 
-              /// يقوم بجلب الحالة من السيرفر (قراءة فقط) - يسمى عند بدء التطبيق وكل 5 دقائق
-              public func fetchStatus(completion: ((Bool) -> Void)? = nil) {
-                  guard !code.isEmpty else {
-                      completion?(false)
-                      return
-                  }
-                  let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
-                  comps?.queryItems = [
-                      URLQueryItem(name: "code", value: code),
-                      URLQueryItem(name: "udid", value: deviceID),
-                      URLQueryItem(name: "device_id", value: deviceID)
-                  ]
-                  guard let url = comps?.url else { completion?(false); return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      Task { @MainActor in
-                          guard let data = data,
-                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              self.refreshLocalState()
-                              completion?(self.isActive); return
-                          }
-                          if self.apply(json) {
-                              completion?(true)
-                          } else {
-                              // إذا كان السيرفر يعيد أن الاشتراك غير نشط، نقوم بتعطيله محلياً
-                              self.deactivate()
-                              completion?(false)
-                          }
-                      }
-                  }.resume()
-              }
-
-              private func apply(_ json: [String: Any]) -> Bool {
-                  guard (json["ok"] as? Bool) == true else { return false }
-                  if let active = json["active"] as? Bool, active == false { return false }
-                  if let c = json["code"] as? String, !c.isEmpty {
-                      code = c
-                  }
-                  if let days = json["duration_days"] as? Int { durationDays = days }
-                  if let name = json["full_name"] as? String, !name.isEmpty {
-                      fullName = name
-                  }
-                  if let raw = json["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
-                      expiresAt = d
-                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
-                  }
-                  persist()
-                  refreshLocalState()
-                  return isActive
-              }
-
-              public func deactivate() {
-                  code = ""
-                  expiresAt = nil
-                  durationDays = 0
-                  fullName = ""
-                  isActive = false
-                  persist()
-              }
-
-              // MARK: - Fixed: make parseDate public so it can be used across files
               public static func parseDate(_ raw: String) -> Date? {
                   let iso = ISO8601DateFormatter()
                   iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1052,59 +999,305 @@ jobs:
                   return nil
               }
 
-              /// السيرفر الأساسي للتحقق
-              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+              private func apply(_ json: [String: Any], fallbackCode: String? = nil) -> Bool {
+                  guard (json["ok"] as? Bool) == true else { return false }
+                  var jsonData = json
+                  if let acc = json["account"] as? [String: Any] {
+                      for (k, v) in acc { jsonData[k] = v }
+                  }
+                  if let active = jsonData["active"] as? Bool, active == false { return false }
+                  if let c = jsonData["code"] as? String, !c.isEmpty {
+                      code = c
+                  } else if let fb = fallbackCode, !fb.isEmpty {
+                      code = fb
+                  }
+                  if let u = jsonData["udid"] as? String, !u.isEmpty {
+                      udid = u
+                  }
+                  if let days = jsonData["duration_days"] as? Int { durationDays = days }
+                  if let name = jsonData["full_name"] as? String, !name.isEmpty {
+                      fullName = name
+                  }
+                  if let raw = jsonData["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
+                      expiresAt = d
+                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
+                  }
+                  persist()
+                  refreshLocalState()
+                  return isActive
+              }
+
+              /// تفعيل اشتراك جديد عن طريق الكود
+              public func activate(code newCode: String, completion: ((Bool) -> Void)? = nil) {
+                  let clean = newCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                  guard clean.count >= 6 else {
+                      lastError = LS("أدخل كود اشتراك صحيح")
+                      completion?(false)
+                      return
+                  }
+                  guard !udid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                      lastError = LS("ألصق UDID الرسمي للجهاز أولًا")
+                      completion?(false)
+                      return
+                  }
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/activate") else {
+                      lastError = "رابط الموقع غير صحيح"; completion?(false); return
+                  }
+                  isWorking = true
+                  lastError = ""
+                  var req = URLRequest(url: url)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "code": clean,
+                      "udid": deviceID,
+                      "device_id": deviceID,
+                      "device_model": UIDevice.current.model
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, error in
+                      Task { @MainActor in
+                          self.isWorking = false
+                          guard let data = data,
+                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                              self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
+                              completion?(false); return
+                          }
+                          if self.apply(json, fallbackCode: clean) {
+                              HapticManager.shared.success()
+                              completion?(true)
+                          } else {
+                              self.lastError = (json["message"] as? String) ?? LS("الاسم غير صالح")
+                              completion?(false)
+                          }
+                      }
+                  }.resume()
+              }
+
+              /// التحقق من صحة الاشتراك الحالي مع السيرفر
+              public func verify(completion: ((Bool) -> Void)? = nil) {
+                  guard !code.isEmpty else { completion?(false); return }
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
+                  comps?.queryItems = [
+                      URLQueryItem(name: "code", value: code),
+                      URLQueryItem(name: "udid", value: deviceID),
+                      URLQueryItem(name: "device_id", value: deviceID)
+                  ]
+                  guard let url = comps?.url else { completion?(false); return }
+                  URLSession.shared.dataTask(with: url) { data, _, _ in
+                      Task { @MainActor in
+                          guard let data = data,
+                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                              // لا إنترنت: نحتفظ بالحالة المحلية حتى تاريخ الانتهاء المحفوظ
+                              self.refreshLocalState()
+                              completion?(self.isActive); return
+                          }
+                          if self.apply(json) {
+                              completion?(true)
+                          } else {
+                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك"
+                              self.deactivate(keepMessage: true)
+                              completion?(false)
+                          }
+                      }
+                  }.resume()
+              }
+
+              public func deactivate(keepMessage: Bool = false) {
+                  code = ""
+                  expiresAt = nil
+                  durationDays = 0
+                  fullName = ""
+                  isActive = false
+                  if !keepMessage { lastError = "" }
+                  persist()
+              }
+
+              public func fetchStatus(completion: ((Bool) -> Void)? = nil) {
+                  verify(completion: completion)
+              }
           }
 
-          /// بطاقة حالة الاشتراك (تُستخدم داخل الواجهة الرئيسية)
-          struct SubscriptionStatusCard: View {
+          // ================== Subscription UI ==================
+
+          struct SubscriptionGateView: View {
               @ObservedObject private var activation = ActivationManager.shared
-              @State private var isLoading = false
+              @State private var input: String = ""
+              @State private var shake: Bool = false
+              @State private var copied: Bool = false
+              @FocusState private var focused: Bool
+
+              private var panel: Color { Color(red: 0.11, green: 0.11, blue: 0.11) }
+              private var field: Color { Color.white.opacity(0.10) }
 
               var body: some View {
-                  VStack(alignment: .leading, spacing: 6) {
-                      Text(LS("حالة الاشتراك"))
-                          .font(.system(size: 13, weight: .bold))
-                      if isLoading {
-                          ProgressView()
-                              .progressViewStyle(CircularProgressViewStyle())
-                              .scaleEffect(0.6)
-                      } else if activation.isActive {
-                          HStack {
-                              Image(systemName: "checkmark.circle.fill")
-                                  .foregroundColor(.green)
-                              Text("مفعّل — متبقٍ \(activation.daysLeft) يوم")
-                                  .font(.system(size: 12))
+                  ZStack {
+                      Color.black.ignoresSafeArea()
+
+                      VStack(alignment: .leading, spacing: 16) {
+                          VStack(alignment: .leading, spacing: 6) {
+                              Text(LS("متطلبات الاشتراك"))
+                                  .font(.system(size: 24, weight: .bold))
+                                  .foregroundColor(.white)
+                              Text(LS("أكمل المتطلبات التالية ثم اضغط تحقق."))
+                                  .font(.system(size: 13))
+                                  .foregroundColor(.white.opacity(0.6))
                           }
-                          Text("ينتهي في \(activation.expiryText)")
-                              .font(.system(size: 11))
-                              .opacity(0.7)
-                          Text("الاسم: \(activation.code)")
-                              .font(.system(size: 11, design: .monospaced))
-                              .opacity(0.7)
+
+                          // ---- 1) UDID ----
+                          VStack(alignment: .leading, spacing: 10) {
+                              Text(LS("معرّف الجهاز (UDID)"))
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.white.opacity(0.85))
+
+                              HStack(spacing: 10) {
+                                  TextField("", text: $activation.udid,
+                                            prompt: Text(LS("ألصق UDID الرسمي للجهاز")).foregroundColor(.white.opacity(0.4)))
+                                      .textInputAutocapitalization(.characters)
+                                      .disableAutocorrection(true)
+                                      .foregroundColor(.white)
+                                      .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                  if !activation.udid.isEmpty {
+                                      Button { activation.udid = "" } label: {
+                                          Image(systemName: "xmark.circle.fill").foregroundColor(.white.opacity(0.45))
+                                      }
+                                  }
+                              }
+                              .padding(.horizontal, 14).padding(.vertical, 13)
+                              .background(RoundedRectangle(cornerRadius: 12).fill(field))
+
+                              HStack(spacing: 10) {
+                                  Button {
+                                      if let s = UIPasteboard.general.string, !s.isEmpty {
+                                          activation.udid = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                                      }
+                                  } label: {
+                                      Text(LS("لصق"))
+                                          .font(.system(size: 13, weight: .semibold))
+                                          .frame(maxWidth: .infinity)
+                                          .padding(.vertical, 10)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(field))
+                                          .foregroundColor(.white)
+                                  }
+
+                                  Button {
+                                      UIPasteboard.general.string = activation.deviceID
+                                      withAnimation(.spring(response: 0.3)) { copied = true }
+                                      DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                          withAnimation { copied = false }
+                                      }
+                                  } label: {
+                                      Text(copied ? LS("تم النسخ") : LS("نسخ UDID"))
+                                          .font(.system(size: 13, weight: .semibold))
+                                          .frame(maxWidth: .infinity)
+                                          .padding(.vertical, 10)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(field))
+                                          .foregroundColor(.white)
+                                  }
+                              }
+                          }
+                          .padding(14)
+                          .background(RoundedRectangle(cornerRadius: 16).fill(panel))
+
+                          // ---- 2) Subscription code ----
+                          VStack(alignment: .leading, spacing: 10) {
+                              Text(LS("كود الاشتراك"))
+                                  .font(.system(size: 14, weight: .semibold))
+                                  .foregroundColor(.white.opacity(0.85))
+
+                              HStack(spacing: 10) {
+                                  TextField("", text: $input,
+                                            prompt: Text(LS("الصق كود الاشتراك هنا")).foregroundColor(.white.opacity(0.4)))
+                                      .textInputAutocapitalization(.characters)
+                                      .disableAutocorrection(true)
+                                      .foregroundColor(.white)
+                                      .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                      .focused($focused)
+                                  if !input.isEmpty {
+                                      Button { input = "" } label: {
+                                          Image(systemName: "xmark.circle.fill").foregroundColor(.white.opacity(0.45))
+                                      }
+                                  }
+                              }
+                              .padding(.horizontal, 14).padding(.vertical, 14)
+                              .background(RoundedRectangle(cornerRadius: 12).fill(field))
+                              .offset(x: shake ? 8 : 0)
+
+                              if !activation.lastError.isEmpty {
+                                  Text(activation.lastError)
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(Color(red: 1.0, green: 0.55, blue: 0.6))
+                              }
+
+                              Button {
+                                  if let url = URL(string: ActivationManager.activationNameLink) {
+                                      UIApplication.shared.open(url)
+                                  }
+                              } label: {
+                                  Text(LS("احصل على كود الاشتراك"))
+                                      .font(.system(size: 13, weight: .semibold))
+                                      .frame(maxWidth: .infinity)
+                                      .padding(.vertical, 10)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(field))
+                                      .foregroundColor(.white)
+                              }
+                          }
+                          .padding(14)
+                          .background(RoundedRectangle(cornerRadius: 16).fill(panel))
+
+                          Button {
+                              focused = false
+                              HapticManager.shared.impact(.medium)
+                              activation.activate(code: input) { ok in
+                                  if ok {
+                                      activation.verify()
+                                  } else {
+                                      withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
+                                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
+                                  }
+                              }
+                          } label: {
+                              HStack(spacing: 8) {
+                                  if activation.isWorking { ProgressView().tint(.black) }
+                                  Text(activation.isWorking ? LS("جارٍ التحقق…") : LS("تحقق"))
+                                      .font(.system(size: 16, weight: .bold))
+                              }
+                              .frame(maxWidth: .infinity)
+                              .padding(.vertical, 15)
+                              .background(RoundedRectangle(cornerRadius: 14).fill(.white))
+                              .foregroundColor(.black)
+                          }
+                          .disabled(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty)
+                          .opacity(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty ? 0.6 : 1)
+
+                          Spacer(minLength: 0)
+                      }
+                      .padding(.horizontal, 20)
+                      .padding(.top, 24)
+                  }
+                  .onAppear { activation.verify() }
+              }
+          }
+
+          struct ActivationGateContainer<Content: View>: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              private let content: () -> Content
+              init(@ViewBuilder content: @escaping () -> Content) { self.content = content }
+
+              var body: some View {
+                  Group {
+                      if activation.isActive {
+                          content()
                       } else {
-                          HStack {
-                              Image(systemName: "xmark.circle.fill")
-                                  .foregroundColor(.red)
-                              Text("غير مفعّل")
-                                  .font(.system(size: 12))
-                          }
+                          SubscriptionGateView()
                       }
                   }
-                  .padding(10)
-                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                  .onAppear {
-                      isLoading = true
-                      activation.fetchStatus { _ in
-                          isLoading = false
-                      }
-                  }
+                  .animation(.easeInOut(duration: 0.35), value: activation.isActive)
               }
           }
           ACTEOF
 
       # =========================================================
-      # SOURCE CODE - NotifyCenter.swift (notifications only, no verification)
+      # SOURCE CODE - NotifyCenter.swift (notifications only)
       # =========================================================
       - name: Generate code - NotifyCenter.swift
         run: |
@@ -3488,7 +3681,7 @@ jobs:
                       "app_id": appId,
                       "body": text,
                       "code": ActivationManager.shared.code,
-                      "udid": UIDevice.current.identifierForVendor?.uuidString ?? ""
+                      "udid": ActivationManager.shared.deviceID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
                       var ok = false
@@ -3524,7 +3717,7 @@ jobs:
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": UIDevice.current.identifierForVendor?.uuidString ?? "",
+                      "udid": ActivationManager.shared.deviceID,
                       "code": ActivationManager.shared.code
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -3561,7 +3754,7 @@ jobs:
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "bundle_id": bundleId ?? "",
                       "name": name,
-                      "udid": UIDevice.current.identifierForVendor?.uuidString ?? ""
+                      "udid": ActivationManager.shared.deviceID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
@@ -3820,7 +4013,7 @@ jobs:
 
                                   TelegramUpdatesBanner()
 
-                                  // Subscription status card (small)
+                                  // Subscription status card (small) - still show status
                                   SubscriptionStatusCard()
                                       .padding(.horizontal, 18)
 
@@ -4006,10 +4199,56 @@ jobs:
                   }
               }
           }
+
+          // ================= Subscription Status Card =================
+          struct SubscriptionStatusCard: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              @State private var isLoading = false
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 6) {
+                      Text(LS("حالة الاشتراك"))
+                          .font(.system(size: 13, weight: .bold))
+                      if isLoading {
+                          ProgressView()
+                              .progressViewStyle(CircularProgressViewStyle())
+                              .scaleEffect(0.6)
+                      } else if activation.isActive {
+                          HStack {
+                              Image(systemName: "checkmark.circle.fill")
+                                  .foregroundColor(.green)
+                              Text("مفعّل — متبقٍ \(activation.daysLeft) يوم")
+                                  .font(.system(size: 12))
+                          }
+                          Text("ينتهي في \(activation.expiryText)")
+                              .font(.system(size: 11))
+                              .opacity(0.7)
+                          Text("الاسم: \(activation.code)")
+                              .font(.system(size: 11, design: .monospaced))
+                              .opacity(0.7)
+                      } else {
+                          HStack {
+                              Image(systemName: "xmark.circle.fill")
+                                  .foregroundColor(.red)
+                              Text("غير مفعّل")
+                                  .font(.system(size: 12))
+                          }
+                      }
+                  }
+                  .padding(10)
+                  .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
+                  .onAppear {
+                      isLoading = true
+                      activation.verify { _ in
+                          isLoading = false
+                      }
+                  }
+              }
+          }
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - VIP21StoreApp.swift (main app)
+      # SOURCE CODE - VIP21StoreApp.swift (main app with gate)
       # =========================================================
       - name: Generate code - VIP21StoreApp.swift
         run: |
@@ -4033,8 +4272,8 @@ jobs:
                   VIP21StoreApp.scheduleAppRefresh()
                   VIP21StoreApp.applyDarkAppearance()
                   LiveCatalogMonitor.shared.start()
-                  // تحقق من حالة الاشتراك عند بدء التطبيق
-                  ActivationManager.shared.fetchStatus()
+                  // التحقق من حالة الاشتراك عند بدء التطبيق
+                  ActivationManager.shared.verify()
               }
 
               static func registerBackgroundTask() {
@@ -4108,13 +4347,14 @@ jobs:
 
               var body: some Scene {
                   WindowGroup {
-                      NavigationView { ContentView() }
-                          .navigationViewStyle(.stack)
-                          .environment(\.locale, lang.locale)
-                          .environment(\.layoutDirection, lang.layout)
-                          .preferredColorScheme(.dark)
-                          .background(Color.storeBg.ignoresSafeArea())
-                          .id(lang.isArabic)
+                      ActivationGateContainer {
+                          NavigationView { ContentView() }
+                              .navigationViewStyle(.stack)
+                              .environment(\.locale, lang.locale)
+                              .environment(\.layoutDirection, lang.layout)
+                              .preferredColorScheme(.dark)
+                              .background(Color.storeBg.ignoresSafeArea())
+                      }
                   }
               }
           }
