@@ -6117,52 +6117,72 @@ jobs:
                   StatusCenter.shared.show(text: message)
               }
 
-              /// يجلب شهادة الجهاز المرتبطة بالـ UDID قبل بدء التثبيت.
-              /// النتيجة: الشهادة أو رسالة الخطأ الحقيقية القادمة من لوحة التحكم.
-              func fetchCertificate(_ done: @escaping (DeviceCertificate?, String?) -> Void) {
-                  let udid = ActivationManager.shared.deviceID
+              /// يتحقق من الحساب والـ UDID من نفس مسار التحقق الذي سمح للمستخدم
+              /// بالدخول. لا نستعمل مسار /certificate المنفصل لأنه غير موجود في بعض
+              /// إصدارات لوحة التحكم وكان سبب رسالة «لا توجد شهادة» الخاطئة.
+              /// اختيار ملفات p12 و mobileprovision يبقى عملية سيرفرية إلزامية داخل
+              /// install-by-bundle اعتمادًا على UDID الموثق، وليس اعتمادًا على قيمة محلية.
+              private func verifyDevice(_ done: @escaping (DeviceCertificate?, String?) -> Void) {
+                  let activation = ActivationManager.shared
+                  let udid = activation.udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
                   guard !udid.isEmpty else {
                       done(nil, "ألصق UDID الرسمي لجهازك في صفحة التفعيل أولًا"); return
                   }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
-                      done(nil, "رابط سيرفر الشهادات غير صحيح"); return
+                  guard !activation.code.isEmpty else {
+                      done(nil, "يجب تسجيل الدخول وتفعيل الاشتراك قبل التثبيت"); return
                   }
+
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
+                  comps?.queryItems = [
+                      URLQueryItem(name: "code", value: activation.code),
+                      URLQueryItem(name: "udid", value: udid),
+                      URLQueryItem(name: "device_id", value: udid)
+                  ]
+                  guard let url = comps?.url else {
+                      done(nil, "رابط التحقق من الجهاز غير صحيح"); return
+                  }
+
                   var req = URLRequest(url: url, timeoutInterval: 25)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": udid,
-                      "device_id": udid,
-                      "code": ActivationManager.shared.code
-                  ])
                   URLSession.shared.dataTask(with: req) { data, response, error in
                       var cert: DeviceCertificate? = nil
                       var message: String? = nil
 
                       if let error = error {
-                          message = "تعذّر الاتصال بسيرفر الشهادات: \(error.localizedDescription)"
+                          message = "تعذّر التحقق من جهازك: \(error.localizedDescription)"
                       } else if let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                          let ok = (obj["ok"] as? Bool) ?? ((response as? HTTPURLResponse)?.statusCode == 200)
-                          // الشهادة قد تعود مباشرة أو داخل مفتاح certificate/data.
-                          let raw = (obj["certificate"] as? [String: Any])
-                              ?? (obj["cert"] as? [String: Any])
-                              ?? (obj["data"] as? [String: Any])
-                              ?? ((obj["id"] != nil || obj["certificate_id"] != nil) ? obj : nil)
-                          if ok, let raw = raw, let parsed = DeviceCertificate.parse(raw) {
-                              cert = parsed
+                                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                          var account = root
+                          if let nested = root["account"] as? [String: Any] {
+                              for (key, value) in nested { account[key] = value }
+                          }
+                          let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? false
+                          let ok = (root["ok"] as? Bool) ?? statusOK
+                          let active = (account["active"] as? Bool) ?? true
+                          let serverUDID = ((account["udid"] as? String)
+                              ?? (account["device_id"] as? String)
+                              ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+
+                          if !ok || !active {
+                              message = (root["message"] as? String)
+                                  ?? (root["error"] as? String)
+                                  ?? "تعذّر التحقق من اشتراك هذا الجهاز"
+                          } else if !serverUDID.isEmpty && serverUDID != udid {
+                              message = "UDID الحالي لا يطابق الجهاز المرتبط بحسابك"
                           } else {
-                              message = (obj["message"] as? String)
-                                  ?? (obj["error"] as? String)
-                                  ?? "لا توجد شهادة مرتبطة بجهازك في لوحة التحكم"
+                              // بعض نسخ اللوحة ترجع معلومات الشهادة مع الحساب، وبعضها
+                              // يحسمها فقط داخل install-by-bundle. الحالتان صحيحتان.
+                              let rawCert = (account["certificate"] as? [String: Any])
+                                  ?? (account["cert"] as? [String: Any])
+                                  ?? ((account["device"] as? [String: Any])?["certificate"] as? [String: Any])
+                              if let rawCert = rawCert { cert = DeviceCertificate.parse(rawCert) }
                           }
                       } else {
-                          message = "رد غير صالح من سيرفر الشهادات"
+                          message = "رد غير صالح من سيرفر التحقق"
                       }
 
                       DispatchQueue.main.async {
-                          if let cert = cert { StoreInstaller.shared.currentCertificate = cert }
+                          self.currentCertificate = cert
                           done(cert, message)
                       }
                   }.resume()
@@ -6175,23 +6195,23 @@ jobs:
                       return
                   }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ تحميل شهادة جهازك...")
+                  StatusCenter.shared.show(text: "جارٍ التحقق من UDID وحسابك...")
 
-                  fetchCertificate { [weak self] cert, message in
+                  verifyDevice { [weak self] cert, message in
                       guard let self = self else { return }
-                      guard let cert = cert else {
-                          self.fail(message ?? "لا توجد شهادة مرتبطة بجهازك، تواصل مع الإدارة")
+                      if let message = message {
+                          self.fail(message)
                           return
                       }
-                      if cert.revoked {
+                      if cert?.revoked == true {
                           self.fail("شهادتك ملغاة (Revoked) — اطلب شهادة جديدة من الإدارة")
                           return
                       }
-                      if cert.isExpired {
+                      if cert?.isExpired == true {
                           self.fail("انتهت صلاحية شهادتك — جدّدها من لوحة التحكم قبل التثبيت")
                           return
                       }
-                      if !cert.udidRegistered {
+                      if cert?.udidRegistered == false {
                           self.fail("جهازك غير مضاف داخل بروفايل شهادتك — أضف UDID ثم أعد المحاولة")
                           return
                       }
@@ -6199,30 +6219,41 @@ jobs:
                   }
               }
 
-              private func performInstall(bundleId: String, name: String, cert: DeviceCertificate) {
+              private func performInstall(bundleId: String, name: String, cert: DeviceCertificate?) {
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else {
                       fail("رابط سيرفر التثبيت غير صحيح"); return
                   }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ توقيع التطبيق بشهادتك (\(cert.name))...")
+                  StatusCenter.shared.show(text: cert.map { "جارٍ توقيع التطبيق بشهادتك (\($0.name))..." }
+                      ?? "جارٍ جلب شهادة UDID وتوقيع التطبيق...")
 
                   let udid = ActivationManager.shared.deviceID
                   var req = URLRequest(url: url, timeoutInterval: 60)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  // إرسال معرّف الشهادة إلزامي: بدونه يوقّع السيرفر بشهادة افتراضية فيفشل التثبيت.
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                  // السيرفر ملزم بحل الشهادة وملفي p12/mobileprovision من UDID نفسه.
+                  // لا يُسمح بالرجوع إلى شهادة المتجر أو أي شهادة افتراضية.
+                  var payload: [String: Any] = [
                       "bundle_id": bundleId,
                       "name": name,
                       "udid": udid,
                       "device_id": udid,
                       "code": ActivationManager.shared.code,
-                      "certificate_id": cert.id,
-                      "cert_id": cert.id,
-                      "team_id": cert.teamId,
-                      "use_personal_certificate": true
-                  ])
+                      "certificate_scope": "udid",
+                      "resolve_certificate_by_udid": true,
+                      "require_udid_match": true,
+                      "require_personal_certificate": true,
+                      "use_personal_certificate": true,
+                      "allow_default_certificate": false,
+                      "allow_store_certificate": false
+                  ]
+                  if let cert = cert {
+                      payload["certificate_id"] = cert.id
+                      payload["cert_id"] = cert.id
+                      if !cert.teamId.isEmpty { payload["team_id"] = cert.teamId }
+                  }
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
                   URLSession.shared.dataTask(with: req) { data, _, error in
                       DispatchQueue.main.async {
