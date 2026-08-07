@@ -206,6 +206,53 @@ jobs:
               <key>LSRequiresIPhoneOS</key>             <true/>
               <key>UIFileSharingEnabled</key>            <true/>
               <key>LSSupportsOpeningDocumentsInPlace</key> <true/>
+              <!-- مطلوب لاسترداد ملفات الشهادة من تطبيق "الملفات" و iCloud -->
+              <key>UISupportsDocumentBrowser</key>       <false/>
+              <key>NSFileProviderDomainUsageDescription</key>
+              <string>نحتاج قراءة ملفات الشهادة (.p12 / .mobileprovision) التي تختارها للتثبيت.</string>
+              <key>UTImportedTypeDeclarations</key>
+              <array>
+                  <dict>
+                      <key>UTTypeIdentifier</key>        <string>com.ones.store.p12</string>
+                      <key>UTTypeDescription</key>       <string>Apple Signing Certificate (p12)</string>
+                      <key>UTTypeConformsTo</key>
+                      <array><string>public.data</string><string>public.item</string></array>
+                      <key>UTTypeTagSpecification</key>
+                      <dict>
+                          <key>public.filename-extension</key>
+                          <array><string>p12</string><string>pfx</string></array>
+                          <key>public.mime-type</key>
+                          <array><string>application/x-pkcs12</string></array>
+                      </dict>
+                  </dict>
+                  <dict>
+                      <key>UTTypeIdentifier</key>        <string>com.ones.store.mobileprovision</string>
+                      <key>UTTypeDescription</key>       <string>iOS Provisioning Profile</string>
+                      <key>UTTypeConformsTo</key>
+                      <array><string>public.data</string><string>public.item</string></array>
+                      <key>UTTypeTagSpecification</key>
+                      <dict>
+                          <key>public.filename-extension</key>
+                          <array><string>mobileprovision</string><string>provisionprofile</string></array>
+                          <key>public.mime-type</key>
+                          <array><string>application/x-apple-aspen-mobileprovision</string></array>
+                      </dict>
+                  </dict>
+              </array>
+              <key>CFBundleDocumentTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleTypeName</key>        <string>Signing Certificate</string>
+                      <key>LSHandlerRank</key>           <string>Alternate</string>
+                      <key>CFBundleTypeRole</key>        <string>Editor</string>
+                      <key>LSItemContentTypes</key>
+                      <array>
+                          <string>com.ones.store.p12</string>
+                          <string>com.ones.store.mobileprovision</string>
+                          <string>public.data</string>
+                      </array>
+                  </dict>
+              </array>
               <key>UIBackgroundModes</key>
               <array>
                   <string>remote-notification</string>
@@ -1389,6 +1436,90 @@ jobs:
           cat > ActivationManager.swift << 'ACTEOF'
           import SwiftUI
           import Foundation
+          import UniformTypeIdentifiers
+
+          /// أدوات استرداد ملفات الشهادة (.p12 / .mobileprovision) من تطبيق الملفات أو iCloud.
+          enum CertFileTypes {
+              static let p12Type = UTType("com.ones.store.p12") ?? .data
+              static let profileType = UTType("com.ones.store.mobileprovision") ?? .data
+
+              /// نضيف .item و .data حتى لا تظهر الملفات باهتة (غير قابلة للاختيار) في المتصفح.
+              static var p12: [UTType] {
+                  var list: [UTType] = [p12Type]
+                  if let t = UTType(filenameExtension: "p12") { list.append(t) }
+                  if let t = UTType(filenameExtension: "pfx") { list.append(t) }
+                  if let t = UTType("com.rsa.pkcs-12") { list.append(t) }
+                  list.append(contentsOf: [.pkcs12, .data, .item])
+                  return list
+              }
+
+              static var profile: [UTType] {
+                  var list: [UTType] = [profileType]
+                  if let t = UTType(filenameExtension: "mobileprovision") { list.append(t) }
+                  if let t = UTType(filenameExtension: "provisionprofile") { list.append(t) }
+                  list.append(contentsOf: [.data, .item])
+                  return list
+              }
+
+              static var storageDirectory: URL {
+                  let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                      ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                  let dir = base.appendingPathComponent("ONEsCertificates", isDirectory: true)
+                  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                  return dir
+              }
+
+              /// ينسخ الملف داخل الصندوق مع تنزيل نسخة iCloud إن لزم، ثم يعيد المسار المحلي.
+              static func importIntoSandbox(_ source: URL, kind: String) throws -> URL {
+                  let scoped = source.startAccessingSecurityScopedResource()
+                  defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+
+                  // ملفات iCloud غير المُنزّلة تفشل قراءتها مباشرة.
+                  let values = try? source.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+                  if let status = values?.ubiquitousItemDownloadingStatus, status != .current {
+                      try? FileManager.default.startDownloadingUbiquitousItem(at: source)
+                      let deadline = Date().addingTimeInterval(20)
+                      while Date() < deadline {
+                          let s = try? source.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+                          if s?.ubiquitousItemDownloadingStatus == .current { break }
+                          Thread.sleep(forTimeInterval: 0.3)
+                      }
+                  }
+
+                  var readError: NSError?
+                  var payload: Data?
+                  var coordinationError: Error?
+                  NSFileCoordinator().coordinate(readingItemAt: source, options: .withoutChanges, error: &readError) { url in
+                      do { payload = try Data(contentsOf: url, options: [.mappedIfSafe]) }
+                      catch { coordinationError = error }
+                  }
+                  if payload == nil { payload = try? Data(contentsOf: source) }
+                  guard let data = payload, !data.isEmpty else {
+                      throw coordinationError
+                          ?? readError
+                          ?? NSError(domain: "ONEs", code: -10,
+                                     userInfo: [NSLocalizedDescriptionKey: "الملف فارغ أو محمي ولم يُنزَّل من iCloud"])
+                  }
+
+                  let ext = source.pathExtension.isEmpty ? kind : source.pathExtension
+                  let destination = storageDirectory.appendingPathComponent("user-\(kind).\(ext)")
+                  try? FileManager.default.removeItem(at: destination)
+                  try data.write(to: destination, options: [.atomic])
+                  return destination
+              }
+
+              /// p12/PFX = حاوية ASN.1 DER تبدأ بـ 0x30.
+              static func looksLikeP12(_ data: Data) -> Bool {
+                  data.count > 64 && data.first == 0x30
+              }
+
+              /// mobileprovision = حاوية CMS تحتوي على plist نصي.
+              static func looksLikeProfile(_ data: Data) -> Bool {
+                  guard data.count > 128 else { return false }
+                  let text = String(decoding: data.prefix(20_000), as: UTF8.self)
+                  return text.contains("<plist") || text.contains("ProvisionedDevices") || text.contains("ProvisionsAllDevices")
+              }
+          }
           import Combine
           import UIKit
 
@@ -1701,11 +1832,39 @@ jobs:
                   }
                   .padding(16)
                   .background(RoundedRectangle(cornerRadius: 16).fill(ONEsUI.card))
-                  .fileImporter(isPresented: $importingP12, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
-                      p12URL = try? result.get().first
+                  // الأنواع المسموحة: أي ملف (public.item) + الأنواع المعلنة في Info.plist.
+                  // استخدام .data فقط كان يمنع ظهور/اختيار p12 و mobileprovision في تطبيق الملفات.
+                  .fileImporter(isPresented: $importingP12,
+                                allowedContentTypes: CertFileTypes.p12,
+                                allowsMultipleSelection: false) { result in
+                      handleImport(result, kind: "p12") { p12URL = $0 }
                   }
-                  .fileImporter(isPresented: $importingProfile, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
-                      profileURL = try? result.get().first
+                  .fileImporter(isPresented: $importingProfile,
+                                allowedContentTypes: CertFileTypes.profile,
+                                allowsMultipleSelection: false) { result in
+                      handleImport(result, kind: "mobileprovision") { profileURL = $0 }
+                  }
+              }
+
+              /// ينسخ الملف المختار فورًا إلى داخل صندوق التطبيق.
+              /// هذا هو الإصلاح الأساسي لخطأ "لا يتم استرداد الملف": ملفات iCloud/الملفات
+              /// تكون خارج الصندوق ومحمية، والقراءة المتأخرة تفشل بعد انتهاء صلاحية الوصول.
+              private func handleImport(_ result: Result<[URL], Error>,
+                                        kind: String,
+                                        assign: @escaping (URL?) -> Void) {
+                  switch result {
+                  case .failure(let error):
+                      message = "تعذر استرداد الملف: \(error.localizedDescription)"
+                  case .success(let urls):
+                      guard let source = urls.first else { message = "لم يتم اختيار ملف"; return }
+                      do {
+                          let local = try CertFileTypes.importIntoSandbox(source, kind: kind)
+                          assign(local)
+                          message = "تم استرداد \(local.lastPathComponent)"
+                      } catch {
+                          assign(nil)
+                          message = "تعذر استرداد الملف: \(error.localizedDescription)"
+                      }
                   }
               }
 
@@ -1715,17 +1874,16 @@ jobs:
                   guard !udid.isEmpty, !activation.code.isEmpty else {
                       message = "أدخل UDID وفعّل الاشتراك أولًا"; return
                   }
-                  guard p12URL.startAccessingSecurityScopedResource() else { message = "تعذر قراءة ملف p12"; return }
-                  guard profileURL.startAccessingSecurityScopedResource() else {
-                      p12URL.stopAccessingSecurityScopedResource(); message = "تعذر قراءة ملف البروفايل"; return
-                  }
-                  defer {
-                      p12URL.stopAccessingSecurityScopedResource()
-                      profileURL.stopAccessingSecurityScopedResource()
-                  }
+                  // الملفات صارت محلية داخل الصندوق، فلا حاجة لصلاحية security-scoped هنا.
                   guard let p12 = try? Data(contentsOf: p12URL),
                         let profile = try? Data(contentsOf: profileURL),
                         !p12.isEmpty, !profile.isEmpty else { message = "ملفات الشهادة فارغة أو غير قابلة للقراءة"; return }
+                  guard CertFileTypes.looksLikeP12(p12) else {
+                      message = "ملف p12 غير صالح (تأكد من تصديره كـ Personal Information Exchange)"; return
+                  }
+                  guard CertFileTypes.looksLikeProfile(profile) else {
+                      message = "ملف mobileprovision غير صالح"; return
+                  }
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificates/upload") else { return }
 
                   uploading = true; message = ""
