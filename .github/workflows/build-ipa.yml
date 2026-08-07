@@ -156,6 +156,21 @@ jobs:
                   case updatedAt = "updated_at"
               }
 
+              // المنشئ العادي (للاستخدام المباشر)
+              init(id: Int, name: String, bundleId: String?, version: String?, iconURL: String?, ipaURL: String?, description: String?, size: String?, category: String?, developer: String?, date: String?) {
+                  self.id = id
+                  self.name = name
+                  self.bundleId = bundleId
+                  self.version = version
+                  self.iconURL = iconURL
+                  self.ipaURL = ipaURL
+                  self.description = description
+                  self.size = size
+                  self.category = category
+                  self.developer = developer
+                  self.date = date
+              }
+
               init(from decoder: Decoder) throws {
                   let container = try decoder.container(keyedBy: CodingKeys.self)
                   id = (try? container.decode(Int.self, forKey: .id)) ?? Int.random(in: 1...999999)
@@ -199,14 +214,14 @@ jobs:
                   try container.encodeIfPresent(date, forKey: .date)
               }
 
+              var displayVersion: String? {
+                  if let v = version, !v.isEmpty { return v }
+                  return nil
+              }
+
               var cleanSize: String {
                   if let s = size, !s.isEmpty { return s }
                   return "غير معروف"
-              }
-
-              var displayVersion: String {
-                  if let v = version, !v.isEmpty { return v }
-                  return "1.0"
               }
           }
 
@@ -269,7 +284,7 @@ jobs:
               @objc private func ipaReceived(_ notification: Notification) {
                   if let links = notification.object as? [String] {
                       DispatchQueue.main.async {
-                          self.ipalinks = links
+                          self.ipaLinks = links
                       }
                   }
               }
@@ -318,7 +333,7 @@ jobs:
                   }
 
                   DispatchQueue.main.async {
-                      self.ipalinks = ipas
+                      self.ipaLinks = ipas
                       self.jsonLinks = jsons
                       self.plistLinks = plists
                       self.manifestLinks = manifests
@@ -339,7 +354,7 @@ jobs:
                   DispatchQueue.main.async {
                       self.allLinks = []
                       self.jsonLinks = []
-                      self.ipalinks = []
+                      self.ipaLinks = []
                       self.plistLinks = []
                       self.manifestLinks = []
                       self.scrapedApps = []
@@ -503,7 +518,7 @@ jobs:
 
               var filteredLinks: [(String, ScrapedItem.ItemType)] {
                   let all = linkStore.allLinks.map { ($0, ScrapedItem.ItemType.unknown) }
-                  let ipas = linkStore.ipalinks.map { ($0, ScrapedItem.ItemType.ipa) }
+                  let ipas = linkStore.ipaLinks.map { ($0, ScrapedItem.ItemType.ipa) }
                   let jsons = linkStore.jsonLinks.map { ($0, ScrapedItem.ItemType.json) }
                   let plists = linkStore.plistLinks.map { ($0, ScrapedItem.ItemType.plist) }
                   let manifests = linkStore.manifestLinks.map { ($0, ScrapedItem.ItemType.manifest) }
@@ -575,10 +590,8 @@ jobs:
                                       if type == .ipa || type == .json || type == .plist {
                                           Button("تحليل") {
                                               if type == .ipa {
-                                                  // Try to extract app info from IPA URL
                                                   NotificationCenter.default.post(name: .analyzeLink, object: link)
                                               } else if type == .json {
-                                                  // Parse JSON from this URL
                                                   NotificationCenter.default.post(name: .analyzeLink, object: link)
                                               }
                                           }
@@ -653,12 +666,13 @@ jobs:
                                       .lineLimit(1)
                               }
                               HStack(spacing: 6) {
-                                  if let version = app.displayVersion, !version.isEmpty {
+                                  if let version = app.displayVersion {
                                       Text("v\(version)")
                                           .font(.caption2)
                                           .foregroundColor(.blue)
                                   }
-                                  if let size = app.cleanSize, !size.isEmpty && size != "غير معروف" {
+                                  let size = app.cleanSize
+                                  if size != "غير معروف" {
                                       Text("• \(size)")
                                           .font(.caption2)
                                           .foregroundColor(.gray)
@@ -810,25 +824,27 @@ jobs:
                                   parsedApps = apps
                                   linkStore.scrapedApps = apps
                                   jsonParseResult = "تم استخراج \(apps.count) تطبيق"
-                              } else if let wrapper = try? decoder.decode([String: Any].self, from: data) {
-                                  // Try to find any array of apps
-                                  var found = false
-                                  for (key, value) in wrapper {
-                                      if let apps = value as? [[String: Any]], !apps.isEmpty {
-                                          let data2 = try JSONSerialization.data(withJSONObject: apps)
-                                          let decoded = try decoder.decode([AppInfo].self, from: data2)
-                                          parsedApps = decoded
-                                          linkStore.scrapedApps = decoded
-                                          jsonParseResult = "تم استخراج \(decoded.count) تطبيق من \(key)"
-                                          found = true
-                                          break
+                              } else {
+                                  // محاولة يدوية باستخدام JSONSerialization
+                                  if let jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                                      var found = false
+                                      for (key, value) in jsonObject {
+                                          if let appsArray = value as? [[String: Any]], !appsArray.isEmpty {
+                                              let appData = try JSONSerialization.data(withJSONObject: appsArray)
+                                              let decoded = try decoder.decode([AppInfo].self, from: appData)
+                                              parsedApps = decoded
+                                              linkStore.scrapedApps = decoded
+                                              jsonParseResult = "تم استخراج \(decoded.count) تطبيق من \(key)"
+                                              found = true
+                                              break
+                                          }
                                       }
-                                  }
-                                  if !found {
+                                      if !found {
+                                          jsonParseResult = "صيغة JSON غير مدعومة"
+                                      }
+                                  } else {
                                       jsonParseResult = "صيغة JSON غير مدعومة"
                                   }
-                              } else {
-                                  jsonParseResult = "صيغة JSON غير مدعومة"
                               }
                           } catch {
                               jsonParseResult = "خطأ في التحليل: \(error.localizedDescription)"
@@ -911,7 +927,6 @@ jobs:
 
               func makeUIView(context: Context) -> WKWebView {
                   let config = WKWebViewConfiguration()
-                  config.preferences.javaScriptEnabled = true
                   config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   let webView = WKWebView(frame: .zero, configuration: config)
                   webView.navigationDelegate = context.coordinator
@@ -1016,16 +1031,12 @@ jobs:
                       LinkStore.shared.statusMessage = "جارٍ تحليل: \(link)"
 
                       if link.lowercased().hasSuffix(".json") || link.contains("/api/") {
-                          // Parse JSON from URL
                           parseJSONFromURL(link)
                       } else if link.lowercased().hasSuffix(".ipa") || link.contains("/ipa/") {
-                          // Extract app info from IPA link
                           extractAppInfoFromIPALink(link)
                       } else if link.lowercased().hasSuffix(".plist") {
-                          // Parse plist
                           parsePlistFromURL(link)
                       } else {
-                          // Try to scrape the page for app info
                           scrapePageForAppInfo(link)
                       }
                   }
@@ -1077,12 +1088,11 @@ jobs:
                           do {
                               let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
                               if let dict = plist as? [String: Any] {
-                                  // Try to extract app info from plist
                                   if let items = dict["items"] as? [[String: Any]] {
                                       for item in items {
                                           if let assets = item["assets"] as? [[String: Any]],
                                              let metadata = item["metadata"] as? [String: Any] {
-                                              var app = AppInfo(
+                                              let app = AppInfo(
                                                   id: Int.random(in: 1...999999),
                                                   name: (metadata["title"] as? String) ?? "Unknown",
                                                   bundleId: metadata["bundle-identifier"] as? String,
@@ -1115,7 +1125,6 @@ jobs:
                   }
 
                   private func extractAppInfoFromIPALink(_ link: String) {
-                      // Try to extract app name from URL
                       let url = URL(string: link)!
                       let name = url.deletingPathExtension().lastPathComponent
                       let bundleId = name.replacingOccurrences(of: "-", with: ".")
@@ -1148,7 +1157,6 @@ jobs:
                       URLSession.shared.dataTask(with: url) { data, _, error in
                           guard let data = data, let html = String(data: data, encoding: .utf8) else { return }
 
-                          // Try to extract app info from HTML
                           var name = ""
                           var bundleId = ""
                           var version = ""
@@ -1220,7 +1228,6 @@ jobs:
                           for (var i = 0; i < scripts.length; i++) {
                               var content = scripts[i].textContent || scripts[i].innerHTML;
                               if (content.includes('bundleId') || content.includes('bundle_id') || content.includes('app')) {
-                                  // Try to extract data
                                   var matches = content.match(/bundle[-_]?id[=:]["']([^"']+)["']/i);
                                   if (matches) data.bundleId = matches[1];
                                   matches = content.match(/version[=:]["']([^"']+)["']/i);
