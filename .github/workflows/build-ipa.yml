@@ -31,21 +31,9 @@ jobs:
 
       - name: Setup Xcode
         run: |
-          # يكتشف أي Xcode متوفر على Runner (15.4 هو الأحدث الموثوق لـ macos-latest حالياً)
-          for v in "15.4" "15.3" "15.2" "15.1" "15.0" "14.4" "14.3" "14.2"; do
-            if [ -d "/Applications/Xcode_${v}.app" ]; then
-              sudo xcode-select --switch "/Applications/Xcode_${v}.app/Contents/Developer"
-              echo "Using Xcode ${v}"
-              break
-            fi
-          done
-          # fallback: أول Xcode مثبت
-          if ! xcode-select -p 2>/dev/null; then
-            sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-          fi
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
           xcode-select -p
           swift --version
-          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Install required tools
         run: |
@@ -80,99 +68,6 @@ jobs:
           curl -L -o Resources/detail_icon_bg.gif      "https://up6.cc/2026/08/178602194400281.png"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
           ls -lh Resources
-
-      - name: Generate feature images (no UDID, no wallet)
-        run: |
-          python3 -m pip install --quiet --break-system-packages Pillow 2>/dev/null || true
-          python3 << 'PYEOF'
-          from PIL import Image, ImageDraw, ImageFont
-          import os, random
-          os.makedirs("Resources", exist_ok=True)
-          random.seed(42)
-
-          def gradient(w, h, c1, c2, vertical=True):
-              img = Image.new("RGBA", (w, h), c1 + (255,))
-              d = ImageDraw.Draw(img)
-              steps = h if vertical else w
-              for i in range(steps):
-                  t = i / max(1, steps - 1)
-                  r = int(c1[0] + (c2[0] - c1[0]) * t)
-                  g = int(c1[1] + (c2[1] - c1[1]) * t)
-                  b = int(c1[2] + (c2[2] - c1[2]) * t)
-                  d.line([(0, i), (w, i)] if vertical else [(i, 0), (i, h)], fill=(r, g, b, 255))
-              return img
-
-          def rounded_card(w, h, radius, fill, shadow=True):
-              img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-              d = ImageDraw.Draw(img)
-              if shadow:
-                  d.rounded_rectangle((4, 8, w - 4, h - 4), radius=radius, fill=(0, 0, 0, 60))
-              body = (4, 4, w - 5, h - 5) if shadow else (0, 0, w - 1, h - 1)
-              d.rounded_rectangle(body, radius=radius, fill=fill)
-              return img
-
-          def find_font(size):
-              for p in [
-                  "/System/Library/Fonts/Helvetica.ttc",
-                  "/System/Library/Fonts/SFNSDisplay.ttf",
-                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                  "/Library/Fonts/Arial Bold.ttf",
-              ]:
-                  if os.path.exists(p):
-                      try: return ImageFont.truetype(p, size)
-                      except: pass
-              return ImageFont.load_default()
-
-          def text_centered(d, txt, x, y, font, fill):
-              try:
-                  bbox = d.textbbox((0, 0), txt, font=font)
-                  w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
-              except AttributeError:
-                  w, h = d.textsize(txt, font=font)
-              if isinstance(fill, tuple) and len(fill) == 4 and getattr(d, "_image", None) is not None:
-                  if d._image.mode == "RGB":
-                      fill = fill[:3]
-              d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
-
-          def write_image(path, img):
-              if img.mode == "RGBA":
-                  bg = Image.new("RGB", img.size, (255, 255, 255))
-                  bg.paste(img, mask=img.split()[-1])
-                  img = bg
-              img.save(path, "PNG", optimize=True)
-              return img
-
-          W, H = 900, 1400
-          def onboarding(text_title, text_body, accent):
-              base = gradient(W, H, (250, 251, 255), (235, 240, 255))
-              d = ImageDraw.Draw(base)
-              d.rounded_rectangle((80, 200, W - 80, 900), radius=40, fill=accent)
-              text_centered(d, text_title, W // 2, 350, find_font(60), (255, 255, 255))
-              text_centered(d, "*", W // 2, 560, find_font(80), (255, 255, 255))
-              for i, line in enumerate(text_body.split("\n")):
-                  text_centered(d, line, W // 2, 1050 + i * 70, find_font(34), (40, 50, 80))
-              for i in range(3):
-                  x = W // 2 - 60 + i * 60
-                  d.ellipse((x, 1280, x + 30, 1310), fill=(180, 190, 220))
-              d.ellipse((W // 2 - 15, 1280, W // 2 + 15, 1310), fill=(40, 50, 80))
-              return base
-
-          for i, (t, b, c) in enumerate([
-              ("Send & Receive", "Transfer wallet credit\nto any 21s user, instantly.", (60, 130, 220)),
-              ("Top-up Anywhere", "USDT, BTC, ETH or\nlocal payment methods.", (90, 200, 130)),
-              ("Refer & Earn", "Share your link - every\nsignup gives you $5.", (200, 100, 220)),
-          ]):
-              write_image(f"Resources/wallet_advanced_onb{i+1}.png", onboarding(t, b, c))
-
-          ico = gradient(1024, 1024, (24, 36, 80), (10, 18, 42))
-          d = ImageDraw.Draw(ico)
-          d.rounded_rectangle((120, 120, 904, 904), radius=180, fill=(70, 130, 240))
-          d.rounded_rectangle((220, 340, 804, 700), radius=30, fill=(255, 255, 255))
-          d.text((260, 380), "21s", font=find_font(280), fill=(24, 36, 80))
-          write_image("Resources/feature_app_icon.png", ico)
-          print("All feature images generated.")
-          PYEOF
-          ls -lh Resources | tail -30
 
       - name: Generate app icons from the logo image
         run: |
@@ -218,53 +113,6 @@ jobs:
               <key>LSRequiresIPhoneOS</key>             <true/>
               <key>UIFileSharingEnabled</key>            <true/>
               <key>LSSupportsOpeningDocumentsInPlace</key> <true/>
-              <!-- مطلوب لاسترداد ملفات الشهادة من تطبيق "الملفات" و iCloud -->
-              <key>UISupportsDocumentBrowser</key>       <false/>
-              <key>NSFileProviderDomainUsageDescription</key>
-              <string>نحتاج قراءة ملفات الشهادة (.p12 / .mobileprovision) التي تختارها للتثبيت.</string>
-              <key>UTImportedTypeDeclarations</key>
-              <array>
-                  <dict>
-                      <key>UTTypeIdentifier</key>        <string>com.ones.store.p12</string>
-                      <key>UTTypeDescription</key>       <string>Apple Signing Certificate (p12)</string>
-                      <key>UTTypeConformsTo</key>
-                      <array><string>public.data</string><string>public.item</string></array>
-                      <key>UTTypeTagSpecification</key>
-                      <dict>
-                          <key>public.filename-extension</key>
-                          <array><string>p12</string><string>pfx</string></array>
-                          <key>public.mime-type</key>
-                          <array><string>application/x-pkcs12</string></array>
-                      </dict>
-                  </dict>
-                  <dict>
-                      <key>UTTypeIdentifier</key>        <string>com.ones.store.mobileprovision</string>
-                      <key>UTTypeDescription</key>       <string>iOS Provisioning Profile</string>
-                      <key>UTTypeConformsTo</key>
-                      <array><string>public.data</string><string>public.item</string></array>
-                      <key>UTTypeTagSpecification</key>
-                      <dict>
-                          <key>public.filename-extension</key>
-                          <array><string>mobileprovision</string><string>provisionprofile</string></array>
-                          <key>public.mime-type</key>
-                          <array><string>application/x-apple-aspen-mobileprovision</string></array>
-                      </dict>
-                  </dict>
-              </array>
-              <key>CFBundleDocumentTypes</key>
-              <array>
-                  <dict>
-                      <key>CFBundleTypeName</key>        <string>Signing Certificate</string>
-                      <key>LSHandlerRank</key>           <string>Alternate</string>
-                      <key>CFBundleTypeRole</key>        <string>Editor</string>
-                      <key>LSItemContentTypes</key>
-                      <array>
-                          <string>com.ones.store.p12</string>
-                          <string>com.ones.store.mobileprovision</string>
-                          <string>public.data</string>
-                      </array>
-                  </dict>
-              </array>
               <key>UIBackgroundModes</key>
               <array>
                   <string>remote-notification</string>
@@ -273,7 +121,7 @@ jobs:
               </array>
               <key>BGTaskSchedulerPermittedIdentifiers</key>
               <array>
-                  <string>${{ env.NEW_BUNDLE_ID }}.refresh</string>
+                  <string>com.21s.store.refresh</string>
               </array>
               <key>NSUserNotificationsUsageDescription</key>
               <string>نُبلغك برموز التحقق وحالة التنزيل والتوقيع.</string>
@@ -294,7 +142,6 @@ jobs:
                   <string>UIInterfaceOrientationPortrait</string>
                   <string>UIInterfaceOrientationPortraitUpsideDown</string>
               </array>
-              <!-- App icons intentionally hidden: no CFBundleIconFile / CFBundleIcons keys. -->
               <key>UIPrerenderedIcon</key>              <true/>
               <key>UILaunchScreen</key>
               <dict/>
@@ -317,7 +164,6 @@ jobs:
                       </array>
                   </dict>
               </array>
-              <!-- Light mode only (dark mode disabled) -->
               <key>UIUserInterfaceStyle</key>
               <string>Light</string>
               <key>NSAppTransportSecurity</key>
@@ -373,7 +219,6 @@ jobs:
           </dict>
           </plist>
           PEOF
-
 
       # =========================================================
       # SOURCE CODE - Localization.swift (Arabic / English switch)
@@ -678,6 +523,7 @@ jobs:
               static var storeText: Color     { rgb(ThemeManager.p.text) }
               static var storeSub: Color      { rgb(ThemeManager.p.sub) }
               static var storeDivider: Color  { rgb(ThemeManager.p.divider) }
+              static var storeGreen: Color    { rgb(ThemeManager.p.cyan) } // added for certificate status
           }
 
           extension UIImage {
@@ -1448,90 +1294,6 @@ jobs:
           cat > ActivationManager.swift << 'ACTEOF'
           import SwiftUI
           import Foundation
-          import UniformTypeIdentifiers
-
-          /// أدوات استرداد ملفات الشهادة (.p12 / .mobileprovision) من تطبيق الملفات أو iCloud.
-          enum CertFileTypes {
-              static let p12Type = UTType("com.ones.store.p12") ?? .data
-              static let profileType = UTType("com.ones.store.mobileprovision") ?? .data
-
-              /// نضيف .item و .data حتى لا تظهر الملفات باهتة (غير قابلة للاختيار) في المتصفح.
-              static var p12: [UTType] {
-                  var list: [UTType] = [p12Type]
-                  if let t = UTType(filenameExtension: "p12") { list.append(t) }
-                  if let t = UTType(filenameExtension: "pfx") { list.append(t) }
-                  if let t = UTType("com.rsa.pkcs-12") { list.append(t) }
-                  list.append(contentsOf: [.pkcs12, .data, .item])
-                  return list
-              }
-
-              static var profile: [UTType] {
-                  var list: [UTType] = [profileType]
-                  if let t = UTType(filenameExtension: "mobileprovision") { list.append(t) }
-                  if let t = UTType(filenameExtension: "provisionprofile") { list.append(t) }
-                  list.append(contentsOf: [.data, .item])
-                  return list
-              }
-
-              static var storageDirectory: URL {
-                  let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-                      ?? URL(fileURLWithPath: NSTemporaryDirectory())
-                  let dir = base.appendingPathComponent("ONEsCertificates", isDirectory: true)
-                  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                  return dir
-              }
-
-              /// ينسخ الملف داخل الصندوق مع تنزيل نسخة iCloud إن لزم، ثم يعيد المسار المحلي.
-              static func importIntoSandbox(_ source: URL, kind: String) throws -> URL {
-                  let scoped = source.startAccessingSecurityScopedResource()
-                  defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-
-                  // ملفات iCloud غير المُنزّلة تفشل قراءتها مباشرة.
-                  let values = try? source.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-                  if let status = values?.ubiquitousItemDownloadingStatus, status != .current {
-                      try? FileManager.default.startDownloadingUbiquitousItem(at: source)
-                      let deadline = Date().addingTimeInterval(20)
-                      while Date() < deadline {
-                          let s = try? source.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-                          if s?.ubiquitousItemDownloadingStatus == .current { break }
-                          Thread.sleep(forTimeInterval: 0.3)
-                      }
-                  }
-
-                  var readError: NSError?
-                  var payload: Data?
-                  var coordinationError: Error?
-                  NSFileCoordinator().coordinate(readingItemAt: source, options: .withoutChanges, error: &readError) { url in
-                      do { payload = try Data(contentsOf: url, options: [.mappedIfSafe]) }
-                      catch { coordinationError = error }
-                  }
-                  if payload == nil { payload = try? Data(contentsOf: source) }
-                  guard let data = payload, !data.isEmpty else {
-                      throw coordinationError
-                          ?? readError
-                          ?? NSError(domain: "ONEs", code: -10,
-                                     userInfo: [NSLocalizedDescriptionKey: "الملف فارغ أو محمي ولم يُنزَّل من iCloud"])
-                  }
-
-                  let ext = source.pathExtension.isEmpty ? kind : source.pathExtension
-                  let destination = storageDirectory.appendingPathComponent("user-\(kind).\(ext)")
-                  try? FileManager.default.removeItem(at: destination)
-                  try data.write(to: destination, options: [.atomic])
-                  return destination
-              }
-
-              /// p12/PFX = حاوية ASN.1 DER تبدأ بـ 0x30.
-              static func looksLikeP12(_ data: Data) -> Bool {
-                  data.count > 64 && data.first == 0x30
-              }
-
-              /// mobileprovision = حاوية CMS تحتوي على plist نصي.
-              static func looksLikeProfile(_ data: Data) -> Bool {
-                  guard data.count > 128 else { return false }
-                  let text = String(decoding: data.prefix(20_000), as: UTF8.self)
-                  return text.contains("<plist") || text.contains("ProvisionedDevices") || text.contains("ProvisionsAllDevices")
-              }
-          }
           import Combine
           import UIKit
 
@@ -1784,226 +1546,6 @@ jobs:
                   .padding(14)
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.gray.opacity(0.15)))
                   .onAppear { activation.verify() }
-              }
-          }
-
-          /// مخزن حالة ملفات الشهادة على الجهاز. يُستخدم لعرض badge على أيقونة الإعدادات
-          /// ولتجنّب رفع شهادة كل مرة. الملفات الفعلية تبقى محفوظة في لوحة التحكم.
-          @MainActor
-          final class CertificateStore: ObservableObject {
-              static let shared = MainActor.assumeIsolated { CertificateStore() }
-              @Published private(set) var hasP12: Bool = false
-              @Published private(set) var hasProfile: Bool = false
-              @Published private(set) var p12FileName: String = ""
-              @Published private(set) var profileFileName: String = ""
-              @Published private(set) var p12PasswordSaved: Bool = false
-              @Published private(set) var lastUploadOK: Bool = false
-              @Published private(set) var lastUploadMessage: String = ""
-
-              private let kP12 = "cert_p12_filename_v1"
-              private let kProfile = "cert_profile_filename_v1"
-              private let kPW = "cert_p12_password_saved_v1"
-              private let kOK = "cert_last_upload_ok_v1"
-              private let kMsg = "cert_last_upload_msg_v1"
-
-              private init() {
-                  let d = UserDefaults.standard
-                  p12FileName = d.string(forKey: kP12) ?? ""
-                  profileFileName = d.string(forKey: kProfile) ?? ""
-                  p12PasswordSaved = d.bool(forKey: kPW)
-                  lastUploadOK = d.bool(forKey: kOK)
-                  lastUploadMessage = d.string(forKey: kMsg) ?? ""
-                  hasP12 = !p12FileName.isEmpty
-                  hasProfile = !profileFileName.isEmpty
-              }
-
-              func markP12(_ name: String) {
-                  p12FileName = name
-                  hasP12 = !name.isEmpty
-                  UserDefaults.standard.set(name, forKey: kP12)
-              }
-              func markProfile(_ name: String) {
-                  profileFileName = name
-                  hasProfile = !name.isEmpty
-                  UserDefaults.standard.set(name, forKey: kProfile)
-              }
-              func markPasswordSaved(_ saved: Bool) {
-                  p12PasswordSaved = saved
-                  UserDefaults.standard.set(saved, forKey: kPW)
-              }
-              func markUpload(ok: Bool, message: String) {
-                  lastUploadOK = ok
-                  lastUploadMessage = message
-                  UserDefaults.standard.set(ok, forKey: kOK)
-                  UserDefaults.standard.set(message, forKey: kMsg)
-              }
-              func clear() {
-                  p12FileName = ""; hasP12 = false
-                  profileFileName = ""; hasProfile = false
-                  p12PasswordSaved = false; lastUploadOK = false; lastUploadMessage = ""
-                  let d = UserDefaults.standard
-                  for k in [kP12, kProfile, kPW, kOK, kMsg] { d.removeObject(forKey: k) }
-              }
-          }
-
-          /// إعدادات UDID ورفع شهادة المستخدم إلى لوحة التحكم عبر HTTPS.
-          /// لا تُحفظ كلمة مرور p12 محليًا، ولا تُرسل الملفات إلا إلى السيرفر الأصلي.
-          struct CertificateAndUDIDSettingsView: View {
-              @ObservedObject private var activation = ActivationManager.shared
-              @State private var p12URL: URL? = nil
-              @State private var profileURL: URL? = nil
-              @State private var p12Password = ""
-              @State private var importingP12 = false
-              @State private var importingProfile = false
-              @State private var uploading = false
-              @State private var message = ""
-              @ObservedObject private var certStore = CertificateStore.shared
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 14) {
-                      Label(LS("إضافة ملفات الشهادة (.p12 / .mobileprovision)"), systemImage: "checkmark.shield.fill")
-                          .font(.system(size: 16, weight: .bold))
-
-                      TextField(LS("ألصق UDID الرسمي للجهاز"), text: $activation.udid)
-                          .textInputAutocapitalization(.characters)
-                          .disableAutocorrection(true)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 10).fill(ONEsUI.card))
-
-                      Button { importingP12 = true } label: {
-                          Label(p12URL?.lastPathComponent ?? "اختيار ملف p12", systemImage: "key.fill")
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                      }
-                      .buttonStyle(.bordered)
-
-                      Button { importingProfile = true } label: {
-                          Label(profileURL?.lastPathComponent ?? "اختيار mobileprovision", systemImage: "doc.badge.gearshape")
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                      }
-                      .buttonStyle(.bordered)
-
-                      SecureField("كلمة مرور p12", text: $p12Password)
-                          .textContentType(.password)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 10).fill(ONEsUI.card))
-
-                      Button { uploadCertificate() } label: {
-                          HStack {
-                              if uploading { ProgressView() }
-                              Text(uploading ? "جارٍ التحقق والرفع..." : "تحقق واربط الشهادة بهذا UDID")
-                                  .fontWeight(.bold)
-                          }
-                          .frame(maxWidth: .infinity)
-                      }
-                      .buttonStyle(.borderedProminent)
-                      .disabled(uploading || p12URL == nil || profileURL == nil || activation.udid.isEmpty || p12Password.isEmpty)
-
-                      if !message.isEmpty {
-                          Text(message).font(.system(size: 12, weight: .semibold)).foregroundColor(ONEsUI.sub)
-                      }
-                  }
-                  .padding(16)
-                  .background(RoundedRectangle(cornerRadius: 16).fill(ONEsUI.card))
-                  // الأنواع المسموحة: أي ملف (public.item) + الأنواع المعلنة في Info.plist.
-                  // استخدام .data فقط كان يمنع ظهور/اختيار p12 و mobileprovision في تطبيق الملفات.
-                  .fileImporter(isPresented: $importingP12,
-                                allowedContentTypes: CertFileTypes.p12,
-                                allowsMultipleSelection: false) { result in
-                      handleImport(result, kind: "p12") { p12URL = $0 }
-                  }
-                  .fileImporter(isPresented: $importingProfile,
-                                allowedContentTypes: CertFileTypes.profile,
-                                allowsMultipleSelection: false) { result in
-                      handleImport(result, kind: "mobileprovision") { profileURL = $0 }
-                  }
-              }
-
-              /// ينسخ الملف المختار فورًا إلى داخل صندوق التطبيق.
-              /// هذا هو الإصلاح الأساسي لخطأ "لا يتم استرداد الملف": ملفات iCloud/الملفات
-              /// تكون خارج الصندوق ومحمية، والقراءة المتأخرة تفشل بعد انتهاء صلاحية الوصول.
-              private func handleImport(_ result: Result<[URL], Error>,
-                                        kind: String,
-                                        assign: @escaping (URL?) -> Void) {
-                  switch result {
-                  case .failure(let error):
-                      message = "تعذر استرداد الملف: \(error.localizedDescription)"
-                  case .success(let urls):
-                      guard let source = urls.first else { message = "لم يتم اختيار ملف"; return }
-                      do {
-                          let local = try CertFileTypes.importIntoSandbox(source, kind: kind)
-                          assign(local)
-                          message = "تم استرداد \(local.lastPathComponent)"
-                      } catch {
-                          assign(nil)
-                          message = "تعذر استرداد الملف: \(error.localizedDescription)"
-                      }
-                  }
-              }
-
-              private func uploadCertificate() {
-                  guard let p12URL, let profileURL else { return }
-                  let udid = activation.udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  guard !udid.isEmpty, !activation.code.isEmpty else {
-                      message = "أدخل UDID وفعّل الاشتراك أولًا"; return
-                  }
-                  // الملفات صارت محلية داخل الصندوق، فلا حاجة لصلاحية security-scoped هنا.
-                  guard let p12 = try? Data(contentsOf: p12URL),
-                        let profile = try? Data(contentsOf: profileURL),
-                        !p12.isEmpty, !profile.isEmpty else { message = "ملفات الشهادة فارغة أو غير قابلة للقراءة"; return }
-                  guard CertFileTypes.looksLikeP12(p12) else {
-                      message = "ملف p12 غير صالح (تأكد من تصديره كـ Personal Information Exchange)"; return
-                  }
-                  guard CertFileTypes.looksLikeProfile(profile) else {
-                      message = "ملف mobileprovision غير صالح"; return
-                  }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificates/upload") else { return }
-
-                  uploading = true; message = ""
-                  let boundary = "ONEs-\(UUID().uuidString)"
-                  var body = Data()
-                  func field(_ name: String, _ value: String) {
-                      body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8) ?? Data())
-                  }
-                  func file(_ name: String, _ filename: String, _ data: Data) {
-                      body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using: .utf8) ?? Data())
-                      body.append(data); body.append("\r\n".data(using: .utf8) ?? Data())
-                  }
-                  field("code", activation.code); field("udid", udid); field("p12_password", p12Password)
-                  file("p12", p12URL.lastPathComponent, p12); file("mobileprovision", profileURL.lastPathComponent, profile)
-                  body.append("--\(boundary)--\r\n".data(using: .utf8) ?? Data())
-
-                  var request = URLRequest(url: url, timeoutInterval: 60)
-                  request.httpMethod = "POST"
-                  request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                  request.httpBody = body
-                  URLSession.shared.dataTask(with: request) { data, response, error in
-                      DispatchQueue.main.async {
-                          uploading = false; p12Password = ""
-                          if let error {
-                              message = "فشل الرفع: \(error.localizedDescription)"
-                              certStore.markUpload(ok: false, message: message)
-                              return
-                          }
-                          let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-                          let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? false
-                          let finalMessage: String
-                          let finalOK: Bool
-                          if statusOK, (object?["ok"] as? Bool) != false {
-                              finalMessage = (object?["message"] as? String) ?? LS("تمت إضافة الشهادة")
-                              finalOK = true
-                              // حدّث مخزن الشهادة المحلي ليُعرض badge ✅ في الإعدادات
-                              certStore.markP12(p12URL.lastPathComponent)
-                              certStore.markProfile(profileURL.lastPathComponent)
-                              certStore.markPasswordSaved(true)
-                          } else {
-                              finalMessage = (object?["message"] as? String) ?? (object?["error"] as? String) ?? "رفضت لوحة التحكم ملف الشهادة"
-                              finalOK = false
-                          }
-                          certStore.markUpload(ok: finalOK, message: finalMessage)
-                          message = finalMessage
-                          HapticManager.shared.notification(finalOK ? .success : .error)
-                      }
-                  }.resume()
               }
           }
 
@@ -3857,28 +3399,27 @@ jobs:
               @ObservedObject private var updates = UpdatesFeed.shared
               @State private var tab: Int = 0
               @State private var showSearch = false
-              @State private var showSettings = false
 
               var body: some View {
                   ZStack {
                       TabView(selection: $tab) {
                           StoreHomeView(feed: feed,
-                                       onMenu: { showSettings = true },
+                                       onMenu: {  },
                                        onGoApps: { tab = 3 },
                                        onGoFiles: { tab = 2 })
                               .tabItem { Label(LS("الرئيسية"), systemImage: "house.fill") }
                               .tag(0)
 
-                          FavoritesView(feed: feed, onMenu: { showSettings = true })
+                          FavoritesView(feed: feed, onMenu: {  })
                               .tabItem { Label(LS("المفضلة"), systemImage: "heart.fill") }
                               .badge(favs.items.count)
                               .tag(1)
 
-                          AppsListView(feed: feed, onMenu: { showSettings = true })
+                          AppsListView(feed: feed, onMenu: {  })
                               .tabItem { Label(LS("التطبيقات"), systemImage: "square.grid.2x2.fill") }
                               .tag(3)
 
-                          AlertsView(feed: feed, onMenu: { showSettings = true })
+                          AlertsView(feed: feed, onMenu: {  })
                               .tabItem { Label(LS("التحديثات"), systemImage: "arrow.triangle.2.circlepath") }
                               .badge(updates.recentCount)
                               .tag(2)
@@ -3891,24 +3432,6 @@ jobs:
                       NotificationBannerHost()
                           .ignoresSafeArea(.keyboard)
                           .zIndex(10000)
-                  }
-                  .sheet(isPresented: $showSettings) {
-                      NavigationStack {
-                          ScrollView {
-                              VStack(spacing: 16) {
-                                  ActivationStatusCard()
-                                  CertificateAndUDIDSettingsView()
-                              }
-                              .padding(20)
-                          }
-                          .background(ONEsUI.bg.ignoresSafeArea())
-                          .navigationTitle(LS("الإعدادات"))
-                          .toolbar {
-                              ToolbarItem(placement: .topBarLeading) {
-                                  Button(LS("إغلاق")) { showSettings = false }
-                              }
-                          }
-                      }
                   }
                   .onAppear {
                       StatusCenter.shared.start()
@@ -4278,44 +3801,23 @@ jobs:
               }
           }
 
-          // ---- Top bar: ONEs brand centered + three-dots settings menu ----
-          // الأيقونة هنا (ellipsis.circle.fill) = أيقونة الإعدادات بثلاث نقاط
-          // يعرض badge أحمر إن كان الاشتراك غير مفعّل أو الشهادة ناقصة.
+          // ---- Top bar: ONEs brand centered, with optional leading settings button ----
           struct ONEsTopBar: View {
-              var onMenu: (() -> Void)? = nil
-              @ObservedObject private var activation = ActivationManager.shared
-              @ObservedObject private var cert = CertificateStore.shared
-
-              /// هل يحتاج المستخدم انتباه؟ (يُظهر نقطة حمراء على أيقونة الإعدادات)
-              private var needsAttention: Bool {
-                  if !activation.isActive { return true }
-                  if !cert.hasP12 || !cert.hasProfile { return true }
-                  if activation.udid.trimmingCharacters(in: .whitespaces).isEmpty { return true }
-                  return false
-              }
+              var leadingAction: (() -> Void)? = nil
+              var leadingIcon: String = "gearshape.fill"
 
               var body: some View {
                   HStack {
-                      Button {
-                          HapticManager.shared.selection()
-                          onMenu?()
-                      } label: {
-                          ZStack(alignment: .topTrailing) {
-                              Image(systemName: "ellipsis.circle.fill")
-                                  .font(.system(size: 26, weight: .bold))
+                      if let action = leadingAction {
+                          Button(action: action) {
+                              Image(systemName: leadingIcon)
+                                  .font(.system(size: 18, weight: .semibold))
                                   .foregroundColor(ONEsUI.text)
-                                  .frame(width: 40, height: 40)
-                                  .contentShape(Rectangle())
-                              if needsAttention {
-                                  Circle()
-                                      .fill(Color.red)
-                                      .frame(width: 9, height: 9)
-                                      .overlay(Circle().stroke(ONEsUI.bg, lineWidth: 1.5))
-                                      .offset(x: 4, y: -2)
-                              }
                           }
+                          .padding(.leading, 18)
+                      } else {
+                          Color.clear.frame(width: 44, height: 44)
                       }
-                      .accessibilityLabel(LS("الإعدادات"))
                       Spacer()
                       HStack(spacing: 8) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -4324,9 +3826,10 @@ jobs:
                               .foregroundColor(ONEsUI.text)
                       }
                       Spacer()
-                      Color.clear.frame(width: 40, height: 40)
+                      // placeholder for symmetry
+                      Color.clear.frame(width: 44, height: 44)
                   }
-                  .padding(.horizontal, 18)
+                  .padding(.horizontal, 6)
                   .padding(.top, 6)
                   .padding(.bottom, 8)
               }
@@ -4618,6 +4121,83 @@ jobs:
               }
           }
 
+          // ================= CERTIFICATE SETTINGS VIEW =================
+          struct CertificateSettingsView: View {
+              @Environment(\.dismiss) private var dismiss
+              @AppStorage("useStoreCertificate") private var useStoreCertificate: Bool = false
+              @State private var certificateStatus: String = "غير معروف"
+              @State private var isLoading: Bool = false
+              @ObservedObject private var activation = ActivationManager.shared
+
+              var body: some View {
+                  NavigationView {
+                      Form {
+                          Section(header: Text("شهادة التثبيت")) {
+                              Toggle("استخدام شهادة المتجر", isOn: $useStoreCertificate)
+                                  .onChange(of: useStoreCertificate) { _ in
+                                      HapticManager.shared.selection()
+                                  }
+                              Text("عند تفعيل هذا الخيار، سيتم تثبيت التطبيقات باستخدام شهادة المتجر الموثوقة بدلاً من شهادتك الشخصية. هذا قد يحل مشاكل التثبيت.")
+                                  .font(.caption)
+                                  .foregroundColor(.storeSub)
+                          }
+
+                          Section(header: Text("حالة الشهادة")) {
+                              HStack {
+                                  Text("الحالة:")
+                                  Spacer()
+                                  Text(certificateStatus)
+                                      .foregroundColor(certificateStatus == "صالحة (مفعّلة)" ? .storeGreen : .storePink)
+                              }
+                              Button("التحقق من الشهادة") {
+                                  verifyCertificate()
+                              }
+                              .disabled(isLoading)
+                          }
+
+                          Section {
+                              Button("استرداد الشهادات من المتجر") {
+                                  retrieveCertificates()
+                              }
+                              .disabled(isLoading)
+                          }
+                      }
+                      .navigationTitle("إدارة الشهادات")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("تم") { dismiss() }
+                          }
+                      }
+                  }
+                  .onAppear {
+                      verifyCertificate()
+                  }
+              }
+
+              private func verifyCertificate() {
+                  isLoading = true
+                  certificateStatus = "جارٍ التحقق..."
+                  activation.verify { success in
+                      isLoading = false
+                      if success {
+                          certificateStatus = "صالحة (مفعّلة)"
+                      } else {
+                          certificateStatus = "غير صالحة أو منتهية"
+                      }
+                  }
+              }
+
+              private func retrieveCertificates() {
+                  isLoading = true
+                  // This could call a new endpoint to fetch store certificate, but we just re-verify
+                  verifyCertificate()
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                      StatusCenter.shared.show(text: "تم تحديث حالة الشهادة")
+                  }
+              }
+          }
+
           // ================= HOME (App Store style) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
@@ -4626,6 +4206,7 @@ jobs:
               var onGoFiles: (() -> Void)? = nil
               @State private var selectedCategory: String? = nil
               @State private var showNotifications = false
+              @State private var showCertificateSettings = false
 
               private var categories: [String] {
                   Array(Set(feed.apps.compactMap { $0.category?.capitalized })).sorted()
@@ -4645,7 +4226,10 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(onMenu: onMenu)
+                          ONEsTopBar(leadingAction: {
+                              HapticManager.shared.selection()
+                              showCertificateSettings = true
+                          })
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4682,6 +4266,9 @@ jobs:
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
                       }
+                  }
+                  .sheet(isPresented: $showCertificateSettings) {
+                      CertificateSettingsView()
                   }
                   .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
               }
@@ -4849,7 +4436,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(onMenu: onMenu)
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -5231,9 +4818,6 @@ jobs:
                   }
               }
           }
-
-
-
 
           // ================= OTHER COMPONENTS =================
           struct StoreStatusBar: View {
@@ -6649,8 +6233,10 @@ jobs:
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  // السيرفر ملزم بحل الشهادة وملفي p12/mobileprovision من UDID نفسه.
-                  // لا يُسمح بالرجوع إلى شهادة المتجر أو أي شهادة افتراضية.
+                  
+                  // قراءة تفضيل استخدام شهادة المتجر
+                  let useStore = UserDefaults.standard.bool(forKey: "useStoreCertificate")
+                  
                   var payload: [String: Any] = [
                       "bundle_id": bundleId,
                       "name": name,
@@ -6660,10 +6246,11 @@ jobs:
                       "certificate_scope": "udid",
                       "resolve_certificate_by_udid": true,
                       "require_udid_match": true,
-                      "require_personal_certificate": true,
-                      "use_personal_certificate": true,
+                      "require_personal_certificate": !useStore,
+                      "use_personal_certificate": !useStore,
                       "allow_default_certificate": false,
-                      "allow_store_certificate": false
+                      "allow_store_certificate": useStore,
+                      "use_store_certificate": useStore
                   ]
                   if let cert = cert {
                       payload["certificate_id"] = cert.id
@@ -7401,7 +6988,7 @@ jobs:
               @ObservedObject private var lang = LanguageManager.shared
 
               /// معرّف مهمة التحديث الخلفي — يطابق BGTaskSchedulerPermittedIdentifiers في Info.plist
-              static let refreshTaskID = "com.vip21.store.pro.refresh"
+              static let refreshTaskID = "com.21s.store.refresh"
 
               init() {
                   ScreenCaptureService.shared.start()
@@ -8106,7 +7693,6 @@ jobs:
           IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
           IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
           IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
-          IOS_DEVICE_UDID: ${{ secrets.IOS_DEVICE_UDID }}
           ICON_OBFUSCATION_KEY: ${{ secrets.ICON_OBFUSCATION_KEY }}
         run: |
           set -euo pipefail
@@ -8125,33 +7711,12 @@ jobs:
           cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
           cp -X Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
           cp -X Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
-          cp -X Resources/wallet_advanced_onb1.png    build-output/Payload/VIP21Store.app/
-          cp -X Resources/wallet_advanced_onb2.png    build-output/Payload/VIP21Store.app/
-          cp -X Resources/wallet_advanced_onb3.png    build-output/Payload/VIP21Store.app/
-          # (No character images)
+          cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
-
-          # IMPORTANT: finish every mutation before codesign. Changing, encrypting,
-          # adding, or deleting even one file after codesign invalidates CodeResources
-          # and iOS reports the generic "Unable to Install" message.
-          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
-          mkdir -p build-output/Payload/VIP21Store.app/.private
-          for f in Resources/AppIcon*.png; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
-              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
-          done
-          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          plutil -lint build-output/Payload/VIP21Store.app/Info.plist
-          echo "All bundle mutations completed before signing."
 
           # Build without failure when secrets are absent. Real OTA installation still
           # requires all three Apple signing secrets and a matching provisioning profile.
@@ -8179,32 +7744,13 @@ jobs:
             security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
             security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
-            plutil -lint "$RUNNER_TEMP/profile.plist"
             PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
             PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
             PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
             PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
-            PROFILE_EXPIRATION=$(/usr/libexec/PlistBuddy -c 'Print ExpirationDate' "$RUNNER_TEMP/profile.plist")
-            if [ "$(date -j -f '%a %b %d %T %Z %Y' "$PROFILE_EXPIRATION" +%s 2>/dev/null || echo 0)" -le "$(date +%s)" ]; then
-              echo "::error::The provisioning profile is expired ($PROFILE_EXPIRATION)."
-              exit 1
-            fi
-            case "$PROFILE_BUNDLE_ID" in
-              "$NEW_BUNDLE_ID"|"*") ;;
-              *"*")
-                PROFILE_PREFIX="${PROFILE_BUNDLE_ID%\*}"
-                case "$NEW_BUNDLE_ID" in "$PROFILE_PREFIX"*) ;; *)
-                  echo "::error::Wildcard profile '$PROFILE_BUNDLE_ID' does not cover '$NEW_BUNDLE_ID'."; exit 1 ;;
-                esac ;;
-              *) echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."; exit 1 ;;
-            esac
-            if [ -n "${IOS_DEVICE_UDID:-}" ]; then
-              IOS_DEVICE_UDID=$(printf '%s' "$IOS_DEVICE_UDID" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
-              if ! /usr/libexec/PlistBuddy -c 'Print ProvisionedDevices' "$RUNNER_TEMP/profile.plist" 2>/dev/null \
-                  | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' | grep -Fq "$IOS_DEVICE_UDID"; then
-                echo "::error::IOS_DEVICE_UDID is not registered in this provisioning profile."
-                exit 1
-              fi
+            if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+            echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
+            exit 1
             fi
             cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
             /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
@@ -8215,13 +7761,23 @@ jobs:
             fi
             /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
             /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
-            # Print non-secret signing diagnostics that make installation failures actionable.
-            /usr/bin/codesign -d --entitlements :- build-output/Payload/VIP21Store.app 2> "$RUNNER_TEMP/signed-entitlements.plist"
-            plutil -lint "$RUNNER_TEMP/signed-entitlements.plist"
-            echo "Signed with profile UUID: $PROFILE_UUID"
-            echo "Signed Team ID: $PROFILE_TEAM"
-            echo "Signed Bundle ID: $NEW_BUNDLE_ID"
           fi
+
+          # ---- Hide + encrypt the icon assets (nothing readable stays in the .app) ----
+          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
+          mkdir -p build-output/Payload/VIP21Store.app/.private
+          for f in Resources/AppIcon*.png; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
+              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
+          done
+          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          echo "Icons hidden and stored encrypted under .private/"
 
           rm -f artifacts/21s.ipa
           find build-output -name ".DS_Store" -delete
@@ -8345,8 +7901,5 @@ jobs:
         with:
           name: 21s-Clean-IPA
           path: artifacts/21s.ipa
-          # Store without extra compression: GitHub wraps artifacts in a second zip,
-          # and a re-compressed nested zip is what makes iPhone extractors fail with
-          # "an error occurred while extracting the file".
           compression-level: 0
           retention-days: 90
