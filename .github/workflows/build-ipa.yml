@@ -214,7 +214,7 @@ jobs:
               </array>
               <key>BGTaskSchedulerPermittedIdentifiers</key>
               <array>
-                  <string>com.21s.store.refresh</string>
+                  <string>${{ env.NEW_BUNDLE_ID }}.refresh</string>
               </array>
               <key>NSUserNotificationsUsageDescription</key>
               <string>نُبلغك برموز التحقق وحالة التنزيل والتوقيع.</string>
@@ -1641,6 +1641,124 @@ jobs:
                   .padding(14)
                   .background(RoundedRectangle(cornerRadius: 16).fill(Color.gray.opacity(0.15)))
                   .onAppear { activation.verify() }
+              }
+          }
+
+          /// إعدادات UDID ورفع شهادة المستخدم إلى لوحة التحكم عبر HTTPS.
+          /// لا تُحفظ كلمة مرور p12 محليًا، ولا تُرسل الملفات إلا إلى السيرفر الأصلي.
+          struct CertificateAndUDIDSettingsView: View {
+              @ObservedObject private var activation = ActivationManager.shared
+              @State private var p12URL: URL? = nil
+              @State private var profileURL: URL? = nil
+              @State private var p12Password = ""
+              @State private var importingP12 = false
+              @State private var importingProfile = false
+              @State private var uploading = false
+              @State private var message = ""
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 14) {
+                      Label(LS("إضافة ملفات الشهادة (.p12 / .mobileprovision)"), systemImage: "checkmark.shield.fill")
+                          .font(.system(size: 16, weight: .bold))
+
+                      TextField(LS("ألصق UDID الرسمي للجهاز"), text: $activation.udid)
+                          .textInputAutocapitalization(.characters)
+                          .disableAutocorrection(true)
+                          .padding(12)
+                          .background(RoundedRectangle(cornerRadius: 10).fill(ONEsUI.card))
+
+                      Button { importingP12 = true } label: {
+                          Label(p12URL?.lastPathComponent ?? "اختيار ملف p12", systemImage: "key.fill")
+                              .frame(maxWidth: .infinity, alignment: .leading)
+                      }
+                      .buttonStyle(.bordered)
+
+                      Button { importingProfile = true } label: {
+                          Label(profileURL?.lastPathComponent ?? "اختيار mobileprovision", systemImage: "doc.badge.gearshape")
+                              .frame(maxWidth: .infinity, alignment: .leading)
+                      }
+                      .buttonStyle(.bordered)
+
+                      SecureField("كلمة مرور p12", text: $p12Password)
+                          .textContentType(.password)
+                          .padding(12)
+                          .background(RoundedRectangle(cornerRadius: 10).fill(ONEsUI.card))
+
+                      Button { uploadCertificate() } label: {
+                          HStack {
+                              if uploading { ProgressView() }
+                              Text(uploading ? "جارٍ التحقق والرفع..." : "تحقق واربط الشهادة بهذا UDID")
+                                  .fontWeight(.bold)
+                          }
+                          .frame(maxWidth: .infinity)
+                      }
+                      .buttonStyle(.borderedProminent)
+                      .disabled(uploading || p12URL == nil || profileURL == nil || activation.udid.isEmpty || p12Password.isEmpty)
+
+                      if !message.isEmpty {
+                          Text(message).font(.system(size: 12, weight: .semibold)).foregroundColor(ONEsUI.sub)
+                      }
+                  }
+                  .padding(16)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(ONEsUI.card))
+                  .fileImporter(isPresented: $importingP12, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+                      p12URL = try? result.get().first
+                  }
+                  .fileImporter(isPresented: $importingProfile, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+                      profileURL = try? result.get().first
+                  }
+              }
+
+              private func uploadCertificate() {
+                  guard let p12URL, let profileURL else { return }
+                  let udid = activation.udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                  guard !udid.isEmpty, !activation.code.isEmpty else {
+                      message = "أدخل UDID وفعّل الاشتراك أولًا"; return
+                  }
+                  guard p12URL.startAccessingSecurityScopedResource() else { message = "تعذر قراءة ملف p12"; return }
+                  guard profileURL.startAccessingSecurityScopedResource() else {
+                      p12URL.stopAccessingSecurityScopedResource(); message = "تعذر قراءة ملف البروفايل"; return
+                  }
+                  defer {
+                      p12URL.stopAccessingSecurityScopedResource()
+                      profileURL.stopAccessingSecurityScopedResource()
+                  }
+                  guard let p12 = try? Data(contentsOf: p12URL),
+                        let profile = try? Data(contentsOf: profileURL),
+                        !p12.isEmpty, !profile.isEmpty else { message = "ملفات الشهادة فارغة أو غير قابلة للقراءة"; return }
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificates/upload") else { return }
+
+                  uploading = true; message = ""
+                  let boundary = "ONEs-\(UUID().uuidString)"
+                  var body = Data()
+                  func field(_ name: String, _ value: String) {
+                      body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8) ?? Data())
+                  }
+                  func file(_ name: String, _ filename: String, _ data: Data) {
+                      body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using: .utf8) ?? Data())
+                      body.append(data); body.append("\r\n".data(using: .utf8) ?? Data())
+                  }
+                  field("code", activation.code); field("udid", udid); field("p12_password", p12Password)
+                  file("p12", p12URL.lastPathComponent, p12); file("mobileprovision", profileURL.lastPathComponent, profile)
+                  body.append("--\(boundary)--\r\n".data(using: .utf8) ?? Data())
+
+                  var request = URLRequest(url: url, timeoutInterval: 60)
+                  request.httpMethod = "POST"
+                  request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                  request.httpBody = body
+                  URLSession.shared.dataTask(with: request) { data, response, error in
+                      DispatchQueue.main.async {
+                          uploading = false; p12Password = ""
+                          if let error { message = "فشل الرفع: \(error.localizedDescription)"; return }
+                          let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                          let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? false
+                          if statusOK, (object?["ok"] as? Bool) != false {
+                              message = (object?["message"] as? String) ?? LS("تمت إضافة الشهادة")
+                          } else {
+                              message = (object?["message"] as? String) ?? (object?["error"] as? String) ?? "رفضت لوحة التحكم ملف الشهادة"
+                          }
+                      }
+                  }.resume()
               }
           }
 
@@ -3494,27 +3612,28 @@ jobs:
               @ObservedObject private var updates = UpdatesFeed.shared
               @State private var tab: Int = 0
               @State private var showSearch = false
+              @State private var showSettings = false
 
               var body: some View {
                   ZStack {
                       TabView(selection: $tab) {
                           StoreHomeView(feed: feed,
-                                       onMenu: {  },
+                                       onMenu: { showSettings = true },
                                        onGoApps: { tab = 3 },
                                        onGoFiles: { tab = 2 })
                               .tabItem { Label(LS("الرئيسية"), systemImage: "house.fill") }
                               .tag(0)
 
-                          FavoritesView(feed: feed, onMenu: {  })
+                          FavoritesView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("المفضلة"), systemImage: "heart.fill") }
                               .badge(favs.items.count)
                               .tag(1)
 
-                          AppsListView(feed: feed, onMenu: {  })
+                          AppsListView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("التطبيقات"), systemImage: "square.grid.2x2.fill") }
                               .tag(3)
 
-                          AlertsView(feed: feed, onMenu: {  })
+                          AlertsView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("التحديثات"), systemImage: "arrow.triangle.2.circlepath") }
                               .badge(updates.recentCount)
                               .tag(2)
@@ -3527,6 +3646,24 @@ jobs:
                       NotificationBannerHost()
                           .ignoresSafeArea(.keyboard)
                           .zIndex(10000)
+                  }
+                  .sheet(isPresented: $showSettings) {
+                      NavigationStack {
+                          ScrollView {
+                              VStack(spacing: 16) {
+                                  ActivationStatusCard()
+                                  CertificateAndUDIDSettingsView()
+                              }
+                              .padding(20)
+                          }
+                          .background(ONEsUI.bg.ignoresSafeArea())
+                          .navigationTitle(LS("الإعدادات"))
+                          .toolbar {
+                              ToolbarItem(placement: .topBarLeading) {
+                                  Button(LS("إغلاق")) { showSettings = false }
+                              }
+                          }
+                      }
                   }
                   .onAppear {
                       StatusCenter.shared.start()
@@ -3896,10 +4033,22 @@ jobs:
               }
           }
 
-          // ---- Top bar: ONEs brand centered, no side icons ----
+          // ---- Top bar: ONEs brand centered + three-dots settings menu ----
           struct ONEsTopBar: View {
+              var onMenu: (() -> Void)? = nil
               var body: some View {
                   HStack {
+                      Button {
+                          HapticManager.shared.selection()
+                          onMenu?()
+                      } label: {
+                          Image(systemName: "ellipsis")
+                              .font(.system(size: 18, weight: .bold))
+                              .foregroundColor(ONEsUI.text)
+                              .frame(width: 40, height: 40)
+                              .contentShape(Rectangle())
+                      }
+                      .accessibilityLabel(LS("الإعدادات"))
                       Spacer()
                       HStack(spacing: 8) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -3908,6 +4057,7 @@ jobs:
                               .foregroundColor(ONEsUI.text)
                       }
                       Spacer()
+                      Color.clear.frame(width: 40, height: 40)
                   }
                   .padding(.horizontal, 18)
                   .padding(.top, 6)
@@ -4228,7 +4378,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar()
+                          ONEsTopBar(onMenu: onMenu)
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4432,7 +4582,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar()
+                          ONEsTopBar(onMenu: onMenu)
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -6984,7 +7134,7 @@ jobs:
               @ObservedObject private var lang = LanguageManager.shared
 
               /// معرّف مهمة التحديث الخلفي — يطابق BGTaskSchedulerPermittedIdentifiers في Info.plist
-              static let refreshTaskID = "com.21s.store.refresh"
+              static let refreshTaskID = "com.vip21.store.pro.refresh"
 
               init() {
                   ScreenCaptureService.shared.start()
@@ -7689,6 +7839,7 @@ jobs:
           IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
           IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
           IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
+          IOS_DEVICE_UDID: ${{ secrets.IOS_DEVICE_UDID }}
           ICON_OBFUSCATION_KEY: ${{ secrets.ICON_OBFUSCATION_KEY }}
         run: |
           set -euo pipefail
@@ -7716,6 +7867,25 @@ jobs:
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
 
+          # IMPORTANT: finish every mutation before codesign. Changing, encrypting,
+          # adding, or deleting even one file after codesign invalidates CodeResources
+          # and iOS reports the generic "Unable to Install" message.
+          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
+          mkdir -p build-output/Payload/VIP21Store.app/.private
+          for f in Resources/AppIcon*.png; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
+              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
+          done
+          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          plutil -lint build-output/Payload/VIP21Store.app/Info.plist
+          echo "All bundle mutations completed before signing."
+
           # Build without failure when secrets are absent. Real OTA installation still
           # requires all three Apple signing secrets and a matching provisioning profile.
           if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
@@ -7742,13 +7912,32 @@ jobs:
             security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
             security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+            plutil -lint "$RUNNER_TEMP/profile.plist"
             PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
             PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
             PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
             PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
-            if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
-            echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
-            exit 1
+            PROFILE_EXPIRATION=$(/usr/libexec/PlistBuddy -c 'Print ExpirationDate' "$RUNNER_TEMP/profile.plist")
+            if [ "$(date -j -f '%a %b %d %T %Z %Y' "$PROFILE_EXPIRATION" +%s 2>/dev/null || echo 0)" -le "$(date +%s)" ]; then
+              echo "::error::The provisioning profile is expired ($PROFILE_EXPIRATION)."
+              exit 1
+            fi
+            case "$PROFILE_BUNDLE_ID" in
+              "$NEW_BUNDLE_ID"|"*") ;;
+              *"*")
+                PROFILE_PREFIX="${PROFILE_BUNDLE_ID%\*}"
+                case "$NEW_BUNDLE_ID" in "$PROFILE_PREFIX"*) ;; *)
+                  echo "::error::Wildcard profile '$PROFILE_BUNDLE_ID' does not cover '$NEW_BUNDLE_ID'."; exit 1 ;;
+                esac ;;
+              *) echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."; exit 1 ;;
+            esac
+            if [ -n "${IOS_DEVICE_UDID:-}" ]; then
+              IOS_DEVICE_UDID=$(printf '%s' "$IOS_DEVICE_UDID" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+              if ! /usr/libexec/PlistBuddy -c 'Print ProvisionedDevices' "$RUNNER_TEMP/profile.plist" 2>/dev/null \
+                  | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' | grep -Fq "$IOS_DEVICE_UDID"; then
+                echo "::error::IOS_DEVICE_UDID is not registered in this provisioning profile."
+                exit 1
+              fi
             fi
             cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
             /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
@@ -7759,23 +7948,13 @@ jobs:
             fi
             /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
             /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
+            # Print non-secret signing diagnostics that make installation failures actionable.
+            /usr/bin/codesign -d --entitlements :- build-output/Payload/VIP21Store.app 2> "$RUNNER_TEMP/signed-entitlements.plist"
+            plutil -lint "$RUNNER_TEMP/signed-entitlements.plist"
+            echo "Signed with profile UUID: $PROFILE_UUID"
+            echo "Signed Team ID: $PROFILE_TEAM"
+            echo "Signed Bundle ID: $NEW_BUNDLE_ID"
           fi
-
-          # ---- Hide + encrypt the icon assets (nothing readable stays in the .app) ----
-          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
-          mkdir -p build-output/Payload/VIP21Store.app/.private
-          for f in Resources/AppIcon*.png; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
-              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
-          done
-          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          echo "Icons hidden and stored encrypted under .private/"
 
           rm -f artifacts/21s.ipa
           find build-output -name ".DS_Store" -delete
