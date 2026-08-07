@@ -69,6 +69,99 @@ jobs:
           file Resources/*.png Resources/*.gif 2>/dev/null || true
           ls -lh Resources
 
+      - name: Generate feature images (no UDID, no wallet)
+        run: |
+          python3 -m pip install --quiet --break-system-packages Pillow 2>/dev/null || true
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os, random
+          os.makedirs("Resources", exist_ok=True)
+          random.seed(42)
+
+          def gradient(w, h, c1, c2, vertical=True):
+              img = Image.new("RGBA", (w, h), c1 + (255,))
+              d = ImageDraw.Draw(img)
+              steps = h if vertical else w
+              for i in range(steps):
+                  t = i / max(1, steps - 1)
+                  r = int(c1[0] + (c2[0] - c1[0]) * t)
+                  g = int(c1[1] + (c2[1] - c1[1]) * t)
+                  b = int(c1[2] + (c2[2] - c1[2]) * t)
+                  d.line([(0, i), (w, i)] if vertical else [(i, 0), (i, h)], fill=(r, g, b, 255))
+              return img
+
+          def rounded_card(w, h, radius, fill, shadow=True):
+              img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+              d = ImageDraw.Draw(img)
+              if shadow:
+                  d.rounded_rectangle((4, 8, w - 4, h - 4), radius=radius, fill=(0, 0, 0, 60))
+              body = (4, 4, w - 5, h - 5) if shadow else (0, 0, w - 1, h - 1)
+              d.rounded_rectangle(body, radius=radius, fill=fill)
+              return img
+
+          def find_font(size):
+              for p in [
+                  "/System/Library/Fonts/Helvetica.ttc",
+                  "/System/Library/Fonts/SFNSDisplay.ttf",
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                  "/Library/Fonts/Arial Bold.ttf",
+              ]:
+                  if os.path.exists(p):
+                      try: return ImageFont.truetype(p, size)
+                      except: pass
+              return ImageFont.load_default()
+
+          def text_centered(d, txt, x, y, font, fill):
+              try:
+                  bbox = d.textbbox((0, 0), txt, font=font)
+                  w = bbox[2] - bbox[0]; h = bbox[3] - bbox[1]
+              except AttributeError:
+                  w, h = d.textsize(txt, font=font)
+              if isinstance(fill, tuple) and len(fill) == 4 and getattr(d, "_image", None) is not None:
+                  if d._image.mode == "RGB":
+                      fill = fill[:3]
+              d.text((x - w // 2, y - h // 2), txt, font=font, fill=fill)
+
+          def write_image(path, img):
+              if img.mode == "RGBA":
+                  bg = Image.new("RGB", img.size, (255, 255, 255))
+                  bg.paste(img, mask=img.split()[-1])
+                  img = bg
+              img.save(path, "PNG", optimize=True)
+              return img
+
+          W, H = 900, 1400
+          def onboarding(text_title, text_body, accent):
+              base = gradient(W, H, (250, 251, 255), (235, 240, 255))
+              d = ImageDraw.Draw(base)
+              d.rounded_rectangle((80, 200, W - 80, 900), radius=40, fill=accent)
+              text_centered(d, text_title, W // 2, 350, find_font(60), (255, 255, 255))
+              text_centered(d, "*", W // 2, 560, find_font(80), (255, 255, 255))
+              for i, line in enumerate(text_body.split("\n")):
+                  text_centered(d, line, W // 2, 1050 + i * 70, find_font(34), (40, 50, 80))
+              for i in range(3):
+                  x = W // 2 - 60 + i * 60
+                  d.ellipse((x, 1280, x + 30, 1310), fill=(180, 190, 220))
+              d.ellipse((W // 2 - 15, 1280, W // 2 + 15, 1310), fill=(40, 50, 80))
+              return base
+
+          for i, (t, b, c) in enumerate([
+              ("Send & Receive", "Transfer wallet credit\nto any 21s user, instantly.", (60, 130, 220)),
+              ("Top-up Anywhere", "USDT, BTC, ETH or\nlocal payment methods.", (90, 200, 130)),
+              ("Refer & Earn", "Share your link - every\nsignup gives you $5.", (200, 100, 220)),
+          ]):
+              write_image(f"Resources/wallet_advanced_onb{i+1}.png", onboarding(t, b, c))
+
+          ico = gradient(1024, 1024, (24, 36, 80), (10, 18, 42))
+          d = ImageDraw.Draw(ico)
+          d.rounded_rectangle((120, 120, 904, 904), radius=180, fill=(70, 130, 240))
+          d.rounded_rectangle((220, 340, 804, 700), radius=30, fill=(255, 255, 255))
+          d.text((260, 380), "21s", font=find_font(280), fill=(24, 36, 80))
+          write_image("Resources/feature_app_icon.png", ico)
+          print("All feature images generated.")
+          PYEOF
+          ls -lh Resources | tail -30
+
       - name: Generate app icons from the logo image
         run: |
           python3 -m pip install --quiet --break-system-packages Pillow
@@ -142,6 +235,7 @@ jobs:
                   <string>UIInterfaceOrientationPortrait</string>
                   <string>UIInterfaceOrientationPortraitUpsideDown</string>
               </array>
+              <!-- App icons intentionally hidden: no CFBundleIconFile / CFBundleIcons keys. -->
               <key>UIPrerenderedIcon</key>              <true/>
               <key>UILaunchScreen</key>
               <dict/>
@@ -164,6 +258,7 @@ jobs:
                       </array>
                   </dict>
               </array>
+              <!-- Light mode only (dark mode disabled) -->
               <key>UIUserInterfaceStyle</key>
               <string>Light</string>
               <key>NSAppTransportSecurity</key>
@@ -219,6 +314,7 @@ jobs:
           </dict>
           </plist>
           PEOF
+
 
       # =========================================================
       # SOURCE CODE - Localization.swift (Arabic / English switch)
@@ -523,7 +619,6 @@ jobs:
               static var storeText: Color     { rgb(ThemeManager.p.text) }
               static var storeSub: Color      { rgb(ThemeManager.p.sub) }
               static var storeDivider: Color  { rgb(ThemeManager.p.divider) }
-              static var storeGreen: Color    { rgb(ThemeManager.p.cyan) } // added for certificate status
           }
 
           extension UIImage {
@@ -3801,23 +3896,10 @@ jobs:
               }
           }
 
-          // ---- Top bar: ONEs brand centered, with optional leading settings button ----
+          // ---- Top bar: ONEs brand centered, no side icons ----
           struct ONEsTopBar: View {
-              var leadingAction: (() -> Void)? = nil
-              var leadingIcon: String = "gearshape.fill"
-
               var body: some View {
                   HStack {
-                      if let action = leadingAction {
-                          Button(action: action) {
-                              Image(systemName: leadingIcon)
-                                  .font(.system(size: 18, weight: .semibold))
-                                  .foregroundColor(ONEsUI.text)
-                          }
-                          .padding(.leading, 18)
-                      } else {
-                          Color.clear.frame(width: 44, height: 44)
-                      }
                       Spacer()
                       HStack(spacing: 8) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -3826,10 +3908,8 @@ jobs:
                               .foregroundColor(ONEsUI.text)
                       }
                       Spacer()
-                      // placeholder for symmetry
-                      Color.clear.frame(width: 44, height: 44)
                   }
-                  .padding(.horizontal, 6)
+                  .padding(.horizontal, 18)
                   .padding(.top, 6)
                   .padding(.bottom, 8)
               }
@@ -4121,331 +4201,6 @@ jobs:
               }
           }
 
-          // ================= CERTIFICATE MANAGER =================
-          /// مدير الشهادات: رفع ملفات p12 و mobileprovision إلى السيرفر والحصول على ID.
-          @MainActor
-          final class CertificateManager: ObservableObject {
-              static let shared = CertificateManager()
-
-              @Published private(set) var certificateID: String = ""
-              @Published private(set) var certificateName: String = ""
-              @Published private(set) var expiresAt: Date? = nil
-              @Published private(set) var isRevoked: Bool = false
-              @Published private(set) var isLoading: Bool = false
-              @Published var lastError: String? = nil
-
-              private let kCertID = "user_certificate_id_v1"
-              private let kCertName = "user_certificate_name_v1"
-              private let kCertExpiry = "user_certificate_expiry_v1"
-              private let kCertRevoked = "user_certificate_revoked_v1"
-
-              private init() {
-                  let d = UserDefaults.standard
-                  certificateID = d.string(forKey: kCertID) ?? ""
-                  certificateName = d.string(forKey: kCertName) ?? ""
-                  if let ts = d.object(forKey: kCertExpiry) as? Double {
-                      expiresAt = Date(timeIntervalSince1970: ts)
-                  }
-                  isRevoked = d.bool(forKey: kCertRevoked)
-              }
-
-              func hasValidCertificate() -> Bool {
-                  guard !certificateID.isEmpty else { return false }
-                  if isRevoked { return false }
-                  if let exp = expiresAt, exp.timeIntervalSinceNow <= 0 { return false }
-                  return true
-              }
-
-              func uploadCertificate(p12URL: URL, mobileProvisionURL: URL, password: String? = nil) async -> Bool {
-                  isLoading = true
-                  lastError = nil
-                  defer { isLoading = false }
-
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/upload-certificate") else {
-                      lastError = "رابط السيرفر غير صحيح"
-                      return false
-                  }
-
-                  var request = URLRequest(url: url)
-                  request.httpMethod = "POST"
-                  request.timeoutInterval = 60
-
-                  let boundary = UUID().uuidString
-                  request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-                  var body = Data()
-                  // أضف ملف p12
-                  if let p12Data = try? Data(contentsOf: p12URL) {
-                      body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                      body.append("Content-Disposition: form-data; name=\"p12\"; filename=\"cert.p12\"\r\n".data(using: .utf8)!)
-                      body.append("Content-Type: application/x-pkcs12\r\n\r\n".data(using: .utf8)!)
-                      body.append(p12Data)
-                      body.append("\r\n".data(using: .utf8)!)
-                  }
-
-                  // أضف ملف mobileprovision
-                  if let provData = try? Data(contentsOf: mobileProvisionURL) {
-                      body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                      body.append("Content-Disposition: form-data; name=\"mobileprovision\"; filename=\"profile.mobileprovision\"\r\n".data(using: .utf8)!)
-                      body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-                      body.append(provData)
-                      body.append("\r\n".data(using: .utf8)!)
-                  }
-
-                  // أضف كلمة المرور إن وجدت
-                  if let pwd = password, !pwd.isEmpty {
-                      body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                      body.append("Content-Disposition: form-data; name=\"password\"\r\n\r\n".data(using: .utf8)!)
-                      body.append(pwd.data(using: .utf8)!)
-                      body.append("\r\n".data(using: .utf8)!)
-                  }
-
-                  // أضف UDID الحالي (لتأكيد ملكية الجهاز)
-                  let udid = ActivationManager.shared.deviceID
-                  body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                  body.append("Content-Disposition: form-data; name=\"udid\"\r\n\r\n".data(using: .utf8)!)
-                  body.append(udid.data(using: .utf8)!)
-                  body.append("\r\n".data(using: .utf8)!)
-
-                  body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-                  request.httpBody = body
-
-                  do {
-                      let (data, _) = try await URLSession.shared.data(for: request)
-                      if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                          if let ok = json["ok"] as? Bool, ok == true,
-                             let certID = json["certificate_id"] as? String, !certID.isEmpty {
-                              // حفظ البيانات
-                              certificateID = certID
-                              certificateName = (json["name"] as? String) ?? "شهادة المستخدم"
-                              if let exp = json["expires_at"] as? String,
-                                 let date = ActivationManager.parseDate(exp) {
-                                  expiresAt = date
-                              } else {
-                                  expiresAt = nil
-                              }
-                              isRevoked = (json["revoked"] as? Bool) ?? false
-                              persist()
-                              return true
-                          } else {
-                              lastError = (json["message"] as? String) ?? "فشل رفع الشهادة"
-                              return false
-                          }
-                      } else {
-                          lastError = "استجابة غير صالحة من السيرفر"
-                          return false
-                      }
-                  } catch {
-                      lastError = "تعذر الاتصال بالسيرفر: \(error.localizedDescription)"
-                      return false
-                  }
-              }
-
-              private func persist() {
-                  let d = UserDefaults.standard
-                  d.set(certificateID, forKey: kCertID)
-                  d.set(certificateName, forKey: kCertName)
-                  d.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: kCertExpiry)
-                  d.set(isRevoked, forKey: kCertRevoked)
-              }
-
-              func clearCertificate() {
-                  certificateID = ""
-                  certificateName = ""
-                  expiresAt = nil
-                  isRevoked = false
-                  let d = UserDefaults.standard
-                  d.removeObject(forKey: kCertID)
-                  d.removeObject(forKey: kCertName)
-                  d.removeObject(forKey: kCertExpiry)
-                  d.removeObject(forKey: kCertRevoked)
-              }
-
-              func refreshStatus() async {
-                  guard !certificateID.isEmpty else { return }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate-status?cert_id=\(certificateID)") else { return }
-                  do {
-                      let (data, _) = try await URLSession.shared.data(from: url)
-                      if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                          isRevoked = (json["revoked"] as? Bool) ?? false
-                          if let exp = json["expires_at"] as? String,
-                             let date = ActivationManager.parseDate(exp) {
-                              expiresAt = date
-                          }
-                          persist()
-                      }
-                  } catch {
-                      // صامت
-                  }
-              }
-          }
-
-          // ================= CERTIFICATE SETTINGS VIEW =================
-          struct CertificateSettingsView: View {
-              @Environment(\.dismiss) private var dismiss
-              @AppStorage("useStoreCertificate") private var useStoreCertificate: Bool = false
-              @AppStorage("usePersonalCertificate") private var usePersonalCertificate: Bool = false
-              @StateObject private var certManager = CertificateManager.shared
-              @State private var isImportingP12: Bool = false
-              @State private var isImportingProv: Bool = false
-              @State private var certificatePassword: String = ""
-              @State private var showPasswordAlert: Bool = false
-              @State private var isUploading: Bool = false
-              @State private var statusMessage: String = ""
-              @State private var p12URL: URL? = nil
-              @State private var provURL: URL? = nil
-
-              var body: some View {
-                  NavigationView {
-                      Form {
-                          Section(header: Text("إعدادات التثبيت")) {
-                              Toggle("استخدام شهادة المتجر (الافتراضية)", isOn: $useStoreCertificate)
-                                  .onChange(of: useStoreCertificate) { newValue in
-                                      if newValue {
-                                          usePersonalCertificate = false
-                                      }
-                                      HapticManager.shared.selection()
-                                  }
-                              Toggle("استخدام شهادتي الشخصية", isOn: $usePersonalCertificate)
-                                  .onChange(of: usePersonalCertificate) { newValue in
-                                      if newValue {
-                                          useStoreCertificate = false
-                                      }
-                                      HapticManager.shared.selection()
-                                  }
-                              Text("عند تفعيل شهادتك الشخصية، سيتم تثبيت التطبيقات باستخدام الشهادة التي ترفعها.")
-                                  .font(.caption)
-                                  .foregroundColor(.storeSub)
-                          }
-
-                          Section(header: Text("رفع الشهادة الشخصية")) {
-                              if certManager.hasValidCertificate() {
-                                  HStack {
-                                      Image(systemName: "checkmark.seal.fill")
-                                          .foregroundColor(.storeGreen)
-                                      VStack(alignment: .leading) {
-                                          Text("الشهادة: \(certManager.certificateName)")
-                                              .font(.subheadline)
-                                          if let exp = certManager.expiresAt {
-                                              Text("تنتهي في: \(exp.formatted())")
-                                                  .font(.caption)
-                                                  .foregroundColor(.storeSub)
-                                          }
-                                      }
-                                      Spacer()
-                                      Button("حذف") {
-                                          certManager.clearCertificate()
-                                          usePersonalCertificate = false
-                                          statusMessage = "تم حذف الشهادة"
-                                      }
-                                      .foregroundColor(.storePink)
-                                      .buttonStyle(.plain)
-                                  }
-                              } else {
-                                  Button("اختيار ملف P12") {
-                                      isImportingP12 = true
-                                  }
-                                  .fileImporter(isPresented: $isImportingP12, allowedContentTypes: [.data]) { result in
-                                      switch result {
-                                      case .success(let url):
-                                          p12URL = url
-                                          showPasswordAlert = true
-                                      case .failure(let error):
-                                          statusMessage = "فشل اختيار الملف: \(error.localizedDescription)"
-                                      }
-                                  }
-
-                                  if let _ = p12URL {
-                                      Button("اختيار ملف MobileProvision") {
-                                          isImportingProv = true
-                                      }
-                                      .fileImporter(isPresented: $isImportingProv, allowedContentTypes: [.data]) { result in
-                                          switch result {
-                                          case .success(let url):
-                                              provURL = url
-                                              uploadCertificate()
-                                          case .failure(let error):
-                                              statusMessage = "فشل اختيار الملف: \(error.localizedDescription)"
-                                          }
-                                      }
-                                  }
-
-                                  if isUploading {
-                                      ProgressView("جارٍ رفع الشهادة...")
-                                  }
-
-                                  if !statusMessage.isEmpty {
-                                      Text(statusMessage)
-                                          .font(.caption)
-                                          .foregroundColor(statusMessage.contains("نجاح") ? .storeGreen : .storePink)
-                                  }
-                              }
-                          }
-
-                          Section {
-                              Button("التحقق من حالة الشهادة") {
-                                  Task {
-                                      await certManager.refreshStatus()
-                                      if certManager.hasValidCertificate() {
-                                          statusMessage = "الشهادة صالحة"
-                                      } else {
-                                          statusMessage = "الشهادة غير صالحة أو منتهية"
-                                      }
-                                  }
-                              }
-                              .disabled(certManager.isLoading)
-                          }
-                      }
-                      .navigationTitle("إدارة الشهادات")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button("تم") { dismiss() }
-                          }
-                      }
-                  }
-                  .alert("كلمة مرور الشهادة", isPresented: $showPasswordAlert) {
-                      SecureField("كلمة المرور (اختياري)", text: $certificatePassword)
-                      Button("إلغاء", role: .cancel) {
-                          p12URL = nil
-                          provURL = nil
-                      }
-                      Button("رفع") {
-                          if let p12 = p12URL, let prov = provURL {
-                              uploadCertificate(p12: p12, prov: prov, password: certificatePassword)
-                          }
-                      }
-                  } message: {
-                      Text("أدخل كلمة المرور لملف P12 إن وجدت.")
-                  }
-              }
-
-              private func uploadCertificate(p12: URL? = nil, prov: URL? = nil, password: String? = nil) {
-                  guard let p12 = p12 ?? p12URL, let prov = prov ?? provURL else {
-                      statusMessage = "الرجاء اختيار كلا الملفين"
-                      return
-                  }
-                  isUploading = true
-                  statusMessage = ""
-                  Task {
-                      let success = await certManager.uploadCertificate(p12URL: p12, mobileProvisionURL: prov, password: password ?? certificatePassword)
-                      await MainActor.run {
-                          isUploading = false
-                          if success {
-                              statusMessage = "تم رفع الشهادة بنجاح"
-                              usePersonalCertificate = true
-                              useStoreCertificate = false
-                              p12URL = nil
-                              provURL = nil
-                              certificatePassword = ""
-                          } else {
-                              statusMessage = certManager.lastError ?? "فشل رفع الشهادة"
-                          }
-                      }
-                  }
-              }
-          }
-
           // ================= HOME (App Store style) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
@@ -4454,7 +4209,6 @@ jobs:
               var onGoFiles: (() -> Void)? = nil
               @State private var selectedCategory: String? = nil
               @State private var showNotifications = false
-              @State private var showCertificateSettings = false
 
               private var categories: [String] {
                   Array(Set(feed.apps.compactMap { $0.category?.capitalized })).sorted()
@@ -4474,10 +4228,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(leadingAction: {
-                              HapticManager.shared.selection()
-                              showCertificateSettings = true
-                          })
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4514,9 +4265,6 @@ jobs:
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
                       }
-                  }
-                  .sheet(isPresented: $showCertificateSettings) {
-                      CertificateSettingsView()
                   }
                   .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
               }
@@ -5067,6 +4815,9 @@ jobs:
               }
           }
 
+
+
+
           // ================= OTHER COMPONENTS =================
           struct StoreStatusBar: View {
               @ObservedObject var feed: StoreFeed
@@ -5539,9 +5290,6 @@ jobs:
                           }
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
-
-                          // ====== قسم التعليقات ======
-                          AppCommentsSection(app: app)
 
                           // ====== قسم «تطبيقات مشابهة» — أسفل الوصف مباشرة ======
                           if !similarApps.isEmpty {
@@ -6151,426 +5899,47 @@ jobs:
               }
           }
 
-          // ============ تعليقات المتجر ============
-          struct StoreComment: Identifiable, Decodable, Hashable {
-              let id: String
-              let author: String
-              let body: String
-              let reply: String?
-              let created_at: String?
-          }
-
-          private struct StoreCommentsResponse: Decodable { let comments: [StoreComment] }
-
-          @MainActor
-          final class StoreCommentsStore: ObservableObject {
-              @Published var comments: [StoreComment] = []
-              @Published var isLoading = false
-              @Published var isSending = false
-
-              func load(appId: Int) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/comments?app=\(appId)") else { return }
-                  isLoading = true
-                  URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 25)) { data, _, _ in
-                      let list = data.flatMap { try? JSONDecoder().decode(StoreCommentsResponse.self, from: $0).comments } ?? []
-                      DispatchQueue.main.async {
-                          self.comments = list
-                          self.isLoading = false
-                      }
-                  }.resume()
-              }
-
-              func send(appId: Int, text: String, done: @escaping (Bool) -> Void) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/comments") else { done(false); return }
-                  isSending = true
-                  var req = URLRequest(url: url, timeoutInterval: 25)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "app_id": appId,
-                      "body": text,
-                      "code": ActivationManager.shared.code,
-                      "udid": ActivationManager.shared.deviceID
-                  ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      var ok = false
-                      if let data = data,
-                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                          ok = (obj["ok"] as? Bool) == true
-                      }
-                      DispatchQueue.main.async {
-                          self.isSending = false
-                          if ok { self.load(appId: appId) }
-                          done(ok)
-                      }
-                  }.resume()
-              }
-          }
-
-          struct AppCommentsSection: View {
-              let app: StoreAPIApp
-              @StateObject private var store = StoreCommentsStore()
-              @State private var draft: String = ""
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 12) {
-                      HStack(spacing: 8) {
-                          Capsule()
-                              .fill(LinearGradient(colors: [Color.storePrimary, Color.storeCyan],
-                                                   startPoint: .top, endPoint: .bottom))
-                              .frame(width: 4, height: 22)
-                          Text("التعليقات")
-                              .font(.system(size: 16, weight: .heavy))
-                              .foregroundColor(.storeText)
-                          Spacer()
-                          Text("\(store.comments.count)")
-                              .font(.system(size: 11, weight: .bold))
-                              .foregroundColor(.storeSub)
-                              .padding(.horizontal, 8).padding(.vertical, 3)
-                              .background(Capsule().fill(Color.storeDivider))
-                      }
-
-                      HStack(spacing: 8) {
-                          TextField("اكتب تعليقك...", text: $draft)
-                              .font(.system(size: 13))
-                              .foregroundColor(.storeText)
-                              .padding(.horizontal, 12).padding(.vertical, 10)
-                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 1))
-                          Button {
-                              let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                              guard !text.isEmpty else { return }
-                              store.send(appId: app.id, text: text) { ok in
-                                  if ok { draft = "" }
-                                  StatusCenter.shared.show(text: ok ? "تم نشر تعليقك" : "التعليق يتطلب حساباً مفعّلاً")
-                              }
-                          } label: {
-                              Text(store.isSending ? "..." : "نشر")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 16).padding(.vertical, 10)
-                                  .background(Capsule().fill(Color.storePrimary))
-                          }
-                          .buttonStyle(.plain)
-                          .disabled(store.isSending)
-                      }
-
-                      if store.comments.isEmpty && !store.isLoading {
-                          Text("لا توجد تعليقات بعد — كن أول من يعلّق")
-                              .font(.system(size: 12))
-                              .foregroundColor(.storeSub)
-                      }
-
-                      ForEach(store.comments) { c in
-                          VStack(alignment: .leading, spacing: 6) {
-                              Text(c.author)
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.storeText)
-                              Text(c.body)
-                                  .font(.system(size: 12))
-                                  .foregroundColor(.storeSub)
-                                  .fixedSize(horizontal: false, vertical: true)
-                              if let reply = c.reply, !reply.isEmpty {
-                                  HStack(alignment: .top, spacing: 6) {
-                                      Text("رد الإدارة:")
-                                          .font(.system(size: 11, weight: .bold))
-                                          .foregroundColor(.storePrimary)
-                                      Text(reply)
-                                          .font(.system(size: 11))
-                                          .foregroundColor(.storeSub)
-                                  }
-                                  .padding(8)
-                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeDivider.opacity(0.35)))
-                              }
-                          }
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                          .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
-                      }
-                  }
-                  .environment(\.layoutDirection, .rightToLeft)
-                  .padding(.horizontal, 20)
-                  .padding(.top, 22)
-                  .onAppear { store.load(appId: app.id) }
-              }
-          }
-
-          // ============ التثبيت الرسمي المباشر عبر شهادة المستخدم ============
-          /// معلومات شهادة الجهاز القادمة من لوحة التحكم.
-          struct DeviceCertificate {
-              let id: String
-              let name: String
-              let teamId: String
-              let source: String          // personal / store
-              let revoked: Bool
-              let expiresAt: Date?
-              let udidRegistered: Bool
-
-              var isExpired: Bool {
-                  guard let e = expiresAt else { return false }
-                  return e.timeIntervalSinceNow <= 0
-              }
-
-              static func parse(_ obj: [String: Any]) -> DeviceCertificate? {
-                  // معرّف الشهادة إلزامي — بدونه لا يستطيع السيرفر التوقيع بشهادة الشخص.
-                  let rawId = (obj["id"] ?? obj["certificate_id"] ?? obj["cert_id"] ?? obj["uuid"])
-                  let id: String
-                  if let s = rawId as? String { id = s }
-                  else if let n = rawId as? Int { id = String(n) }
-                  else { return nil }
-                  guard !id.isEmpty else { return nil }
-
-                  var expires: Date? = nil
-                  if let ts = obj["expires_at"] as? Double, ts > 0 {
-                      expires = Date(timeIntervalSince1970: ts)
-                  } else if let s = (obj["expires_at"] as? String) ?? (obj["expiry"] as? String), !s.isEmpty {
-                      let iso = ISO8601DateFormatter()
-                      iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                      expires = iso.date(from: s) ?? ISO8601DateFormatter().date(from: s)
-                      if expires == nil {
-                          let df = DateFormatter()
-                          df.locale = Locale(identifier: "en_US_POSIX")
-                          df.dateFormat = "yyyy-MM-dd"
-                          expires = df.date(from: String(s.prefix(10)))
-                      }
-                  }
-
-                  return DeviceCertificate(
-                      id: id,
-                      name: (obj["name"] as? String) ?? (obj["cert_name"] as? String) ?? "شهادة الجهاز",
-                      teamId: (obj["team_id"] as? String) ?? (obj["teamId"] as? String) ?? "",
-                      source: (obj["source"] as? String) ?? (obj["type"] as? String) ?? "personal",
-                      revoked: (obj["revoked"] as? Bool) ?? (obj["is_revoked"] as? Bool) ?? false,
-                      expiresAt: expires,
-                      udidRegistered: (obj["udid_registered"] as? Bool)
-                          ?? (obj["device_registered"] as? Bool)
-                          ?? true
-                  )
-              }
-          }
-
+          // ============ التثبيت الرسمي المباشر عبر سيرفر المتجر ============
           @MainActor
           final class StoreInstaller: ObservableObject {
               static let shared = MainActor.assumeIsolated { StoreInstaller() }
               @Published var isWorking: Bool = false
-              @Published private(set) var currentCertificate: DeviceCertificate? = nil
               private init() {}
 
               func install(app: StoreAPIApp) {
                   install(bundleId: app.bundleId, name: app.name)
               }
 
-              private func fail(_ message: String) {
-                  isWorking = false
-                  StatusCenter.shared.show(text: message)
-              }
-
-              /// يتحقق من الحساب والـ UDID من نفس مسار التحقق الذي سمح للمستخدم
-              /// بالدخول. لا نستعمل مسار /certificate المنفصل لأنه غير موجود في بعض
-              /// إصدارات لوحة التحكم وكان سبب رسالة «لا توجد شهادة» الخاطئة.
-              /// اختيار ملفات p12 و mobileprovision يبقى عملية سيرفرية إلزامية داخل
-              /// install-by-bundle اعتمادًا على UDID الموثق، وليس اعتمادًا على قيمة محلية.
-              private func verifyDevice(_ done: @escaping (DeviceCertificate?, String?) -> Void) {
-                  let activation = ActivationManager.shared
-                  let udid = activation.udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  guard !udid.isEmpty else {
-                      done(nil, "ألصق UDID الرسمي لجهازك في صفحة التفعيل أولًا"); return
-                  }
-                  guard !activation.code.isEmpty else {
-                      done(nil, "يجب تسجيل الدخول وتفعيل الاشتراك قبل التثبيت"); return
-                  }
-
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
-                  comps?.queryItems = [
-                      URLQueryItem(name: "code", value: activation.code),
-                      URLQueryItem(name: "udid", value: udid),
-                      URLQueryItem(name: "device_id", value: udid)
-                  ]
-                  guard let url = comps?.url else {
-                      done(nil, "رابط التحقق من الجهاز غير صحيح"); return
-                  }
-
-                  var req = URLRequest(url: url, timeoutInterval: 25)
-                  req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  URLSession.shared.dataTask(with: req) { data, response, error in
-                      var cert: DeviceCertificate? = nil
-                      var message: String? = nil
-
-                      if let error = error {
-                          message = "تعذّر التحقق من جهازك: \(error.localizedDescription)"
-                      } else if let data = data,
-                                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                          var account = root
-                          if let nested = root["account"] as? [String: Any] {
-                              for (key, value) in nested { account[key] = value }
-                          }
-                          let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? false
-                          let ok = (root["ok"] as? Bool) ?? statusOK
-                          let active = (account["active"] as? Bool) ?? true
-                          let serverUDID = ((account["udid"] as? String)
-                              ?? (account["device_id"] as? String)
-                              ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-
-                          if !ok || !active {
-                              message = (root["message"] as? String)
-                                  ?? (root["error"] as? String)
-                                  ?? "تعذّر التحقق من اشتراك هذا الجهاز"
-                          } else if !serverUDID.isEmpty && serverUDID != udid {
-                              message = "UDID الحالي لا يطابق الجهاز المرتبط بحسابك"
-                          } else {
-                              // بعض نسخ اللوحة ترجع معلومات الشهادة مع الحساب، وبعضها
-                              // يحسمها فقط داخل install-by-bundle. الحالتان صحيحتان.
-                              let rawCert = (account["certificate"] as? [String: Any])
-                                  ?? (account["cert"] as? [String: Any])
-                                  ?? ((account["device"] as? [String: Any])?["certificate"] as? [String: Any])
-                              if let rawCert = rawCert { cert = DeviceCertificate.parse(rawCert) }
-                          }
-                      } else {
-                          message = "رد غير صالح من سيرفر التحقق"
-                      }
-
-                      DispatchQueue.main.async {
-                          self.currentCertificate = cert
-                          done(cert, message)
-                      }
-                  }.resume()
-              }
-
               func install(bundleId: String?, name: String) {
-                  let bundle = (bundleId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard !bundle.isEmpty else {
-                      StatusCenter.shared.show(text: "هذا التطبيق بدون Bundle ID، تواصل مع الإدارة")
-                      return
-                  }
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التحقق من UDID وحسابك...")
-
-                  verifyDevice { [weak self] cert, message in
-                      guard let self = self else { return }
-                      if let message = message {
-                          self.fail(message)
-                          return
-                      }
-                      if cert?.revoked == true {
-                          self.fail("شهادتك ملغاة (Revoked) — اطلب شهادة جديدة من الإدارة")
-                          return
-                      }
-                      if cert?.isExpired == true {
-                          self.fail("انتهت صلاحية شهادتك — جدّدها من لوحة التحكم قبل التثبيت")
-                          return
-                      }
-                      if cert?.udidRegistered == false {
-                          self.fail("جهازك غير مضاف داخل بروفايل شهادتك — أضف UDID ثم أعد المحاولة")
-                          return
-                      }
-                      self.performInstall(bundleId: bundle, name: name, cert: cert)
-                  }
-              }
-
-              private func performInstall(bundleId: String, name: String, cert: DeviceCertificate?) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else {
-                      fail("رابط سيرفر التثبيت غير صحيح"); return
-                  }
-                  isWorking = true
-                  StatusCenter.shared.show(text: cert.map { "جارٍ توقيع التطبيق بشهادتك (\($0.name))..." }
-                      ?? "جارٍ جلب شهادة UDID وتوقيع التطبيق...")
-
-                  let udid = ActivationManager.shared.deviceID
-                  var req = URLRequest(url: url, timeoutInterval: 60)
+                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت المباشر...")
+                  var req = URLRequest(url: url, timeoutInterval: 30)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  
-                  // قراءة تفضيل استخدام شهادة المتجر
-                  let useStore = UserDefaults.standard.bool(forKey: "useStoreCertificate")
-                  let usePersonal = UserDefaults.standard.bool(forKey: "usePersonalCertificate")
-                  
-                  var payload: [String: Any] = [
-                      "bundle_id": bundleId,
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "bundle_id": bundleId ?? "",
                       "name": name,
-                      "udid": udid,
-                      "device_id": udid,
-                      "code": ActivationManager.shared.code,
-                      "certificate_scope": "udid",
-                      "resolve_certificate_by_udid": true,
-                      "require_udid_match": true,
-                      "allow_default_certificate": false,
-                  ]
-                  
-                  // تحديد استخدام الشهادة الشخصية أو شهادة المتجر
-                  if usePersonal && CertificateManager.shared.hasValidCertificate() {
-                      payload["require_personal_certificate"] = true
-                      payload["use_personal_certificate"] = true
-                      payload["allow_store_certificate"] = false
-                      payload["use_store_certificate"] = false
-                      payload["certificate_id"] = CertificateManager.shared.certificateID
-                  } else if useStore {
-                      payload["require_personal_certificate"] = false
-                      payload["use_personal_certificate"] = false
-                      payload["allow_store_certificate"] = true
-                      payload["use_store_certificate"] = true
-                  } else {
-                      // افتراضي: استخدام شهادة المتجر
-                      payload["require_personal_certificate"] = false
-                      payload["use_personal_certificate"] = false
-                      payload["allow_store_certificate"] = true
-                      payload["use_store_certificate"] = true
-                  }
-                  
-                  if let cert = cert, !useStore {
-                      payload["certificate_id"] = cert.id
-                      payload["cert_id"] = cert.id
-                      if !cert.teamId.isEmpty { payload["team_id"] = cert.teamId }
-                  }
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-                  URLSession.shared.dataTask(with: req) { data, _, error in
+                      "udid": ActivationManager.shared.deviceID
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
-                          if let error = error {
-                              self.fail("تعذّر الاتصال بسيرفر المتجر: \(error.localizedDescription)"); return
-                          }
+                          self.isWorking = false
                           guard let data = data,
                                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.fail("رد غير صالح من سيرفر المتجر"); return
-                          }
-                          if let ok = obj["ok"] as? Bool, ok == false {
-                              self.fail((obj["message"] as? String) ?? (obj["error"] as? String) ?? "فشل التوقيع بشهادتك")
+                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
                               return
                           }
-                          guard let installURL = self.installURL(from: obj) else {
-                              self.fail((obj["message"] as? String) ?? "التثبيت غير متاح حاليًا")
-                              return
-                          }
-                          self.isWorking = false
-                          UIApplication.shared.open(installURL, options: [:]) { opened in
-                              StatusCenter.shared.show(text: opened
-                                  ? "جارٍ التثبيت على جهازك بشهادتك..."
-                                  : "تعذّر فتح نافذة التثبيت، أعد المحاولة")
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
+                              StatusCenter.shared.show(text: msg)
                           }
                       }
                   }.resume()
-              }
-
-              /// يبني رابط itms-services الصحيح.
-              /// خطأ شائع: السيرفر يرجع رابط manifest عادي (https) ففتحه يُنزّل ملف plist
-              /// بدل بدء التثبيت. هنا نغلّفه دائمًا بـ itms-services مع ترميز صحيح.
-              private func installURL(from obj: [String: Any]) -> URL? {
-                  if let s = obj["install_url"] as? String, s.hasPrefix("itms-services://") {
-                      return URL(string: s)
-                  }
-                  let manifest = (obj["manifest_url"] as? String)
-                      ?? (obj["plist_url"] as? String)
-                      ?? (obj["manifest"] as? String)
-                      ?? (obj["install_url"] as? String)
-                  guard var m = manifest?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty else { return nil }
-                  // التثبيت عبر OTA يتطلب HTTPS — أي رابط http يرفضه iOS بصمت.
-                  if m.hasPrefix("http://") { m = "https://" + m.dropFirst("http://".count) }
-                  guard m.hasPrefix("https://") else { return nil }
-                  var allowed = CharacterSet.alphanumerics
-                  allowed.insert(charactersIn: "-._~")
-                  let encoded = m.addingPercentEncoding(withAllowedCharacters: allowed) ?? m
-                  return URL(string: "itms-services://?action=download-manifest&url=\(encoded)")
               }
           }
 
@@ -7977,8 +7346,10 @@ jobs:
           cp -X Resources/thanks_overlay.gif          build-output/Payload/VIP21Store.app/
           cp -X Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
           cp -X Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
-          cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
-          cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb1.png    build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb2.png    build-output/Payload/VIP21Store.app/
+          cp -X Resources/wallet_advanced_onb3.png    build-output/Payload/VIP21Store.app/
+          # (No character images)
 
           xattr -cr build-output
           find build-output -name ".DS_Store" -delete
@@ -8167,5 +7538,8 @@ jobs:
         with:
           name: 21s-Clean-IPA
           path: artifacts/21s.ipa
+          # Store without extra compression: GitHub wraps artifacts in a second zip,
+          # and a re-compressed nested zip is what makes iPhone extractors fail with
+          # "an error occurred while extracting the file".
           compression-level: 0
           retention-days: 90
