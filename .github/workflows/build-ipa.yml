@@ -2806,6 +2806,7 @@ jobs:
           import UIKit
           import ImageIO
           import WebKit
+          import UniformTypeIdentifiers
 
           // MARK: - 3D / HTML ENGINE (WKWebView) =========================
           struct HTMLContentView: UIViewRepresentable {
@@ -3493,27 +3494,28 @@ jobs:
               @ObservedObject private var updates = UpdatesFeed.shared
               @State private var tab: Int = 0
               @State private var showSearch = false
+              @State private var showSettings = false
 
               var body: some View {
                   ZStack {
                       TabView(selection: $tab) {
                           StoreHomeView(feed: feed,
-                                       onMenu: {  },
+                                       onMenu: { showSettings = true },
                                        onGoApps: { tab = 3 },
                                        onGoFiles: { tab = 2 })
                               .tabItem { Label(LS("الرئيسية"), systemImage: "house.fill") }
                               .tag(0)
 
-                          FavoritesView(feed: feed, onMenu: {  })
+                          FavoritesView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("المفضلة"), systemImage: "heart.fill") }
                               .badge(favs.items.count)
                               .tag(1)
 
-                          AppsListView(feed: feed, onMenu: {  })
+                          AppsListView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("التطبيقات"), systemImage: "square.grid.2x2.fill") }
                               .tag(3)
 
-                          AlertsView(feed: feed, onMenu: {  })
+                          AlertsView(feed: feed, onMenu: { showSettings = true })
                               .tabItem { Label(LS("التحديثات"), systemImage: "arrow.triangle.2.circlepath") }
                               .badge(updates.recentCount)
                               .tag(2)
@@ -3532,12 +3534,158 @@ jobs:
                       NotificationsManager.shared.requestAuthorization()
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
+                  .fullScreenCover(isPresented: $showSettings) {
+                      CertificateSettingsView(isPresented: $showSettings)
+                  }
                   .environment(\.locale, lang.locale)
                   .environment(\.layoutDirection, lang.layout)
                   .id(lang.isArabic)
                   .animation(.easeInOut(duration: 0.3), value: theme.current.id)
               }
 
+          }
+
+          // ================= CERTIFICATE SETTINGS =================
+          /// Imports the user's signing pair only long enough to upload it to the
+          /// authenticated dashboard. The password and certificate bytes are never
+          /// written to UserDefaults or retained by the app after the request.
+          struct CertificateSettingsView: View {
+              @Binding var isPresented: Bool
+              @State private var p12Data: Data? = nil
+              @State private var p12Name = ""
+              @State private var profileData: Data? = nil
+              @State private var profileName = ""
+              @State private var password = ""
+              @State private var chooseP12 = false
+              @State private var chooseProfile = false
+              @State private var isUploading = false
+              @State private var message = ""
+
+              private var canUpload: Bool {
+                  p12Data != nil && profileData != nil && !password.isEmpty && !isUploading
+              }
+
+              var body: some View {
+                  NavigationView {
+                      Form {
+                          Section(header: Text("شهادة التثبيت"), footer: Text("تُرسل الملفات مشفّرة عبر HTTPS إلى لوحة التحكم لربطها بـ UDID الحالي، ولا تُحفظ كلمة المرور داخل التطبيق.")) {
+                              Button { chooseP12 = true } label: {
+                                  Label(p12Name.isEmpty ? "إضافة شهادة .p12" : p12Name,
+                                        systemImage: p12Data == nil ? "person.badge.key" : "checkmark.seal.fill")
+                              }
+                              Button { chooseProfile = true } label: {
+                                  Label(profileName.isEmpty ? "إضافة ملف .mobileprovision" : profileName,
+                                        systemImage: profileData == nil ? "doc.badge.plus" : "checkmark.seal.fill")
+                              }
+                              SecureField("كلمة مرور الشهادة", text: $password)
+                                  .textContentType(.password)
+                          }
+
+                          Section {
+                              Button {
+                                  uploadCertificate()
+                              } label: {
+                                  HStack {
+                                      Spacer()
+                                      if isUploading { ProgressView().padding(.trailing, 8) }
+                                      Text(isUploading ? "جارٍ التحقق والإضافة..." : "تحقق وأضف الشهادة")
+                                          .fontWeight(.bold)
+                                      Spacer()
+                                  }
+                              }
+                              .disabled(!canUpload)
+                          }
+
+                          if !message.isEmpty {
+                              Section { Text(message).foregroundColor(message.hasPrefix("تم") ? .green : .red) }
+                          }
+                      }
+                      .navigationTitle("الإعدادات")
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("إغلاق") { isPresented = false }
+                          }
+                      }
+                  }
+                  .fileImporter(isPresented: $chooseP12,
+                                allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]) { result in
+                      importFile(result, expectedExtension: "p12") { data, name in
+                          p12Data = data; p12Name = name
+                      }
+                  }
+                  .fileImporter(isPresented: $chooseProfile,
+                                allowedContentTypes: [UTType(filenameExtension: "mobileprovision") ?? .data]) { result in
+                      importFile(result, expectedExtension: "mobileprovision") { data, name in
+                          profileData = data; profileName = name
+                      }
+                  }
+                  .environment(\.layoutDirection, .rightToLeft)
+              }
+
+              private func importFile(_ result: Result<URL, Error>, expectedExtension: String,
+                                      assign: (Data, String) -> Void) {
+                  do {
+                      let url = try result.get()
+                      guard url.pathExtension.lowercased() == expectedExtension else {
+                          message = "اختر ملف .\(expectedExtension) صحيح"; return
+                      }
+                      let scoped = url.startAccessingSecurityScopedResource()
+                      defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                      let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                      guard !data.isEmpty, data.count <= 25 * 1024 * 1024 else {
+                          message = "الملف فارغ أو أكبر من 25MB"; return
+                      }
+                      assign(data, url.lastPathComponent)
+                      message = ""
+                  } catch {
+                      message = "تعذر قراءة الملف: \(error.localizedDescription)"
+                  }
+              }
+
+              private func uploadCertificate() {
+                  guard let p12 = p12Data, let profile = profileData else { return }
+                  let activation = ActivationManager.shared
+                  let udid = activation.deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !udid.isEmpty, !activation.code.isEmpty else {
+                      message = "فعّل الحساب وأضف UDID أولاً"; return
+                  }
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificates/upload") else {
+                      message = "رابط لوحة التحكم غير صحيح"; return
+                  }
+
+                  isUploading = true; message = ""
+                  let boundary = "Boundary-\(UUID().uuidString)"
+                  var body = Data()
+                  func field(_ name: String, _ value: String) {
+                      body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+                  }
+                  func file(_ name: String, _ filename: String, _ data: Data) {
+                      body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
+                      body.append(data); body.append(Data("\r\n".utf8))
+                  }
+                  field("code", activation.code); field("udid", udid); field("password", password)
+                  file("p12", p12Name, p12); file("mobileprovision", profileName, profile)
+                  body.append(Data("--\(boundary)--\r\n".utf8))
+
+                  var request = URLRequest(url: url, timeoutInterval: 90)
+                  request.httpMethod = "POST"
+                  request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                  request.httpBody = body
+                  URLSession.shared.dataTask(with: request) { data, response, error in
+                      var text = "تعذر إضافة الشهادة"
+                      let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                      if error == nil, (200...299).contains(status) {
+                          text = "تم التحقق وإضافة الشهادة لهذا الجهاز"
+                      } else if let data = data,
+                                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                          text = (object["message"] as? String) ?? (object["error"] as? String) ?? text
+                      } else if let error = error { text = error.localizedDescription }
+                      DispatchQueue.main.async {
+                          isUploading = false; message = text; password = ""
+                          if text.hasPrefix("تم") { p12Data = nil; profileData = nil }
+                      }
+                  }.resume()
+              }
           }
 
           // ================= PROFILE STATS STRIP (تفاصيل تبويب الحساب) =================
@@ -7774,7 +7922,7 @@ jobs:
             if not isinstance(devices, list) or not devices:
                 raise SystemExit("::error::This profile has no registered UDIDs; use an Ad Hoc/Development device profile.")
             print(f"Provisioning profile is valid until {expires.isoformat()} for {len(devices)} registered device(s).")
-            PYEOF
+          PYEOF
             case "$NEW_BUNDLE_ID" in
               $PROFILE_BUNDLE_ID) ;;
               *)
