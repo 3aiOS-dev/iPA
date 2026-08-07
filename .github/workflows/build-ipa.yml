@@ -475,7 +475,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - Models.swift (UDID removed)
+      # SOURCE CODE - Models.swift
       # =========================================================
       - name: Generate code - Models.swift
         run: |
@@ -906,7 +906,7 @@ jobs:
           FAVEOF
 
       # =========================================================
-      # SOURCE CODE - ActivationManager.swift (status only)
+      # SOURCE CODE - ActivationManager.swift (status only - real server verification)
       # =========================================================
       - name: Generate code - ActivationManager.swift
         run: |
@@ -916,7 +916,7 @@ jobs:
           import Combine
           import UIKit
 
-          /// مدير أسماء التفعيل - يعرض الحالة فقط، بدون إدخال أو تفعيل.
+          /// مدير أسماء التفعيل - يعرض الحالة فقط، مع تحقق حقيقي من السيرفر.
           @MainActor
           public final class ActivationManager: ObservableObject {
               public static let shared = MainActor.assumeIsolated { ActivationManager() }
@@ -941,6 +941,8 @@ jobs:
                       expiresAt = Date(timeIntervalSince1970: ts)
                   }
                   refreshLocalState()
+                  // تحقق فوري من السيرفر عند إنشاء المدير
+                  fetchStatus()
               }
 
               public var daysLeft: Int {
@@ -972,9 +974,12 @@ jobs:
                   d.set(fullName, forKey: kName)
               }
 
-              /// يقوم بجلب الحالة من السيرفر (قراءة فقط)
+              /// يقوم بجلب الحالة من السيرفر (قراءة فقط) - يسمى عند بدء التطبيق وكل 5 دقائق
               public func fetchStatus(completion: ((Bool) -> Void)? = nil) {
-                  guard !code.isEmpty else { completion?(false); return }
+                  guard !code.isEmpty else {
+                      completion?(false)
+                      return
+                  }
                   let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
                   var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
@@ -993,7 +998,8 @@ jobs:
                           if self.apply(json) {
                               completion?(true)
                           } else {
-                              // لا نقوم بتعطيل الاشتراك تلقائياً؛ نترك الحالة المحلية كما هي
+                              // إذا كان السيرفر يعيد أن الاشتراك غير نشط، نقوم بتعطيله محلياً
+                              self.deactivate()
                               completion?(false)
                           }
                       }
@@ -1017,6 +1023,15 @@ jobs:
                   persist()
                   refreshLocalState()
                   return isActive
+              }
+
+              public func deactivate() {
+                  code = ""
+                  expiresAt = nil
+                  durationDays = 0
+                  fullName = ""
+                  isActive = false
+                  persist()
               }
 
               // MARK: - Fixed: make parseDate public so it can be used across files
@@ -1793,7 +1808,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift (complete store, no HTML/3D, no categories on home)
+      # SOURCE CODE - StoreView.swift (complete store with requested changes)
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -2418,6 +2433,7 @@ jobs:
               }
           }
 
+          // Telegram banner appears only in Home, not in Apps tab
           struct TelegramUpdatesBanner: View {
               private let link = "https://t.me/deviosx"
 
@@ -2541,7 +2557,7 @@ jobs:
               }
           }
 
-          // ================= APPS TAB =================
+          // ================= APPS TAB (no Telegram banner, install button instead of heart) =================
           struct AppsListView: View {
               @ObservedObject var feed: StoreFeed
               @ObservedObject private var reposStore = RepositoriesStore.shared
@@ -2618,7 +2634,7 @@ jobs:
 
                                   FeaturedBannerCard(apps: filtered)
 
-                                  TelegramUpdatesBanner()
+                                  // Telegram banner removed from Apps tab
 
                                   if !categories.isEmpty {
                                       ScrollView(.horizontal, showsIndicators: false) {
@@ -2653,7 +2669,7 @@ jobs:
                                       LazyVStack(spacing: 10) {
                                           ForEach(visibleItems) { app in
                                               NavigationLink(value: app) {
-                                                  AppListRow(app: app, isNew: feed.isRecent(app))
+                                                  AppListRow(app: app, isNew: feed.isRecent(app), showInstall: true)
                                               }
                                               .buttonStyle(.plain)
                                               .onAppear { handleAppear(app: app) }
@@ -2709,9 +2725,11 @@ jobs:
               }
           }
 
+          // AppListRow with optional install button instead of heart
           struct AppListRow: View {
               let app: StoreAPIApp
               var isNew: Bool = false
+              var showInstall: Bool = false
 
               var body: some View {
                   HStack(spacing: 14) {
@@ -2750,7 +2768,21 @@ jobs:
                           }
                       }
                       Spacer()
-                      FavoriteButton(app: app, size: 34)
+                      if showInstall {
+                          Button {
+                              HapticManager.shared.success()
+                              StoreInstaller.shared.install(app: app)
+                          } label: {
+                              Text("تثبيت")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14).padding(.vertical, 7)
+                                  .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                      } else {
+                          FavoriteButton(app: app, size: 34)
+                      }
                   }
                   .padding(14)
                   .background(
@@ -3047,6 +3079,7 @@ jobs:
               @Environment(\.dismiss) private var dismiss
               @State private var showScreenshots = false
               @State private var screenshotStartIndex = 0
+              @State private var showCommentsSheet = false
 
               var body: some View {
                   ScrollView {
@@ -3158,8 +3191,27 @@ jobs:
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
 
-                          // Comments section
-                          AppCommentsSection(app: app)
+                          // Comments button - opens sheet
+                          Button {
+                              showCommentsSheet = true
+                          } label: {
+                              HStack {
+                                  Image(systemName: "text.bubble.fill")
+                                      .font(.system(size: 14))
+                                  Text("التعليقات")
+                                      .font(.system(size: 14, weight: .semibold))
+                                  Spacer()
+                                  Image(systemName: "chevron.left")
+                                      .font(.system(size: 12))
+                              }
+                              .foregroundColor(Color.storeText)
+                              .padding(14)
+                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                              .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
+                          }
+                          .buttonStyle(.plain)
+                          .padding(.horizontal, 20)
+                          .padding(.top, 12)
                       }
                       .padding(.bottom, 40)
                   }
@@ -3168,6 +3220,166 @@ jobs:
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
                   }
+                  .sheet(isPresented: $showCommentsSheet) {
+                      CommentsSheetView(app: app)
+                          .presentationDetents([.medium, .large])
+                          .presentationDragIndicator(.visible)
+                  }
+              }
+          }
+
+          // Instagram-style Comments Sheet
+          struct CommentsSheetView: View {
+              let app: StoreAPIApp
+              @StateObject private var store = StoreCommentsStore()
+              @State private var draft: String = ""
+              @Environment(\.dismiss) private var dismiss
+              @FocusState private var isFocused: Bool
+
+              var body: some View {
+                  NavigationView {
+                      VStack {
+                          // Header
+                          HStack {
+                              Button("إلغاء") { dismiss() }
+                                  .foregroundColor(.storePrimary)
+                              Spacer()
+                              Text("التعليقات (\(store.comments.count))")
+                                  .font(.headline)
+                              Spacer()
+                              Button("تم") { dismiss() }
+                                  .foregroundColor(.storePrimary)
+                          }
+                          .padding(.horizontal)
+                          .padding(.top, 8)
+
+                          Divider()
+
+                          ScrollView {
+                              LazyVStack(alignment: .leading, spacing: 16) {
+                                  if store.isLoading {
+                                      ProgressView()
+                                          .frame(maxWidth: .infinity, alignment: .center)
+                                          .padding()
+                                  } else if store.comments.isEmpty {
+                                      VStack(spacing: 8) {
+                                          Image(systemName: "text.bubble")
+                                              .font(.system(size: 32))
+                                              .foregroundColor(.storeSub)
+                                          Text("لا توجد تعليقات بعد")
+                                              .font(.system(size: 14))
+                                              .foregroundColor(.storeSub)
+                                          Text("كن أول من يعلّق على هذا التطبيق")
+                                              .font(.system(size: 12))
+                                              .foregroundColor(.storeSub)
+                                      }
+                                      .frame(maxWidth: .infinity, alignment: .center)
+                                      .padding(.top, 40)
+                                  } else {
+                                      ForEach(store.comments) { comment in
+                                          VStack(alignment: .leading, spacing: 6) {
+                                              HStack(spacing: 8) {
+                                                  // Avatar placeholder
+                                                  Circle()
+                                                      .fill(Color.storeDivider)
+                                                      .frame(width: 32, height: 32)
+                                                      .overlay(
+                                                          Text(String(comment.author.prefix(1)).uppercased())
+                                                              .font(.system(size: 14, weight: .bold))
+                                                              .foregroundColor(.storeSub)
+                                                      )
+                                                  VStack(alignment: .leading, spacing: 2) {
+                                                      Text(comment.author)
+                                                          .font(.system(size: 13, weight: .bold))
+                                                          .foregroundColor(.storeText)
+                                                      if let date = comment.created_at {
+                                                          Text(formatDate(date))
+                                                              .font(.system(size: 10))
+                                                              .foregroundColor(.storeSub)
+                                                      }
+                                                  }
+                                                  Spacer()
+                                              }
+                                              Text(comment.body)
+                                                  .font(.system(size: 13))
+                                                  .foregroundColor(.storeText)
+                                                  .padding(.leading, 40)
+                                              if let reply = comment.reply, !reply.isEmpty {
+                                                  HStack(alignment: .top, spacing: 6) {
+                                                      Image(systemName: "arrow.turn.down.right")
+                                                          .font(.system(size: 10))
+                                                          .foregroundColor(.storePrimary)
+                                                      VStack(alignment: .leading, spacing: 2) {
+                                                          Text("الإدارة")
+                                                              .font(.system(size: 11, weight: .bold))
+                                                              .foregroundColor(.storePrimary)
+                                                          Text(reply)
+                                                              .font(.system(size: 12))
+                                                              .foregroundColor(.storeSub)
+                                                      }
+                                                  }
+                                                  .padding(.leading, 40)
+                                                  .padding(.top, 4)
+                                              }
+                                          }
+                                          .padding(.horizontal)
+                                          .padding(.vertical, 6)
+                                          Divider()
+                                      }
+                                  }
+                              }
+                          }
+
+                          // Input bar
+                          HStack(spacing: 10) {
+                              TextField("اكتب تعليقاً...", text: $draft)
+                                  .font(.system(size: 14))
+                                  .padding(.horizontal, 14)
+                                  .padding(.vertical, 10)
+                                  .background(RoundedRectangle(cornerRadius: 20).fill(Color.storeCard))
+                                  .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.storeDivider, lineWidth: 1))
+                                  .focused($isFocused)
+
+                              Button {
+                                  let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                                  guard !text.isEmpty else { return }
+                                  store.send(appId: app.id, text: text) { ok in
+                                      if ok {
+                                          draft = ""
+                                          isFocused = false
+                                          StatusCenter.shared.show(text: "تم نشر تعليقك")
+                                      } else {
+                                          StatusCenter.shared.show(text: "فشل النشر، حاول مرة أخرى")
+                                      }
+                                  }
+                              } label: {
+                                  Text(store.isSending ? "..." : "نشر")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 18)
+                                      .padding(.vertical, 10)
+                                      .background(Capsule().fill(store.isSending ? Color.storeSub : Color.storePrimary))
+                              }
+                              .disabled(store.isSending || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                          }
+                          .padding(.horizontal)
+                          .padding(.vertical, 8)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                  }
+                  .onAppear { store.load(appId: app.id) }
+                  .preferredColorScheme(.dark)
+              }
+
+              private func formatDate(_ raw: String) -> String {
+                  if let d = ActivationManager.parseDate(raw) {
+                      let f = DateFormatter()
+                      f.locale = Locale(identifier: "ar")
+                      f.dateStyle = .medium
+                      f.timeStyle = .short
+                      return f.string(from: d)
+                  }
+                  return raw
               }
           }
 
@@ -3237,7 +3449,7 @@ jobs:
               }
           }
 
-          // ================= COMMENTS =================
+          // ================= COMMENTS STORE (shared) =================
           struct StoreComment: Identifiable, Decodable, Hashable {
               let id: String
               let author: String
@@ -3290,95 +3502,6 @@ jobs:
                           done(ok)
                       }
                   }.resume()
-              }
-          }
-
-          struct AppCommentsSection: View {
-              let app: StoreAPIApp
-              @StateObject private var store = StoreCommentsStore()
-              @State private var draft: String = ""
-
-              var body: some View {
-                  VStack(alignment: .leading, spacing: 12) {
-                      HStack(spacing: 8) {
-                          Capsule()
-                              .fill(LinearGradient(colors: [Color.storePrimary, Color.storeCyan],
-                                                   startPoint: .top, endPoint: .bottom))
-                              .frame(width: 4, height: 22)
-                          Text("التعليقات")
-                              .font(.system(size: 16, weight: .heavy))
-                              .foregroundColor(Color.storeText)
-                          Spacer()
-                          Text("\(store.comments.count)")
-                              .font(.system(size: 11, weight: .bold))
-                              .foregroundColor(Color.storeSub)
-                              .padding(.horizontal, 8).padding(.vertical, 3)
-                              .background(Capsule().fill(Color.storeDivider))
-                      }
-
-                      HStack(spacing: 8) {
-                          TextField("اكتب تعليقك...", text: $draft)
-                              .font(.system(size: 13))
-                              .foregroundColor(Color.storeText)
-                              .padding(.horizontal, 12).padding(.vertical, 10)
-                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 1))
-                          Button {
-                              let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                              guard !text.isEmpty else { return }
-                              store.send(appId: app.id, text: text) { ok in
-                                  if ok { draft = "" }
-                                  StatusCenter.shared.show(text: ok ? "تم نشر تعليقك" : "التعليق يتطلب حساباً مفعّلاً")
-                              }
-                          } label: {
-                              Text(store.isSending ? "..." : "نشر")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 16).padding(.vertical, 10)
-                                  .background(Capsule().fill(Color.storePrimary))
-                          }
-                          .buttonStyle(.plain)
-                          .disabled(store.isSending)
-                      }
-
-                      if store.comments.isEmpty && !store.isLoading {
-                          Text("لا توجد تعليقات بعد — كن أول من يعلّق")
-                              .font(.system(size: 12))
-                              .foregroundColor(Color.storeSub)
-                      }
-
-                      ForEach(store.comments) { c in
-                          VStack(alignment: .leading, spacing: 6) {
-                              Text(c.author)
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(Color.storeText)
-                              Text(c.body)
-                                  .font(.system(size: 12))
-                                  .foregroundColor(Color.storeSub)
-                                  .fixedSize(horizontal: false, vertical: true)
-                              if let reply = c.reply, !reply.isEmpty {
-                                  HStack(alignment: .top, spacing: 6) {
-                                      Text("رد الإدارة:")
-                                          .font(.system(size: 11, weight: .bold))
-                                          .foregroundColor(Color.storePrimary)
-                                      Text(reply)
-                                          .font(.system(size: 11))
-                                          .foregroundColor(Color.storeSub)
-                                  }
-                                  .padding(8)
-                                  .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeDivider.opacity(0.35)))
-                              }
-                          }
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                          .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
-                      }
-                  }
-                  .environment(\.layoutDirection, .rightToLeft)
-                  .padding(.horizontal, 20)
-                  .padding(.top, 22)
-                  .onAppear { store.load(appId: app.id) }
               }
           }
 
@@ -3679,7 +3802,7 @@ jobs:
               }
           }
 
-          // ================= HOME VIEW (no categories) =================
+          // ================= HOME VIEW (no categories, no quick actions) =================
           struct StoreHomeView: View {
               @ObservedObject var feed: StoreFeed
               var onMenu: (() -> Void)? = nil
@@ -3701,11 +3824,7 @@ jobs:
                                   SubscriptionStatusCard()
                                       .padding(.horizontal, 18)
 
-                                  // Quick actions
-                                  HomeQuickActions(onApps: { onGoApps?() },
-                                                   onFiles: { onGoFiles?() },
-                                                   onFavorites: { /* navigate to favorites? */ },
-                                                   onMenu: { onMenu?() })
+                                  // Quick actions removed (files, settings, etc.)
 
                                   if feed.apps.isEmpty && feed.isLoading {
                                       LoadingList()
@@ -3767,53 +3886,6 @@ jobs:
                           AppDetailView(app: app, feed: feed)
                       }
                   }
-              }
-          }
-
-          struct HomeQuickActions: View {
-              var onApps: () -> Void
-              var onFiles: () -> Void
-              var onFavorites: () -> Void
-              var onMenu: () -> Void
-
-              var body: some View {
-                  HStack(spacing: 10) {
-                      action("square.grid.2x2.fill", "التطبيقات", Color.storePrimary, onApps)
-                      action("arrow.down.circle.fill", "الملفات", Color.storeCyan, onFiles)
-                      action("heart.fill", "المفضلة", Color.storePink, onFavorites)
-                      action("gearshape.fill", "الإعدادات", Color.storeYellow, onMenu)
-                  }
-                  .padding(.horizontal, 20)
-              }
-
-              @ViewBuilder
-              private func action(_ icon: String, _ title: String, _ color: Color, _ act: @escaping () -> Void) -> some View {
-                  Button(action: { HapticManager.shared.selection(); act() }) {
-                      VStack(spacing: 7) {
-                          Image(systemName: icon)
-                              .font(.system(size: 16, weight: .bold))
-                              .foregroundColor(.white)
-                              .frame(width: 40, height: 40)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                      .fill(LinearGradient(colors: [color, color.opacity(0.72)],
-                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                                      .shadow(color: color.opacity(0.35), radius: 8, y: 4)
-                              )
-                          Text(title)
-                              .font(.system(size: 10.5, weight: .bold))
-                              .foregroundColor(Color.storeSub)
-                      }
-                      .frame(maxWidth: .infinity)
-                      .padding(.vertical, 12)
-                      .background(
-                          RoundedRectangle(cornerRadius: 20, style: .continuous)
-                              .fill(Color.storeCard)
-                              .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                  .stroke(Color.storeDivider.opacity(0.7), lineWidth: 1))
-                      )
-                  }
-                  .buttonStyle(.plain)
               }
           }
 
@@ -3961,6 +4033,8 @@ jobs:
                   VIP21StoreApp.scheduleAppRefresh()
                   VIP21StoreApp.applyDarkAppearance()
                   LiveCatalogMonitor.shared.start()
+                  // تحقق من حالة الاشتراك عند بدء التطبيق
+                  ActivationManager.shared.fetchStatus()
               }
 
               static func registerBackgroundTask() {
