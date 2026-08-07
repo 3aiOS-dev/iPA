@@ -6047,83 +6047,229 @@ jobs:
               }
           }
 
-          // ============ التثبيت الرسمي المباشر عبر سيرفر المتجر ============
+          // ============ التثبيت الرسمي المباشر عبر شهادة المستخدم ============
+          /// معلومات شهادة الجهاز القادمة من لوحة التحكم.
+          struct DeviceCertificate {
+              let id: String
+              let name: String
+              let teamId: String
+              let source: String          // personal / store
+              let revoked: Bool
+              let expiresAt: Date?
+              let udidRegistered: Bool
+
+              var isExpired: Bool {
+                  guard let e = expiresAt else { return false }
+                  return e.timeIntervalSinceNow <= 0
+              }
+
+              static func parse(_ obj: [String: Any]) -> DeviceCertificate? {
+                  // معرّف الشهادة إلزامي — بدونه لا يستطيع السيرفر التوقيع بشهادة الشخص.
+                  let rawId = (obj["id"] ?? obj["certificate_id"] ?? obj["cert_id"] ?? obj["uuid"])
+                  let id: String
+                  if let s = rawId as? String { id = s }
+                  else if let n = rawId as? Int { id = String(n) }
+                  else { return nil }
+                  guard !id.isEmpty else { return nil }
+
+                  var expires: Date? = nil
+                  if let ts = obj["expires_at"] as? Double, ts > 0 {
+                      expires = Date(timeIntervalSince1970: ts)
+                  } else if let s = (obj["expires_at"] as? String) ?? (obj["expiry"] as? String), !s.isEmpty {
+                      let iso = ISO8601DateFormatter()
+                      iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                      expires = iso.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+                      if expires == nil {
+                          let df = DateFormatter()
+                          df.locale = Locale(identifier: "en_US_POSIX")
+                          df.dateFormat = "yyyy-MM-dd"
+                          expires = df.date(from: String(s.prefix(10)))
+                      }
+                  }
+
+                  return DeviceCertificate(
+                      id: id,
+                      name: (obj["name"] as? String) ?? (obj["cert_name"] as? String) ?? "شهادة الجهاز",
+                      teamId: (obj["team_id"] as? String) ?? (obj["teamId"] as? String) ?? "",
+                      source: (obj["source"] as? String) ?? (obj["type"] as? String) ?? "personal",
+                      revoked: (obj["revoked"] as? Bool) ?? (obj["is_revoked"] as? Bool) ?? false,
+                      expiresAt: expires,
+                      udidRegistered: (obj["udid_registered"] as? Bool)
+                          ?? (obj["device_registered"] as? Bool)
+                          ?? true
+                  )
+              }
+          }
+
           @MainActor
           final class StoreInstaller: ObservableObject {
               static let shared = MainActor.assumeIsolated { StoreInstaller() }
               @Published var isWorking: Bool = false
+              @Published private(set) var currentCertificate: DeviceCertificate? = nil
               private init() {}
 
               func install(app: StoreAPIApp) {
                   install(bundleId: app.bundleId, name: app.name)
               }
 
-              /// يجلب شهادة الجهاز المرتبطة بالـ UDID قبل التثبيت (شهادة خاصة، ثم شهادة المتجر المجانية).
-              func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
+              private func fail(_ message: String) {
+                  isWorking = false
+                  StatusCenter.shared.show(text: message)
+              }
+
+              /// يجلب شهادة الجهاز المرتبطة بالـ UDID قبل بدء التثبيت.
+              /// النتيجة: الشهادة أو رسالة الخطأ الحقيقية القادمة من لوحة التحكم.
+              func fetchCertificate(_ done: @escaping (DeviceCertificate?, String?) -> Void) {
+                  let udid = ActivationManager.shared.deviceID
+                  guard !udid.isEmpty else {
+                      done(nil, "ألصق UDID الرسمي لجهازك في صفحة التفعيل أولًا"); return
+                  }
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
-                      done(nil); return
+                      done(nil, "رابط سيرفر الشهادات غير صحيح"); return
                   }
                   var req = URLRequest(url: url, timeoutInterval: 25)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": ActivationManager.shared.deviceID,
+                      "udid": udid,
+                      "device_id": udid,
                       "code": ActivationManager.shared.code
                   ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      var result: [String: Any]? = nil
-                      if let data = data,
-                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                         (obj["ok"] as? Bool) == true {
-                          result = obj["certificate"] as? [String: Any]
+                  URLSession.shared.dataTask(with: req) { data, response, error in
+                      var cert: DeviceCertificate? = nil
+                      var message: String? = nil
+
+                      if let error = error {
+                          message = "تعذّر الاتصال بسيرفر الشهادات: \(error.localizedDescription)"
+                      } else if let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                          let ok = (obj["ok"] as? Bool) ?? ((response as? HTTPURLResponse)?.statusCode == 200)
+                          // الشهادة قد تعود مباشرة أو داخل مفتاح certificate/data.
+                          let raw = (obj["certificate"] as? [String: Any])
+                              ?? (obj["cert"] as? [String: Any])
+                              ?? (obj["data"] as? [String: Any])
+                              ?? ((obj["id"] != nil || obj["certificate_id"] != nil) ? obj : nil)
+                          if ok, let raw = raw, let parsed = DeviceCertificate.parse(raw) {
+                              cert = parsed
+                          } else {
+                              message = (obj["message"] as? String)
+                                  ?? (obj["error"] as? String)
+                                  ?? "لا توجد شهادة مرتبطة بجهازك في لوحة التحكم"
+                          }
+                      } else {
+                          message = "رد غير صالح من سيرفر الشهادات"
                       }
-                      DispatchQueue.main.async { done(result) }
+
+                      DispatchQueue.main.async {
+                          if let cert = cert { StoreInstaller.shared.currentCertificate = cert }
+                          done(cert, message)
+                      }
                   }.resume()
               }
 
               func install(bundleId: String?, name: String) {
+                  let bundle = (bundleId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !bundle.isEmpty else {
+                      StatusCenter.shared.show(text: "هذا التطبيق بدون Bundle ID، تواصل مع الإدارة")
+                      return
+                  }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
-                  fetchCertificate { cert in
-                      guard cert != nil else {
-                          self.isWorking = false
-                          StatusCenter.shared.show(text: "لا توجد شهادة مرتبطة بجهازك، تواصل مع الإدارة")
+                  StatusCenter.shared.show(text: "جارٍ تحميل شهادة جهازك...")
+
+                  fetchCertificate { [weak self] cert, message in
+                      guard let self = self else { return }
+                      guard let cert = cert else {
+                          self.fail(message ?? "لا توجد شهادة مرتبطة بجهازك، تواصل مع الإدارة")
                           return
                       }
-                      self.performInstall(bundleId: bundleId, name: name)
+                      if cert.revoked {
+                          self.fail("شهادتك ملغاة (Revoked) — اطلب شهادة جديدة من الإدارة")
+                          return
+                      }
+                      if cert.isExpired {
+                          self.fail("انتهت صلاحية شهادتك — جدّدها من لوحة التحكم قبل التثبيت")
+                          return
+                      }
+                      if !cert.udidRegistered {
+                          self.fail("جهازك غير مضاف داخل بروفايل شهادتك — أضف UDID ثم أعد المحاولة")
+                          return
+                      }
+                      self.performInstall(bundleId: bundle, name: name, cert: cert)
                   }
               }
 
-              private func performInstall(bundleId: String?, name: String) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
+              private func performInstall(bundleId: String, name: String, cert: DeviceCertificate) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else {
+                      fail("رابط سيرفر التثبيت غير صحيح"); return
+                  }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
-                  var req = URLRequest(url: url, timeoutInterval: 30)
+                  StatusCenter.shared.show(text: "جارٍ توقيع التطبيق بشهادتك (\(cert.name))...")
+
+                  let udid = ActivationManager.shared.deviceID
+                  var req = URLRequest(url: url, timeoutInterval: 60)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
+                  // إرسال معرّف الشهادة إلزامي: بدونه يوقّع السيرفر بشهادة افتراضية فيفشل التثبيت.
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "bundle_id": bundleId ?? "",
+                      "bundle_id": bundleId,
                       "name": name,
-                      "udid": ActivationManager.shared.deviceID
+                      "udid": udid,
+                      "device_id": udid,
+                      "code": ActivationManager.shared.code,
+                      "certificate_id": cert.id,
+                      "cert_id": cert.id,
+                      "team_id": cert.teamId,
+                      "use_personal_certificate": true
                   ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
+
+                  URLSession.shared.dataTask(with: req) { data, _, error in
                       DispatchQueue.main.async {
-                          self.isWorking = false
+                          if let error = error {
+                              self.fail("تعذّر الاتصال بسيرفر المتجر: \(error.localizedDescription)"); return
+                          }
                           guard let data = data,
                                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
+                              self.fail("رد غير صالح من سيرفر المتجر"); return
+                          }
+                          if let ok = obj["ok"] as? Bool, ok == false {
+                              self.fail((obj["message"] as? String) ?? (obj["error"] as? String) ?? "فشل التوقيع بشهادتك")
                               return
                           }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
-                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                          } else {
-                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
-                              StatusCenter.shared.show(text: msg)
+                          guard let installURL = self.installURL(from: obj) else {
+                              self.fail((obj["message"] as? String) ?? "التثبيت غير متاح حاليًا")
+                              return
+                          }
+                          self.isWorking = false
+                          UIApplication.shared.open(installURL, options: [:]) { opened in
+                              StatusCenter.shared.show(text: opened
+                                  ? "جارٍ التثبيت على جهازك بشهادتك..."
+                                  : "تعذّر فتح نافذة التثبيت، أعد المحاولة")
                           }
                       }
                   }.resume()
+              }
+
+              /// يبني رابط itms-services الصحيح.
+              /// خطأ شائع: السيرفر يرجع رابط manifest عادي (https) ففتحه يُنزّل ملف plist
+              /// بدل بدء التثبيت. هنا نغلّفه دائمًا بـ itms-services مع ترميز صحيح.
+              private func installURL(from obj: [String: Any]) -> URL? {
+                  if let s = obj["install_url"] as? String, s.hasPrefix("itms-services://") {
+                      return URL(string: s)
+                  }
+                  let manifest = (obj["manifest_url"] as? String)
+                      ?? (obj["plist_url"] as? String)
+                      ?? (obj["manifest"] as? String)
+                      ?? (obj["install_url"] as? String)
+                  guard var m = manifest?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty else { return nil }
+                  // التثبيت عبر OTA يتطلب HTTPS — أي رابط http يرفضه iOS بصمت.
+                  if m.hasPrefix("http://") { m = "https://" + m.dropFirst("http://".count) }
+                  guard m.hasPrefix("https://") else { return nil }
+                  var allowed = CharacterSet.alphanumerics
+                  allowed.insert(charactersIn: "-._~")
+                  let encoded = m.addingPercentEncoding(withAllowedCharacters: allowed) ?? m
+                  return URL(string: "itms-services://?action=download-manifest&url=\(encoded)")
               }
           }
 
