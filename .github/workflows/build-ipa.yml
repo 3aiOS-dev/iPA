@@ -223,7 +223,7 @@ jobs:
           LANGEOF
 
       # =========================================================
-      # SOURCE CODE - Constants.swift (single dark theme, no subscription)
+      # SOURCE CODE - Constants.swift (single dark theme)
       # =========================================================
       - name: Generate code - Constants.swift
         run: |
@@ -308,6 +308,32 @@ jobs:
           VIPEOF
 
       # =========================================================
+      # SOURCE CODE - DateHelpers.swift
+      # =========================================================
+      - name: Generate code - DateHelpers.swift
+        run: |
+          cat > DateHelpers.swift << 'DATEHELP'
+          import Foundation
+
+          func parseDate(_ raw: String) -> Date? {
+              let iso = ISO8601DateFormatter()
+              iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+              if let d = iso.date(from: raw) { return d }
+              if let d = ISO8601DateFormatter().date(from: raw) { return d }
+              let f = DateFormatter()
+              f.locale = Locale(identifier: "en_US_POSIX")
+              f.timeZone = TimeZone(secondsFromGMT: 0)
+              for fmt in ["yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"] {
+                  f.dateFormat = fmt
+                  if let d = f.date(from: raw) {
+                      return fmt == "yyyy-MM-dd" ? d.addingTimeInterval(86_399) : d
+                  }
+              }
+              return nil
+          }
+          DATEHELP
+
+      # =========================================================
       # SOURCE CODE - Models.swift (store models only)
       # =========================================================
       - name: Generate code - Models.swift
@@ -318,22 +344,30 @@ jobs:
           struct StoreAPIResponse: Codable {
               let lastUpdated: String?
               let apps: [StoreAPIApp]
+
               enum CodingKeys: String, CodingKey {
                   case lastUpdated = "last_updated"
                   case apps
               }
+
+              private struct AppsWrapper: Decodable {
+                  let apps: [StoreAPIApp]
+              }
+
               init(from decoder: Decoder) throws {
                   let c = try decoder.container(keyedBy: CodingKeys.self)
                   self.lastUpdated = try? c.decode(String.self, forKey: .lastUpdated)
+
+                  // Try to decode as array directly
                   if let arr = try? c.decode([StoreAPIApp].self, forKey: .apps) {
                       self.apps = arr
-                  } else if let env = try? c.decode([String: Any].self, forKey: .apps),
-                            let list = env["apps"] as? [StoreAPIApp] {
-                      self.apps = list
+                  } else if let wrapper = try? c.decode(AppsWrapper.self, forKey: .apps) {
+                      self.apps = wrapper.apps
                   } else {
                       self.apps = []
                   }
               }
+
               func encode(to encoder: Encoder) throws {
                   var c = encoder.container(keyedBy: CodingKeys.self)
                   try c.encodeIfPresent(lastUpdated, forKey: .lastUpdated)
@@ -390,30 +424,9 @@ jobs:
                   ipaUrl ?? downloadURL ?? down ?? githubUrl ?? archiveUrl
               }
 
-              // Helper: published date (falls back to first seen)
               var publishedDate: Date? {
                   let raw = createdAt ?? updatedAt ?? versionDate ?? fullDate
-                  return raw.flatMap { ActivationManager.parseDate($0) }
-              }
-          }
-
-          // Extension for date parsing (used by store)
-          extension ActivationManager {
-              static func parseDate(_ raw: String) -> Date? {
-                  let iso = ISO8601DateFormatter()
-                  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                  if let d = iso.date(from: raw) { return d }
-                  if let d = ISO8601DateFormatter().date(from: raw) { return d }
-                  let f = DateFormatter()
-                  f.locale = Locale(identifier: "en_US_POSIX")
-                  f.timeZone = TimeZone(secondsFromGMT: 0)
-                  for fmt in ["yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"] {
-                      f.dateFormat = fmt
-                      if let d = f.date(from: raw) {
-                          return fmt == "yyyy-MM-dd" ? d.addingTimeInterval(86_399) : d
-                      }
-                  }
-                  return nil
+                  return raw.flatMap { parseDate($0) }
               }
           }
 
@@ -894,7 +907,7 @@ jobs:
 
               private func publishDate(_ app: StoreAPIApp) -> Date? {
                   let raw = app.createdAt ?? app.updatedAt ?? app.versionDate ?? app.fullDate
-                  return raw.flatMap { ActivationManager.parseDate($0) }
+                  return raw.flatMap { parseDate($0) }
               }
 
               func isRecent(_ app: StoreAPIApp, now: Date = Date()) -> Bool {
@@ -2633,6 +2646,7 @@ jobs:
             Localization.swift \
             Constants.swift \
             HapticManager.swift \
+            DateHelpers.swift \
             Models.swift \
             Repositories.swift \
             FavoritesStore.swift \
