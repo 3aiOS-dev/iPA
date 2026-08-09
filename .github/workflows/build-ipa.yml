@@ -2576,7 +2576,7 @@ jobs:
                               .badge(updates.recentCount)
                               .tag(2)
 
-                          HubForumView()
+                          ONEsForumTabView()
                               .tabItem { Label(LS("المنتدى"), systemImage: "bubble.left.and.bubble.right.fill") }
                               .tag(4)
                       }
@@ -2592,7 +2592,7 @@ jobs:
                   .onAppear {
                       StatusCenter.shared.start()
                       NotificationsManager.shared.requestAuthorization()
-                      HubStore.shared.start()
+                      ONEsContent.shared.loadStoreContent()
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
                   .environment(\.locale, lang.locale)
@@ -3406,6 +3406,9 @@ jobs:
                           .padding(.horizontal, 20)
                           .padding(.top, 4)
 
+                          // Report button - next to comments
+                          ONEsReportRow(appName: app.app_name, bundleID: app.bundle_id ?? "")
+
                           // Comments button - opens sheet
                           Button {
                               showCommentsSheet = true
@@ -3427,11 +3430,6 @@ jobs:
                           .buttonStyle(.plain)
                           .padding(.horizontal, 20)
                           .padding(.top, 12)
-
-                          // زر الإبلاغ داخل كل تطبيق — يصل مباشرة للوحة التحكم
-                          HubReportButton(kind: "app", target: String(app.id), titleText: app.name)
-                              .padding(.horizontal, 20)
-                              .padding(.top, 10)
                       }
                       .padding(.bottom, 40)
                   }
@@ -4040,17 +4038,12 @@ jobs:
 
                                   TelegramUpdatesBanner()
 
-                                  // إعلانات وترويج تُدار من لوحة التحكم
-                                  HubPromoBanner()
+                                  // Promo banner + maintenance/update notices + smart suggestions
+                                  ONEsAdsBanner()
 
-                                  // أخبار المتجر وتنبيهات الصيانة والتحديث
-                                  HubNewsStrip()
+                                  ONEsNoticesView()
 
-                                  // اقتراحات ذكية للتطبيقات
-                                  HubSuggestionsRow()
-
-                                  // العروض والاشتراكات
-                                  HubOffersSection()
+                                  ONEsSuggestionsRow()
 
                                   if feed.apps.isEmpty && feed.isLoading {
                                       LoadingList()
@@ -4279,1095 +4272,900 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - CommunityHub.swift (المنتدى + الإعلانات + الأخبار + البلاغات)
+      # SOURCE CODE - ONEsSocial.swift (forum + ads + news + reports)
       # =========================================================
-      - name: Generate code - CommunityHub.swift
+      - name: Generate code - ONEsSocial.swift
         run: |
-          cat > CommunityHub.swift << 'COMMEOF'
+          cat > ONEsSocial.swift << 'ONESEOF'
           import SwiftUI
           import Foundation
-          import AVKit
 
-          // ==========================================================
-          // ONEs Community Hub — المنتدى + الإعلانات + الأخبار + البلاغات
-          // كل شيء يُدار من لوحة التحكم ويظهر هنا مباشرة.
-          // ==========================================================
+          // =========================================================
+          // ONEs Social / Control-Panel bridge
+          // Forum + Ads + News + Offers + Suggestions + Notices + Reports
+          // NOTE: uses its own backend; all other servers stay untouched.
+          // =========================================================
 
-          enum HubAPI {
-              static let site = "https://project--24a53fb8-5890-47fa-ad02-5100b60af730.lovable.app"
-              static let supabaseURL = "https://fintpqoytzlxttjedjax.supabase.co"
-              static let supabaseKey = "sb_publishable_T9u3pR0DdabzHUxJi9hpGg_VdIB-wkp"
+          enum ONEsCloud {
+              static let baseURL = "https://xtxcjrkfuuubzlebwpte.supabase.co"
+              static let anonKey = "sb_publishable_eYzOxEoy6MuGmndv39emFQ_DD7SthnX"
+              static let usernameDomain = "ones.local"
 
-              static func url(_ path: String) -> URL { URL(string: site + path)! }
-          }
-
-          // ================= MODELS =================
-          struct HubAd: Identifiable, Decodable, Hashable {
-              let id: String
-              let title: String
-              let body: String
-              let imageURL: String
-              let linkURL: String
-          }
-
-          struct HubNews: Identifiable, Decodable, Hashable {
-              let id: String
-              let kind: String
-              let title: String
-              let body: String
-              let imageURL: String
-              let linkURL: String
-              let cta: String
-          }
-
-          struct HubOffer: Identifiable, Decodable, Hashable {
-              let id: String
-              let title: String
-              let body: String
-              let price: String
-              let imageURL: String
-              let linkURL: String
-          }
-
-          struct HubSuggestion: Identifiable, Decodable, Hashable {
-              let id: String
-              let name: String
-              let iconURL: String
-              let linkURL: String
-              let reason: String
-          }
-
-          struct HubNotification: Identifiable, Decodable, Hashable {
-              let id: String
-              let title: String
-              let body: String
-              let imageURL: String
-              let linkURL: String
-              let kind: String
-          }
-
-          struct HubComment: Identifiable, Decodable, Hashable {
-              let id: String
-              let userId: String
-              let author: String
-              let body: String
-              let createdAt: String
-          }
-
-          struct HubPost: Identifiable, Decodable, Hashable {
-              let id: String
-              let authorId: String
-              let author: String
-              let username: String
-              let avatarURL: String
-              let content: String
-              let imageURL: String
-              let videoURL: String
-              let kind: String
-              let pinned: Bool
-              let createdAt: String
-              let likes: Int
-              let reposts: Int
-              let likedBy: [String]
-              let repostedBy: [String]
-              let comments: [HubComment]
-          }
-
-          struct HubTag: Identifiable, Decodable, Hashable {
-              var id: String { name }
-              let name: String
-              let count: Int
-          }
-
-          private struct HubFeedResponse: Decodable {
-              let ads: [HubAd]
-              let news: [HubNews]
-              let maintenance: [HubNews]
-              let offers: [HubOffer]
-              let suggestions: [HubSuggestion]
-          }
-
-          private struct HubNotificationsResponse: Decodable { let notifications: [HubNotification] }
-          private struct HubForumResponse: Decodable { let posts: [HubPost]; let tags: [HubTag] }
-
-          // ================= ACCOUNT =================
-          final class HubAccount: ObservableObject {
-              static let shared = HubAccount()
-
-              @Published var token: String = UserDefaults.standard.string(forKey: "hub.token") ?? ""
-              @Published var userId: String = UserDefaults.standard.string(forKey: "hub.uid") ?? ""
-              @Published var displayName: String = UserDefaults.standard.string(forKey: "hub.name") ?? ""
-              @Published var username: String = UserDefaults.standard.string(forKey: "hub.username") ?? ""
-              @Published var avatarURL: String = UserDefaults.standard.string(forKey: "hub.avatar") ?? ""
-              @Published var lastError: String = ""
-              @Published var busy = false
-
-              var isSignedIn: Bool { !token.isEmpty && !userId.isEmpty }
-
-              private func persist() {
-                  let d = UserDefaults.standard
-                  d.set(token, forKey: "hub.token")
-                  d.set(userId, forKey: "hub.uid")
-                  d.set(displayName, forKey: "hub.name")
-                  d.set(username, forKey: "hub.username")
-                  d.set(avatarURL, forKey: "hub.avatar")
+              static func email(for username: String) -> String {
+                  let clean = username.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-" }
+                  return "\(clean.isEmpty ? "user" : clean)@\(usernameDomain)"
               }
 
-              func signOut() {
-                  token = ""; userId = ""; displayName = ""; username = ""; avatarURL = ""
-                  persist()
-              }
-
-              private func auth(_ path: String, payload: [String: Any], completion: @escaping (Bool) -> Void) {
-                  guard let url = URL(string: HubAPI.supabaseURL + path) else { completion(false); return }
+              static func request(_ path: String, method: String = "GET", body: Any? = nil, token: String = "") -> URLRequest? {
+                  guard let url = URL(string: baseURL + path) else { return nil }
                   var req = URLRequest(url: url)
-                  req.httpMethod = "POST"
+                  req.httpMethod = method
+                  req.timeoutInterval = 25
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.setValue(HubAPI.supabaseKey, forHTTPHeaderField: "apikey")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-                  busy = true
+                  req.setValue(anonKey, forHTTPHeaderField: "apikey")
+                  req.setValue("Bearer \(token.isEmpty ? anonKey : token)", forHTTPHeaderField: "Authorization")
+                  req.setValue("return=representation", forHTTPHeaderField: "Prefer")
+                  if let body = body {
+                      req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                  }
+                  return req
+              }
+
+              static func rows(_ path: String, token: String = "", completion: @escaping ([[String: Any]]) -> Void) {
+                  guard let req = request(path, token: token) else { completion([]); return }
                   URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          self.busy = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.lastError = "تعذر الاتصال"
-                              completion(false); return
-                          }
-                          if let msg = obj["msg"] as? String ?? obj["error_description"] as? String {
-                              self.lastError = msg
-                              completion(false); return
-                          }
-                          if let access = obj["access_token"] as? String,
-                             let user = obj["user"] as? [String: Any],
-                             let uid = user["id"] as? String {
-                              self.token = access
-                              self.userId = uid
-                              self.persist()
-                              self.lastError = ""
-                              completion(true); return
-                          }
-                          if let user = obj["user"] as? [String: Any], user["id"] != nil {
-                              self.lastError = "تم إنشاء الحساب، فعّل بريدك ثم سجّل الدخول"
-                              completion(false); return
-                          }
-                          self.lastError = "بيانات الدخول غير صحيحة"
-                          completion(false)
+                      var out: [[String: Any]] = []
+                      if let data = data,
+                         let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                          out = json
                       }
+                      DispatchQueue.main.async { completion(out) }
                   }.resume()
               }
 
-              func signIn(email: String, password: String, completion: @escaping (Bool) -> Void) {
-                  auth("/auth/v1/token?grant_type=password", payload: ["email": email, "password": password], completion: completion)
+              static func send(_ path: String, method: String, body: Any?, token: String = "",
+                               completion: @escaping (Bool, [String: Any]?) -> Void) {
+                  guard let req = request(path, method: method, body: body, token: token) else {
+                      completion(false, nil); return
+                  }
+                  URLSession.shared.dataTask(with: req) { data, resp, _ in
+                      let ok = (resp as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+                      var obj: [String: Any]? = nil
+                      if let data = data {
+                          if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { obj = dict }
+                          else if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] { obj = arr.first }
+                      }
+                      DispatchQueue.main.async { completion(ok, obj) }
+                  }.resume()
+              }
+          }
+
+          private func S(_ v: Any?) -> String { (v as? String) ?? "" }
+          private func I(_ v: Any?) -> Int { (v as? Int) ?? Int((v as? Double) ?? 0) }
+          private func B(_ v: Any?) -> Bool { (v as? Bool) ?? false }
+
+          // ================= MODELS =================
+          struct ONEsAd: Identifiable {
+              let id: String, title: String, body: String, image: String, link: String
+          }
+          struct ONEsNotice: Identifiable {
+              let id: String, kind: String, title: String, message: String, image: String
+              let actionLabel: String, actionURL: String
+          }
+          struct ONEsNews: Identifiable {
+              let id: String, kind: String, title: String, body: String, image: String, link: String
+              var kindLabel: String {
+                  switch kind {
+                  case "release": return "إصدار جديد"
+                  case "new_app": return "تطبيق جديد"
+                  case "maintenance": return "صيانة"
+                  default: return "ميزة جديدة"
+                  }
+              }
+          }
+          struct ONEsOffer: Identifiable {
+              let id: String, title: String, desc: String, price: String, period: String, image: String, link: String
+          }
+          struct ONEsSuggestion: Identifiable {
+              let id: String, name: String, icon: String, reason: String, link: String
+          }
+          struct ONEsPost: Identifiable {
+              let id: String, author: String, body: String, image: String, video: String, kind: String
+              var likes: Int, reposts: Int
+              let pinned: Bool
+              let createdAt: String
+          }
+
+          // ================= SESSION =================
+          final class ONEsSession: ObservableObject {
+              static let shared = ONEsSession()
+
+              @Published private(set) var isSignedIn = false
+              @Published private(set) var username = ""
+              @Published private(set) var userID = ""
+              @Published var lastError = ""
+
+              private let kToken = "ones_social_token_v1"
+              private let kUser = "ones_social_user_v1"
+              private let kName = "ones_social_name_v1"
+
+              private(set) var token = ""
+
+              private init() {
+                  let d = UserDefaults.standard
+                  token = d.string(forKey: kToken) ?? ""
+                  userID = d.string(forKey: kUser) ?? ""
+                  username = d.string(forKey: kName) ?? ""
+                  isSignedIn = !token.isEmpty
               }
 
-              func signUp(email: String, password: String, name: String, handle: String, completion: @escaping (Bool) -> Void) {
-                  auth("/auth/v1/signup",
-                       payload: ["email": email, "password": password,
-                                 "data": ["display_name": name, "username": handle]]) { ok in
-                      if ok {
-                          self.displayName = name
-                          self.username = handle
-                          self.persist()
-                          self.saveProfile(name: name, handle: handle, avatar: self.avatarURL) { _ in }
+              private func persist(_ json: [String: Any], username: String) -> Bool {
+                  guard let access = json["access_token"] as? String else {
+                      lastError = S(json["msg"]).isEmpty ? S(json["error_description"]) : S(json["msg"])
+                      if lastError.isEmpty { lastError = "تعذر إكمال العملية" }
+                      return false
+                  }
+                  token = access
+                  if let user = json["user"] as? [String: Any] { userID = S(user["id"]) }
+                  self.username = username
+                  let d = UserDefaults.standard
+                  d.set(access, forKey: kToken)
+                  d.set(userID, forKey: kUser)
+                  d.set(username, forKey: kName)
+                  isSignedIn = true
+                  lastError = ""
+                  return true
+              }
+
+              func signUp(username: String, password: String, completion: @escaping (Bool) -> Void) {
+                  let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                  let body: [String: Any] = [
+                      "email": ONEsCloud.email(for: name),
+                      "password": password,
+                      "data": ["username": name, "display_name": name]
+                  ]
+                  ONEsCloud.send("/auth/v1/signup", method: "POST", body: body) { _, json in
+                      guard let json = json else { self.lastError = "لا يوجد اتصال"; completion(false); return }
+                      if json["access_token"] != nil {
+                          completion(self.persist(json, username: name))
+                      } else {
+                          self.signIn(username: name, password: password, completion: completion)
                       }
+                  }
+              }
+
+              func signIn(username: String, password: String, completion: @escaping (Bool) -> Void) {
+                  let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                  let body: [String: Any] = ["email": ONEsCloud.email(for: name), "password": password]
+                  ONEsCloud.send("/auth/v1/token?grant_type=password", method: "POST", body: body) { _, json in
+                      guard let json = json else { self.lastError = "لا يوجد اتصال"; completion(false); return }
+                      completion(self.persist(json, username: name))
+                  }
+              }
+
+              func signOut() {
+                  token = ""; userID = ""; username = ""; isSignedIn = false
+                  let d = UserDefaults.standard
+                  d.removeObject(forKey: kToken); d.removeObject(forKey: kUser); d.removeObject(forKey: kName)
+              }
+          }
+
+          // ================= CONTENT STORE =================
+          final class ONEsContent: ObservableObject {
+              static let shared = ONEsContent()
+
+              @Published var ads: [ONEsAd] = []
+              @Published var notices: [ONEsNotice] = []
+              @Published var news: [ONEsNews] = []
+              @Published var offers: [ONEsOffer] = []
+              @Published var suggestions: [ONEsSuggestion] = []
+              @Published var posts: [ONEsPost] = []
+              @Published var names: [String: String] = [:]
+              @Published var likedIDs: Set<String> = []
+              @Published var repostedIDs: Set<String> = []
+              @Published var isLoading = false
+
+              private init() {}
+
+              func loadStoreContent() {
+                  ONEsCloud.rows("/rest/v1/ads?active=eq.true&order=sort_order.asc") { rows in
+                      self.ads = rows.map {
+                          ONEsAd(id: S($0["id"]), title: S($0["title"]), body: S($0["body"]),
+                                 image: S($0["image_url"]), link: S($0["link_url"]))
+                      }
+                  }
+                  ONEsCloud.rows("/rest/v1/notices?active=eq.true&order=created_at.desc") { rows in
+                      self.notices = rows.map {
+                          ONEsNotice(id: S($0["id"]), kind: S($0["kind"]), title: S($0["title"]),
+                                     message: S($0["message"]), image: S($0["image_url"]),
+                                     actionLabel: S($0["action_label"]), actionURL: S($0["action_url"]))
+                      }
+                  }
+                  ONEsCloud.rows("/rest/v1/news?published=eq.true&order=created_at.desc") { rows in
+                      self.news = rows.map {
+                          ONEsNews(id: S($0["id"]), kind: S($0["kind"]), title: S($0["title"]),
+                                   body: S($0["body"]), image: S($0["image_url"]), link: S($0["link_url"]))
+                      }
+                  }
+                  ONEsCloud.rows("/rest/v1/offers?active=eq.true&order=sort_order.asc") { rows in
+                      self.offers = rows.map {
+                          ONEsOffer(id: S($0["id"]), title: S($0["title"]), desc: S($0["description"]),
+                                    price: S($0["price"]), period: S($0["period"]),
+                                    image: S($0["image_url"]), link: S($0["link_url"]))
+                      }
+                  }
+                  ONEsCloud.rows("/rest/v1/suggestions?active=eq.true&order=sort_order.asc") { rows in
+                      self.suggestions = rows.map {
+                          ONEsSuggestion(id: S($0["id"]), name: S($0["app_name"]), icon: S($0["icon_url"]),
+                                         reason: S($0["reason"]), link: S($0["link_url"]))
+                      }
+                  }
+              }
+
+              func loadForum() {
+                  isLoading = true
+                  let token = ONEsSession.shared.token
+                  ONEsCloud.rows("/rest/v1/profiles?select=id,username,display_name", token: token) { rows in
+                      var map: [String: String] = [:]
+                      for r in rows {
+                          let name = S(r["display_name"]).isEmpty ? S(r["username"]) : S(r["display_name"])
+                          map[S(r["id"])] = name
+                      }
+                      self.names = map
+                  }
+                  ONEsCloud.rows("/rest/v1/posts?select=*&order=pinned.desc,created_at.desc&limit=100", token: token) { rows in
+                      self.isLoading = false
+                      self.posts = rows.map {
+                          ONEsPost(id: S($0["id"]), author: S($0["author_id"]), body: S($0["body"]),
+                                   image: S($0["image_url"]), video: S($0["video_url"]), kind: S($0["kind"]),
+                                   likes: I($0["like_count"]), reposts: I($0["repost_count"]),
+                                   pinned: B($0["pinned"]), createdAt: S($0["created_at"]))
+                      }
+                  }
+                  guard !ONEsSession.shared.userID.isEmpty else { return }
+                  let uid = ONEsSession.shared.userID
+                  ONEsCloud.rows("/rest/v1/post_likes?select=post_id&user_id=eq.\(uid)", token: token) { rows in
+                      self.likedIDs = Set(rows.map { S($0["post_id"]) })
+                  }
+                  ONEsCloud.rows("/rest/v1/post_reposts?select=post_id&user_id=eq.\(uid)", token: token) { rows in
+                      self.repostedIDs = Set(rows.map { S($0["post_id"]) })
+                  }
+              }
+
+              func publish(body: String, kind: String, completion: @escaping (Bool) -> Void) {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { completion(false); return }
+                  let payload: [String: Any] = ["author_id": s.userID, "body": body, "kind": kind]
+                  ONEsCloud.send("/rest/v1/posts", method: "POST", body: payload, token: s.token) { ok, _ in
+                      if ok { self.loadForum() }
                       completion(ok)
                   }
               }
 
-              func saveProfile(name: String, handle: String, avatar: String, completion: @escaping (Bool) -> Void) {
-                  HubClient.shared.forumAction(["action": "profile",
-                                                "displayName": name,
-                                                "username": handle,
-                                                "avatarUrl": avatar]) { ok in
-                      DispatchQueue.main.async {
-                          if ok {
-                              self.displayName = name
-                              self.username = handle
-                              self.avatarURL = avatar
-                              self.persist()
-                          }
-                          completion(ok)
+              func toggleLike(_ post: ONEsPost) {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { return }
+                  if likedIDs.contains(post.id) {
+                      likedIDs.remove(post.id)
+                      ONEsCloud.send("/rest/v1/post_likes?post_id=eq.\(post.id)&user_id=eq.\(s.userID)",
+                                     method: "DELETE", body: nil, token: s.token) { _, _ in self.loadForum() }
+                  } else {
+                      likedIDs.insert(post.id)
+                      ONEsCloud.send("/rest/v1/post_likes", method: "POST",
+                                     body: ["post_id": post.id, "user_id": s.userID], token: s.token) { _, _ in self.loadForum() }
+                  }
+              }
+
+              func toggleRepost(_ post: ONEsPost) {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { return }
+                  if repostedIDs.contains(post.id) {
+                      repostedIDs.remove(post.id)
+                      ONEsCloud.send("/rest/v1/post_reposts?post_id=eq.\(post.id)&user_id=eq.\(s.userID)",
+                                     method: "DELETE", body: nil, token: s.token) { _, _ in self.loadForum() }
+                  } else {
+                      repostedIDs.insert(post.id)
+                      ONEsCloud.send("/rest/v1/post_reposts", method: "POST",
+                                     body: ["post_id": post.id, "user_id": s.userID], token: s.token) { _, _ in self.loadForum() }
+                  }
+              }
+
+              func deletePost(_ post: ONEsPost) {
+                  let s = ONEsSession.shared
+                  ONEsCloud.send("/rest/v1/posts?id=eq.\(post.id)", method: "DELETE", body: nil, token: s.token) { _, _ in
+                      self.loadForum()
+                  }
+              }
+
+              func report(kind: String, targetID: String, appName: String, bundleID: String, message: String,
+                          completion: @escaping (Bool) -> Void) {
+                  let s = ONEsSession.shared
+                  var payload: [String: Any] = [
+                      "kind": kind, "message": message, "app_name": appName,
+                      "bundle_id": bundleID, "reporter_name": s.username
+                  ]
+                  if !targetID.isEmpty { payload["target_id"] = targetID }
+                  if !s.userID.isEmpty { payload["reporter_id"] = s.userID }
+                  ONEsCloud.send("/rest/v1/reports", method: "POST", body: payload, token: s.token) { ok, _ in
+                      completion(ok)
+                  }
+              }
+          }
+
+          // ================= SHARED UI BITS =================
+          struct ONEsRemoteImage: View {
+              let url: String
+              var height: CGFloat = 140
+              var corner: CGFloat = 14
+
+              var body: some View {
+                  AsyncImage(url: URL(string: url)) { phase in
+                      if case .success(let image) = phase {
+                          image.resizable().aspectRatio(contentMode: .fill)
+                      } else {
+                          Color.white.opacity(0.05)
                       }
                   }
+                  .frame(height: height)
+                  .frame(maxWidth: .infinity)
+                  .clipped()
+                  .clipShape(RoundedRectangle(cornerRadius: corner))
               }
           }
 
-          // ================= CLIENT =================
-          final class HubClient {
-              static let shared = HubClient()
-
-              private func get<T: Decodable>(_ path: String, as type: T.Type, completion: @escaping (T?) -> Void) {
-                  var req = URLRequest(url: HubAPI.url(path))
-                  req.timeoutInterval = 20
-                  if !HubAccount.shared.token.isEmpty {
-                      req.setValue("Bearer " + HubAccount.shared.token, forHTTPHeaderField: "Authorization")
-                  }
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      let value = data.flatMap { try? JSONDecoder().decode(T.self, from: $0) }
-                      DispatchQueue.main.async { completion(value) }
-                  }.resume()
-              }
-
-              private func post(_ path: String, body: [String: Any], completion: @escaping (Bool) -> Void) {
-                  var req = URLRequest(url: HubAPI.url(path))
-                  req.httpMethod = "POST"
-                  req.timeoutInterval = 20
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  if !HubAccount.shared.token.isEmpty {
-                      req.setValue("Bearer " + HubAccount.shared.token, forHTTPHeaderField: "Authorization")
-                  }
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                  URLSession.shared.dataTask(with: req) { data, response, _ in
-                      var ok = (response as? HTTPURLResponse)?.statusCode ?? 500 < 400
-                      if let data = data,
-                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                         let flag = obj["ok"] as? Bool {
-                          ok = flag
-                      }
-                      DispatchQueue.main.async { completion(ok) }
-                  }.resume()
-              }
-
-              func loadFeed(_ completion: @escaping (HubStoreSnapshot) -> Void) {
-                  get("/api/public/store-feed", as: HubFeedResponse.self) { res in
-                      guard let res = res else { completion(HubStoreSnapshot()); return }
-                      completion(HubStoreSnapshot(ads: res.ads, news: res.news, maintenance: res.maintenance,
-                                                  offers: res.offers, suggestions: res.suggestions))
-                  }
-              }
-
-              func loadNotifications(_ completion: @escaping ([HubNotification]) -> Void) {
-                  get("/api/public/notifications", as: HubNotificationsResponse.self) { completion($0?.notifications ?? []) }
-              }
-
-              func loadForum(trending: Bool, tag: String, completion: @escaping ([HubPost], [HubTag]) -> Void) {
-                  var path = "/api/public/forum?"
-                  if trending { path += "trending=1&" }
-                  if !tag.isEmpty { path += "tag=" + (tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "") }
-                  get(path, as: HubForumResponse.self) { completion($0?.posts ?? [], $0?.tags ?? []) }
-              }
-
-              func forumAction(_ body: [String: Any], completion: @escaping (Bool) -> Void) {
-                  post("/api/public/forum", body: body, completion: completion)
-              }
-
-              func sendReport(kind: String, target: String, subject: String, message: String, completion: @escaping (Bool) -> Void) {
-                  post("/api/public/report", body: [
-                      "kind": kind, "target": target, "subject": subject, "message": message,
-                      "reporterName": HubAccount.shared.displayName,
-                      "reporterId": HubAccount.shared.userId
-                  ], completion: completion)
-              }
-          }
-
-          struct HubStoreSnapshot {
-              var ads: [HubAd] = []
-              var news: [HubNews] = []
-              var maintenance: [HubNews] = []
-              var offers: [HubOffer] = []
-              var suggestions: [HubSuggestion] = []
-          }
-
-          // ================= STORE FEED STATE =================
-          final class HubStore: ObservableObject {
-              static let shared = HubStore()
-
-              @Published var ads: [HubAd] = []
-              @Published var news: [HubNews] = []
-              @Published var maintenance: [HubNews] = []
-              @Published var offers: [HubOffer] = []
-              @Published var suggestions: [HubSuggestion] = []
-              @Published var notifications: [HubNotification] = []
-
-              private var timer: Timer?
-
-              func start() {
-                  refresh()
-                  timer?.invalidate()
-                  timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-                      self?.refresh()
-                  }
-              }
-
-              func refresh() {
-                  HubClient.shared.loadFeed { snap in
-                      self.ads = snap.ads
-                      self.news = snap.news
-                      self.maintenance = snap.maintenance
-                      self.offers = snap.offers
-                      self.suggestions = snap.suggestions
-                  }
-                  HubClient.shared.loadNotifications { list in
-                      self.notifications = list
-                  }
-              }
-          }
-
-          private func hubOpen(_ link: String) {
-              guard !link.isEmpty, let url = URL(string: link) else { return }
-              UIApplication.shared.open(url)
-          }
-
-          // ================= PROMO BANNER (متحرك) =================
-          struct HubPromoBanner: View {
-              @ObservedObject private var store = HubStore.shared
+          // ================= ADS BANNER (animated) =================
+          struct ONEsAdsBanner: View {
+              @ObservedObject private var content = ONEsContent.shared
               @State private var index = 0
-              private let rotate = Timer.publish(every: 4.5, on: .main, in: .common).autoconnect()
+              private let timer = Timer.publish(every: 4.5, on: .main, in: .common).autoconnect()
 
               var body: some View {
-                  if store.ads.isEmpty {
-                      EmptyView()
-                  } else {
-                      TabView(selection: $index) {
-                          ForEach(Array(store.ads.enumerated()), id: \.element.id) { pair in
-                              Button { hubOpen(pair.element.linkURL) } label: {
-                                  ZStack(alignment: .bottomLeading) {
-                                      if let url = URL(string: pair.element.imageURL), !pair.element.imageURL.isEmpty {
-                                          AsyncImage(url: url) { img in
-                                              img.resizable().scaledToFill()
-                                          } placeholder: {
-                                              LinearGradient(colors: [Color.storeCard, Color.storeBg],
-                                                             startPoint: .top, endPoint: .bottom)
-                                          }
-                                      } else {
-                                          LinearGradient(colors: [Color.storeAccent.opacity(0.55), Color.storeCard],
-                                                         startPoint: .topTrailing, endPoint: .bottomLeading)
-                                      }
-                                      LinearGradient(colors: [.clear, .black.opacity(0.75)],
-                                                     startPoint: .top, endPoint: .bottom)
-                                      VStack(alignment: .leading, spacing: 4) {
-                                          Text(pair.element.title)
-                                              .font(.system(size: 17, weight: .heavy))
-                                              .foregroundColor(.white)
-                                          if !pair.element.body.isEmpty {
-                                              Text(pair.element.body)
-                                                  .font(.system(size: 12))
-                                                  .foregroundColor(.white.opacity(0.85))
-                                                  .lineLimit(2)
-                                          }
-                                      }
-                                      .padding(14)
-                                  }
+                  Group {
+                      if content.ads.isEmpty {
+                          EmptyView()
+                      } else {
+                          let ad = content.ads[min(index, content.ads.count - 1)]
+                          Button {
+                              if let url = URL(string: ad.link), !ad.link.isEmpty {
+                                  UIApplication.shared.open(url)
                               }
-                              .buttonStyle(.plain)
-                              .clipShape(RoundedRectangle(cornerRadius: 18))
-                              .tag(pair.offset)
-                          }
-                      }
-                      .tabViewStyle(PageTabViewStyle(indexDisplayMode: .automatic))
-                      .frame(height: 150)
-                      .padding(.horizontal, 18)
-                      .onReceive(rotate) { _ in
-                          guard store.ads.count > 1 else { return }
-                          withAnimation(.easeInOut(duration: 0.6)) {
-                              index = (index + 1) % store.ads.count
-                          }
-                      }
-                  }
-              }
-          }
-
-          // ================= أخبار المتجر + تنبيهات الصيانة =================
-          struct HubNewsStrip: View {
-              @ObservedObject private var store = HubStore.shared
-
-              private func icon(_ kind: String) -> String {
-                  switch kind {
-                  case "maintenance": return "wrench.and.screwdriver.fill"
-                  case "new_version": return "arrow.down.circle.fill"
-                  case "new_app": return "sparkles"
-                  default: return "star.circle.fill"
-                  }
-              }
-
-              private func label(_ kind: String) -> String {
-                  switch kind {
-                  case "maintenance": return "صيانة"
-                  case "new_version": return "إصدار جديد"
-                  case "new_app": return "تطبيق جديد"
-                  default: return "ميزة جديدة"
-                  }
-              }
-
-              var body: some View {
-                  if store.news.isEmpty {
-                      EmptyView()
-                  } else {
-                      VStack(spacing: 10) {
-                          ForEach(store.news.prefix(4)) { item in
+                          } label: {
                               VStack(alignment: .leading, spacing: 8) {
-                                  HStack(spacing: 8) {
-                                      Image(systemName: icon(item.kind))
-                                          .foregroundColor(item.kind == "maintenance" ? .orange : Color.storeAccent)
-                                      Text(label(item.kind))
-                                          .font(.system(size: 11, weight: .bold))
-                                          .foregroundColor(Color.storeSub)
-                                      Spacer()
+                                  if !ad.image.isEmpty {
+                                      ONEsRemoteImage(url: ad.image, height: 150)
                                   }
-                                  Text(item.title)
+                                  Text(ad.title)
                                       .font(.system(size: 15, weight: .bold))
-                                      .foregroundColor(Color.storeText)
-                                  if !item.body.isEmpty {
-                                      Text(item.body)
-                                          .font(.system(size: 13))
-                                          .foregroundColor(Color.storeSub)
-                                          .fixedSize(horizontal: false, vertical: true)
-                                  }
-                                  if let url = URL(string: item.imageURL), !item.imageURL.isEmpty {
-                                      AsyncImage(url: url) { img in
-                                          img.resizable().scaledToFill()
-                                      } placeholder: { Color.storeCard }
-                                      .frame(height: 140)
-                                      .clipShape(RoundedRectangle(cornerRadius: 14))
-                                  }
-                                  if !item.cta.isEmpty || !item.linkURL.isEmpty {
-                                      Button { hubOpen(item.linkURL) } label: {
-                                          Text(item.cta.isEmpty ? "اضغط للتحديث" : item.cta)
-                                              .font(.system(size: 13, weight: .bold))
-                                              .foregroundColor(.black)
-                                              .padding(.horizontal, 16).padding(.vertical, 9)
-                                              .background(Capsule().fill(Color.storeAccent))
-                                      }
-                                      .buttonStyle(.plain)
+                                      .foregroundColor(.white)
+                                  if !ad.body.isEmpty {
+                                      Text(ad.body)
+                                          .font(.system(size: 12))
+                                          .foregroundColor(.white.opacity(0.75))
+                                          .multilineTextAlignment(.leading)
                                   }
                               }
                               .padding(14)
                               .frame(maxWidth: .infinity, alignment: .leading)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                              .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
-                          }
-                      }
-                      .padding(.horizontal, 18)
-                  }
-              }
-          }
-
-          // ================= اقتراحات ذكية =================
-          struct HubSuggestionsRow: View {
-              @ObservedObject private var store = HubStore.shared
-
-              var body: some View {
-                  if store.suggestions.isEmpty {
-                      EmptyView()
-                  } else {
-                      VStack(alignment: .leading, spacing: 10) {
-                          Text("اقتراحات ذكية لك")
-                              .font(.system(size: 16, weight: .bold))
-                              .foregroundColor(Color.storeText)
-                              .padding(.horizontal, 18)
-                          ScrollView(.horizontal, showsIndicators: false) {
-                              HStack(spacing: 12) {
-                                  ForEach(store.suggestions) { s in
-                                      Button { hubOpen(s.linkURL) } label: {
-                                          VStack(spacing: 8) {
-                                              AsyncImage(url: URL(string: s.iconURL)) { img in
-                                                  img.resizable().scaledToFill()
-                                              } placeholder: { Color.storeCard }
-                                              .frame(width: 58, height: 58)
-                                              .clipShape(RoundedRectangle(cornerRadius: 14))
-                                              Text(s.name)
-                                                  .font(.system(size: 12, weight: .semibold))
-                                                  .foregroundColor(Color.storeText)
-                                                  .lineLimit(1)
-                                              Text(s.reason)
-                                                  .font(.system(size: 10))
-                                                  .foregroundColor(Color.storeSub)
-                                                  .lineLimit(2)
-                                          }
-                                          .frame(width: 96)
-                                          .padding(10)
-                                          .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                                      }
-                                      .buttonStyle(.plain)
-                                  }
-                              }
-                              .padding(.horizontal, 18)
-                          }
-                      }
-                  }
-              }
-          }
-
-          // ================= العروض والاشتراكات =================
-          struct HubOffersSection: View {
-              @ObservedObject private var store = HubStore.shared
-
-              var body: some View {
-                  if store.offers.isEmpty {
-                      EmptyView()
-                  } else {
-                      VStack(alignment: .leading, spacing: 10) {
-                          Text("العروض والاشتراكات")
-                              .font(.system(size: 16, weight: .bold))
-                              .foregroundColor(Color.storeText)
-                          ForEach(store.offers) { o in
-                              Button { hubOpen(o.linkURL) } label: {
-                                  HStack(spacing: 12) {
-                                      if !o.imageURL.isEmpty {
-                                          AsyncImage(url: URL(string: o.imageURL)) { img in
-                                              img.resizable().scaledToFill()
-                                          } placeholder: { Color.storeBg }
-                                          .frame(width: 54, height: 54)
-                                          .clipShape(RoundedRectangle(cornerRadius: 12))
-                                      }
-                                      VStack(alignment: .leading, spacing: 4) {
-                                          Text(o.title)
-                                              .font(.system(size: 14, weight: .bold))
-                                              .foregroundColor(Color.storeText)
-                                          Text(o.body)
-                                              .font(.system(size: 12))
-                                              .foregroundColor(Color.storeSub)
-                                              .lineLimit(2)
-                                      }
-                                      Spacer()
-                                      if !o.price.isEmpty {
-                                          Text(o.price)
-                                              .font(.system(size: 13, weight: .heavy))
-                                              .foregroundColor(Color.storeAccent)
-                                      }
-                                  }
-                                  .padding(12)
-                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                              }
-                              .buttonStyle(.plain)
-                          }
-                      }
-                      .padding(.horizontal, 18)
-                  }
-              }
-          }
-
-          // ================= زر الإبلاغ =================
-          struct HubReportSheet: View {
-              let kind: String
-              let target: String
-              let titleText: String
-              @Environment(\.dismiss) private var dismiss
-              @State private var message = ""
-              @State private var sending = false
-
-              var body: some View {
-                  NavigationStack {
-                      VStack(alignment: .leading, spacing: 14) {
-                          Text("إبلاغ عن: \(titleText)")
-                              .font(.system(size: 15, weight: .bold))
-                              .foregroundColor(Color.storeText)
-                          Text("اشرح المشكلة وسيصل بلاغك إلى الإدارة مباشرة، ويمكنك متابعة حالته والرد.")
-                              .font(.system(size: 12))
-                              .foregroundColor(Color.storeSub)
-                          TextEditor(text: $message)
-                              .frame(height: 150)
-                              .padding(8)
-                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                              .foregroundColor(Color.storeText)
-                          Button {
-                              sending = true
-                              HubClient.shared.sendReport(kind: kind, target: target,
-                                                          subject: titleText, message: message) { ok in
-                                  sending = false
-                                  StatusCenter.shared.show(text: ok ? "تم إرسال البلاغ للإدارة" : "تعذر إرسال البلاغ")
-                                  if ok { dismiss() }
-                              }
-                          } label: {
-                              Text(sending ? "جارٍ الإرسال…" : "إرسال البلاغ")
-                                  .font(.system(size: 14, weight: .bold))
-                                  .foregroundColor(.black)
-                                  .frame(maxWidth: .infinity)
-                                  .padding(.vertical, 12)
-                                  .background(Capsule().fill(Color.storeAccent))
+                              .background(
+                                  RoundedRectangle(cornerRadius: 18)
+                                      .fill(LinearGradient(colors: [Color.storePrimary.opacity(0.35), Color.black.opacity(0.25)],
+                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+                              )
+                              .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storePrimary.opacity(0.4), lineWidth: 1))
                           }
                           .buttonStyle(.plain)
-                          .disabled(message.trimmingCharacters(in: .whitespaces).isEmpty || sending)
-                          Spacer()
-                      }
-                      .padding(18)
-                      .background(Color.storeBg.ignoresSafeArea())
-                      .navigationTitle("إبلاغ")
-                      .navigationBarTitleDisplayMode(.inline)
-                  }
-              }
-          }
-
-          struct HubReportButton: View {
-              let kind: String
-              let target: String
-              let titleText: String
-              @State private var show = false
-
-              var body: some View {
-                  Button { show = true } label: {
-                      HStack {
-                          Image(systemName: "exclamationmark.bubble.fill")
-                              .font(.system(size: 14))
-                          Text("إبلاغ عن مشكلة")
-                              .font(.system(size: 14, weight: .semibold))
-                          Spacer()
-                          Image(systemName: "chevron.left").font(.system(size: 12))
-                      }
-                      .foregroundColor(.orange)
-                      .padding(14)
-                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                      .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
-                  }
-                  .buttonStyle(.plain)
-                  .sheet(isPresented: $show) {
-                      HubReportSheet(kind: kind, target: target, titleText: titleText)
-                          .presentationDetents([.medium, .large])
-                  }
-              }
-          }
-
-          // ================= حساب المنتدى =================
-          struct HubAuthView: View {
-              @ObservedObject private var account = HubAccount.shared
-              @State private var isSignUp = false
-              @State private var email = ""
-              @State private var password = ""
-              @State private var name = ""
-              @State private var handle = ""
-
-              var body: some View {
-                  VStack(spacing: 12) {
-                      Text(isSignUp ? "إنشاء حساب في المنتدى" : "تسجيل الدخول")
-                          .font(.system(size: 18, weight: .heavy))
-                          .foregroundColor(Color.storeText)
-                      if isSignUp {
-                          hubField("الاسم الظاهر", text: $name)
-                          hubField("اسم المستخدم", text: $handle)
-                      }
-                      hubField("البريد الإلكتروني", text: $email)
-                      SecureField("كلمة المرور", text: $password)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          .foregroundColor(Color.storeText)
-                      if !account.lastError.isEmpty {
-                          Text(account.lastError)
-                              .font(.system(size: 12))
-                              .foregroundColor(.orange)
-                      }
-                      Button {
-                          if isSignUp {
-                              account.signUp(email: email, password: password, name: name, handle: handle) { _ in }
-                          } else {
-                              account.signIn(email: email, password: password) { _ in }
+                          .padding(.horizontal, 18)
+                          .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                                  removal: .move(edge: .leading).combined(with: .opacity)))
+                          .id(ad.id)
+                          .animation(.easeInOut(duration: 0.45), value: index)
+                          .onReceive(timer) { _ in
+                              guard content.ads.count > 1 else { return }
+                              withAnimation(.easeInOut(duration: 0.45)) {
+                                  index = (index + 1) % content.ads.count
+                              }
                           }
-                      } label: {
-                          Text(account.busy ? "…" : (isSignUp ? "إنشاء" : "دخول"))
-                              .font(.system(size: 14, weight: .bold))
-                              .foregroundColor(.black)
-                              .frame(maxWidth: .infinity)
-                              .padding(.vertical, 12)
-                              .background(Capsule().fill(Color.storeAccent))
                       }
-                      .buttonStyle(.plain)
-                      Button { isSignUp.toggle() } label: {
-                          Text(isSignUp ? "لدي حساب — تسجيل الدخول" : "ليس لدي حساب — إنشاء حساب")
-                              .font(.system(size: 12, weight: .semibold))
-                              .foregroundColor(Color.storeAccent)
-                      }
-                      .buttonStyle(.plain)
                   }
-                  .padding(18)
-                  .background(RoundedRectangle(cornerRadius: 20).fill(Color.storeCard.opacity(0.6)))
-                  .padding(.horizontal, 18)
-              }
-
-              @ViewBuilder
-              private func hubField(_ placeholder: String, text: Binding<String>) -> some View {
-                  TextField(placeholder, text: text)
-                      .autocapitalization(.none)
-                      .disableAutocorrection(true)
-                      .padding(12)
-                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                      .foregroundColor(Color.storeText)
               }
           }
 
-          struct HubProfileEditor: View {
-              @ObservedObject private var account = HubAccount.shared
-              @State private var name = HubAccount.shared.displayName
-              @State private var handle = HubAccount.shared.username
-              @State private var avatar = HubAccount.shared.avatarURL
+          // ================= NOTICES (maintenance / update) =================
+          struct ONEsNoticesView: View {
+              @ObservedObject private var content = ONEsContent.shared
 
               var body: some View {
                   VStack(spacing: 10) {
-                      HStack(spacing: 10) {
-                          AsyncImage(url: URL(string: avatar)) { img in
-                              img.resizable().scaledToFill()
-                          } placeholder: { Color.storeCard }
-                          .frame(width: 46, height: 46)
-                          .clipShape(Circle())
-                          VStack(alignment: .leading, spacing: 2) {
-                              Text(name.isEmpty ? "حسابي" : name)
-                                  .font(.system(size: 14, weight: .bold))
-                                  .foregroundColor(Color.storeText)
-                              Text("@" + (handle.isEmpty ? "user" : handle))
-                                  .font(.system(size: 11))
-                                  .foregroundColor(Color.storeSub)
+                      ForEach(content.notices) { notice in
+                          VStack(alignment: .leading, spacing: 8) {
+                              HStack(spacing: 8) {
+                                  Image(systemName: notice.kind == "maintenance" ? "wrench.and.screwdriver.fill" : "arrow.down.circle.fill")
+                                      .foregroundColor(notice.kind == "maintenance" ? .orange : .green)
+                                  Text(notice.title)
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.white)
+                                  Spacer()
+                              }
+                              if !notice.image.isEmpty { ONEsRemoteImage(url: notice.image, height: 130) }
+                              Text(notice.message)
+                                  .font(.system(size: 12))
+                                  .foregroundColor(.white.opacity(0.75))
+                              if !notice.actionURL.isEmpty {
+                                  Button {
+                                      if let url = URL(string: notice.actionURL) { UIApplication.shared.open(url) }
+                                  } label: {
+                                      Text(notice.actionLabel.isEmpty ? "اضغط للتحديث" : notice.actionLabel)
+                                          .font(.system(size: 13, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .padding(.vertical, 9)
+                                          .frame(maxWidth: .infinity)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
+                                  }
+                                  .buttonStyle(.plain)
+                              }
                           }
-                          Spacer()
-                          Button { account.signOut() } label: {
-                              Text("خروج").font(.system(size: 12, weight: .bold)).foregroundColor(.orange)
+                          .padding(14)
+                          .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                          .padding(.horizontal, 18)
+                      }
+                  }
+              }
+          }
+
+          // ================= SMART SUGGESTIONS =================
+          struct ONEsSuggestionsRow: View {
+              @ObservedObject private var content = ONEsContent.shared
+
+              var body: some View {
+                  Group {
+                      if content.suggestions.isEmpty {
+                          EmptyView()
+                      } else {
+                          VStack(alignment: .leading, spacing: 10) {
+                              Text("مقترح لك")
+                                  .font(.system(size: 16, weight: .bold))
+                                  .foregroundColor(Color.storeText)
+                                  .padding(.horizontal, 20)
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 12) {
+                                      ForEach(content.suggestions) { s in
+                                          Button {
+                                              if let url = URL(string: s.link), !s.link.isEmpty { UIApplication.shared.open(url) }
+                                          } label: {
+                                              VStack(alignment: .leading, spacing: 6) {
+                                                  if !s.icon.isEmpty {
+                                                      ONEsRemoteImage(url: s.icon, height: 84, corner: 18)
+                                                          .frame(width: 84)
+                                                  }
+                                                  Text(s.name)
+                                                      .font(.system(size: 13, weight: .bold))
+                                                      .foregroundColor(.white)
+                                                  Text(s.reason)
+                                                      .font(.system(size: 11))
+                                                      .foregroundColor(.white.opacity(0.65))
+                                                      .lineLimit(2)
+                                              }
+                                              .frame(width: 150, alignment: .leading)
+                                              .padding(10)
+                                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                                          }
+                                          .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.horizontal, 18)
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          // ================= STORE NEWS + OFFERS =================
+          struct ONEsNewsList: View {
+              @ObservedObject private var content = ONEsContent.shared
+
+              var body: some View {
+                  VStack(spacing: 10) {
+                      ForEach(content.news) { item in
+                          Button {
+                              if let url = URL(string: item.link), !item.link.isEmpty { UIApplication.shared.open(url) }
+                          } label: {
+                              VStack(alignment: .leading, spacing: 8) {
+                                  Text(item.kindLabel)
+                                      .font(.system(size: 10, weight: .bold))
+                                      .foregroundColor(Color.storePrimary)
+                                      .padding(.horizontal, 8).padding(.vertical, 3)
+                                      .background(Capsule().fill(Color.storePrimary.opacity(0.15)))
+                                  if !item.image.isEmpty { ONEsRemoteImage(url: item.image, height: 140) }
+                                  Text(item.title)
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                  Text(item.body)
+                                      .font(.system(size: 12))
+                                      .foregroundColor(.white.opacity(0.72))
+                              }
+                              .frame(maxWidth: .infinity, alignment: .leading)
+                              .padding(14)
+                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
                           }
                           .buttonStyle(.plain)
                       }
-                      TextField("تعديل الاسم", text: $name)
-                          .padding(10)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          .foregroundColor(Color.storeText)
-                      TextField("اسم المستخدم", text: $handle)
-                          .autocapitalization(.none)
-                          .padding(10)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          .foregroundColor(Color.storeText)
-                      TextField("رابط صورة البروفايل", text: $avatar)
-                          .autocapitalization(.none)
-                          .padding(10)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          .foregroundColor(Color.storeText)
-                      Button {
-                          account.saveProfile(name: name, handle: handle, avatar: avatar) { ok in
-                              StatusCenter.shared.show(text: ok ? "تم حفظ الملف الشخصي" : "تعذر الحفظ")
-                          }
-                      } label: {
-                          Text("حفظ الملف الشخصي")
-                              .font(.system(size: 13, weight: .bold))
-                              .foregroundColor(.black)
-                              .frame(maxWidth: .infinity)
-                              .padding(.vertical, 10)
-                              .background(Capsule().fill(Color.storeAccent))
-                      }
-                      .buttonStyle(.plain)
                   }
-                  .padding(14)
-                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard.opacity(0.5)))
                   .padding(.horizontal, 18)
               }
           }
 
-          // ================= المنتدى =================
-          final class HubForumStore: ObservableObject {
-              @Published var posts: [HubPost] = []
-              @Published var tags: [HubTag] = []
-              @Published var loading = false
-              @Published var trending = false
-              @Published var tag = ""
+          struct ONEsOffersList: View {
+              @ObservedObject private var content = ONEsContent.shared
 
-              func load() {
-                  loading = true
-                  HubClient.shared.loadForum(trending: trending, tag: tag) { posts, tags in
-                      self.posts = posts
-                      self.tags = tags
-                      self.loading = false
+              var body: some View {
+                  VStack(spacing: 10) {
+                      ForEach(content.offers) { offer in
+                          Button {
+                              if let url = URL(string: offer.link), !offer.link.isEmpty { UIApplication.shared.open(url) }
+                          } label: {
+                              HStack(spacing: 12) {
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text(offer.title)
+                                          .font(.system(size: 15, weight: .bold))
+                                          .foregroundColor(.white)
+                                      Text(offer.desc)
+                                          .font(.system(size: 12))
+                                          .foregroundColor(.white.opacity(0.7))
+                                  }
+                                  Spacer()
+                                  VStack(spacing: 2) {
+                                      Text(offer.price)
+                                          .font(.system(size: 16, weight: .black))
+                                          .foregroundColor(Color.storePrimary)
+                                      Text(offer.period)
+                                          .font(.system(size: 10))
+                                          .foregroundColor(.white.opacity(0.6))
+                                  }
+                              }
+                              .padding(14)
+                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                          }
+                          .buttonStyle(.plain)
+                      }
                   }
+                  .padding(.horizontal, 18)
               }
           }
 
-          struct HubPostRow: View {
-              let post: HubPost
-              let onChanged: () -> Void
-              @ObservedObject private var account = HubAccount.shared
-              @State private var showComments = false
-              @State private var showReport = false
-              @State private var comment = ""
+          // ================= AUTH (username + password only) =================
+          struct ONEsAuthView: View {
+              @ObservedObject private var session = ONEsSession.shared
+              @State private var isSignUp = true
+              @State private var username = ""
+              @State private var password = ""
+              @State private var busy = false
 
-              private var liked: Bool { post.likedBy.contains(account.userId) }
-              private var reposted: Bool { post.repostedBy.contains(account.userId) }
+              var body: some View {
+                  VStack(spacing: 14) {
+                      Text(isSignUp ? "إنشاء حساب في المنتدى" : "تسجيل الدخول")
+                          .font(.system(size: 18, weight: .black))
+                          .foregroundColor(.white)
+                      Text("اسم المستخدم وكلمة المرور فقط — كل حساب يصبح مشرفًا تلقائيًا.")
+                          .font(.system(size: 12))
+                          .foregroundColor(.white.opacity(0.65))
+                          .multilineTextAlignment(.center)
+
+                      TextField("", text: $username, prompt: Text("اسم المستخدم").foregroundColor(.white.opacity(0.4)))
+                          .textInputAutocapitalization(.never)
+                          .autocorrectionDisabled(true)
+                          .foregroundColor(.white)
+                          .padding(12)
+                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+
+                      SecureField("", text: $password, prompt: Text("كلمة المرور").foregroundColor(.white.opacity(0.4)))
+                          .foregroundColor(.white)
+                          .padding(12)
+                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+
+                      Button {
+                          busy = true
+                          let done: (Bool) -> Void = { ok in
+                              busy = false
+                              if ok { ONEsContent.shared.loadForum() }
+                          }
+                          if isSignUp { session.signUp(username: username, password: password, completion: done) }
+                          else { session.signIn(username: username, password: password, completion: done) }
+                      } label: {
+                          Text(busy ? "لحظة…" : (isSignUp ? "إنشاء وفتح الحساب" : "دخول"))
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(.white)
+                              .frame(maxWidth: .infinity)
+                              .padding(.vertical, 12)
+                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storePrimary))
+                      }
+                      .buttonStyle(.plain)
+                      .disabled(busy || username.isEmpty || password.isEmpty)
+
+                      Button(isSignUp ? "لدي حساب — تسجيل الدخول" : "إنشاء حساب جديد") {
+                          isSignUp.toggle()
+                      }
+                      .font(.system(size: 12, weight: .semibold))
+                      .foregroundColor(Color.storePrimary)
+
+                      if !session.lastError.isEmpty {
+                          Text(session.lastError)
+                              .font(.system(size: 11))
+                              .foregroundColor(.red)
+                      }
+                  }
+                  .padding(18)
+                  .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.05)))
+                  .padding(.horizontal, 18)
+              }
+          }
+
+          // ================= FORUM =================
+          struct ONEsPostCard: View {
+              let post: ONEsPost
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var session = ONEsSession.shared
+              @State private var showReport = false
+              @State private var reportText = ""
 
               var body: some View {
                   VStack(alignment: .leading, spacing: 10) {
-                      HStack(spacing: 10) {
-                          AsyncImage(url: URL(string: post.avatarURL)) { img in
-                              img.resizable().scaledToFill()
-                          } placeholder: { Color.storeBg }
-                          .frame(width: 40, height: 40)
-                          .clipShape(Circle())
+                      if post.pinned {
+                          Text("📌 منشور مثبّت من الإدارة")
+                              .font(.system(size: 11, weight: .bold))
+                              .foregroundColor(.orange)
+                      }
+                      HStack(spacing: 8) {
+                          Circle().fill(Color.storePrimary.opacity(0.3)).frame(width: 34, height: 34)
+                              .overlay(Text(String((content.names[post.author] ?? "؟").prefix(1)))
+                                  .font(.system(size: 14, weight: .black)).foregroundColor(.white))
                           VStack(alignment: .leading, spacing: 2) {
-                              HStack(spacing: 6) {
-                                  Text(post.author)
-                                      .font(.system(size: 14, weight: .bold))
-                                      .foregroundColor(Color.storeText)
-                                  if post.kind == "news" {
-                                      Text("خبر")
-                                          .font(.system(size: 10, weight: .bold))
-                                          .foregroundColor(.black)
-                                          .padding(.horizontal, 6).padding(.vertical, 2)
-                                          .background(Capsule().fill(Color.storeAccent))
-                                  }
-                                  if post.pinned {
-                                      Image(systemName: "pin.fill")
-                                          .font(.system(size: 10))
-                                          .foregroundColor(Color.storeAccent)
-                                  }
-                              }
-                              Text("@" + (post.username.isEmpty ? "user" : post.username))
-                                  .font(.system(size: 11))
-                                  .foregroundColor(Color.storeSub)
+                              Text(content.names[post.author] ?? "مستخدم")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.white)
+                              Text(post.kind == "news" ? "خبر" : "منشور")
+                                  .font(.system(size: 10))
+                                  .foregroundColor(.white.opacity(0.5))
                           }
                           Spacer()
-                          if !account.userId.isEmpty && account.userId == post.authorId {
-                              Button {
-                                  HubClient.shared.forumAction(["action": "deletePost", "postId": post.id]) { _ in onChanged() }
-                              } label: {
-                                  Image(systemName: "trash").font(.system(size: 12)).foregroundColor(.orange)
-                              }
-                              .buttonStyle(.plain)
-                          }
                       }
 
-                      Text(post.content)
+                      Text(post.body)
                           .font(.system(size: 14))
-                          .foregroundColor(Color.storeText)
+                          .foregroundColor(.white.opacity(0.9))
                           .fixedSize(horizontal: false, vertical: true)
 
-                      if !post.imageURL.isEmpty, let u = URL(string: post.imageURL) {
-                          AsyncImage(url: u) { img in
-                              img.resizable().scaledToFill()
-                          } placeholder: { Color.storeBg }
-                          .frame(maxWidth: .infinity, maxHeight: 220)
-                          .clipped()
-                          .clipShape(RoundedRectangle(cornerRadius: 14))
-                      }
+                      if !post.image.isEmpty { ONEsRemoteImage(url: post.image, height: 190) }
 
-                      if !post.videoURL.isEmpty, let v = URL(string: post.videoURL) {
-                          VideoPlayer(player: AVPlayer(url: v))
-                              .frame(height: 200)
-                              .clipShape(RoundedRectangle(cornerRadius: 14))
-                      }
+                      HStack(spacing: 16) {
+                          Button { content.toggleLike(post) } label: {
+                              HStack(spacing: 4) {
+                                  Text(content.likedIDs.contains(post.id) ? "❤️" : "🤍")
+                                  Text("\(post.likes)").font(.system(size: 12)).foregroundColor(.white.opacity(0.7))
+                              }
+                          }.buttonStyle(.plain)
 
-                      HStack(spacing: 18) {
-                          Button {
-                              HubClient.shared.forumAction(["action": liked ? "unlike" : "like", "postId": post.id]) { _ in onChanged() }
-                          } label: {
-                              Label("\(post.likes)", systemImage: liked ? "heart.fill" : "heart")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(liked ? .pink : Color.storeSub)
-                          }
-                          .buttonStyle(.plain)
-
-                          Button {
-                              HubClient.shared.forumAction(["action": reposted ? "unrepost" : "repost", "postId": post.id]) { _ in onChanged() }
-                          } label: {
-                              Label("\(post.reposts)", systemImage: "arrow.2.squarepath")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(reposted ? Color.storeAccent : Color.storeSub)
-                          }
-                          .buttonStyle(.plain)
-
-                          Button { showComments.toggle() } label: {
-                              Label("\(post.comments.count)", systemImage: "text.bubble")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(Color.storeSub)
-                          }
-                          .buttonStyle(.plain)
-
-                          Spacer()
+                          Button { content.toggleRepost(post) } label: {
+                              HStack(spacing: 4) {
+                                  Text("🔄")
+                                  Text("\(post.reposts)").font(.system(size: 12)).foregroundColor(.white.opacity(0.7))
+                              }
+                          }.buttonStyle(.plain)
 
                           Button { showReport = true } label: {
-                              Image(systemName: "flag")
+                              Image(systemName: "flag.fill")
                                   .font(.system(size: 12))
                                   .foregroundColor(.orange)
-                          }
-                          .buttonStyle(.plain)
-                      }
+                          }.buttonStyle(.plain)
 
-                      if showComments {
-                          VStack(alignment: .leading, spacing: 8) {
-                              ForEach(post.comments) { c in
-                                  VStack(alignment: .leading, spacing: 2) {
-                                      Text(c.author).font(.system(size: 11, weight: .bold)).foregroundColor(Color.storeAccent)
-                                      Text(c.body).font(.system(size: 12)).foregroundColor(Color.storeText)
-                                  }
-                              }
-                              if HubAccount.shared.isSignedIn {
-                                  HStack {
-                                      TextField("اكتب تعليقاً…", text: $comment)
-                                          .font(.system(size: 12))
-                                          .padding(8)
-                                          .background(RoundedRectangle(cornerRadius: 10).fill(Color.storeBg))
-                                          .foregroundColor(Color.storeText)
-                                      Button {
-                                          HubClient.shared.forumAction(["action": "comment", "postId": post.id, "text": comment]) { _ in
-                                              comment = ""
-                                              onChanged()
-                                          }
-                                      } label: {
-                                          Image(systemName: "paperplane.fill").foregroundColor(Color.storeAccent)
-                                      }
-                                      .buttonStyle(.plain)
-                                  }
-                              }
+                          if session.isSignedIn {
+                              Button { content.deletePost(post) } label: {
+                                  Image(systemName: "trash")
+                                      .font(.system(size: 12))
+                                      .foregroundColor(.red.opacity(0.8))
+                              }.buttonStyle(.plain)
                           }
-                          .padding(10)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeBg.opacity(0.6)))
+                          Spacer()
                       }
                   }
                   .padding(14)
-                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
-                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 1))
-                  .padding(.horizontal, 18)
+                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
                   .sheet(isPresented: $showReport) {
-                      HubReportSheet(kind: "post", target: post.id, titleText: "منشور من \(post.author)")
-                          .presentationDetents([.medium])
+                      ONEsReportSheet(kind: "post", targetID: post.id,
+                                      appName: "منشور " + (content.names[post.author] ?? ""), bundleID: "")
                   }
               }
           }
 
-          struct HubForumView: View {
-              @StateObject private var store = HubForumStore()
-              @ObservedObject private var account = HubAccount.shared
-              @ObservedObject private var hub = HubStore.shared
+          struct ONEsForumTabView: View {
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var session = ONEsSession.shared
               @State private var draft = ""
-              @State private var imageLink = ""
-              @State private var videoLink = ""
-              @State private var showComposer = false
+              @State private var kind = "post"
+              @State private var busy = false
+              @State private var section = 0
 
               var body: some View {
                   NavigationStack {
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 14) {
-                              if !hub.notifications.isEmpty {
-                                  VStack(alignment: .leading, spacing: 8) {
-                                      ForEach(hub.notifications.prefix(3)) { n in
-                                          Button { hubOpen(n.linkURL) } label: {
-                                              HStack(spacing: 10) {
-                                                  Image(systemName: "bell.badge.fill").foregroundColor(Color.storeAccent)
-                                                  VStack(alignment: .leading, spacing: 2) {
-                                                      Text(n.title).font(.system(size: 13, weight: .bold)).foregroundColor(Color.storeText)
-                                                      Text(n.body).font(.system(size: 11)).foregroundColor(Color.storeSub).lineLimit(2)
-                                                  }
-                                                  Spacer()
-                                              }
-                                              .padding(12)
-                                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                                          }
-                                          .buttonStyle(.plain)
-                                      }
-                                  }
-                                  .padding(.horizontal, 18)
+                              Picker("", selection: $section) {
+                                  Text("المنتدى").tag(0)
+                                  Text("الترند").tag(1)
+                                  Text("الأخبار").tag(2)
+                                  Text("العروض").tag(3)
                               }
-
-                              HStack(spacing: 10) {
-                                  ForEach([("الأحدث", false), ("الترند", true)], id: \.0) { item in
-                                      Button {
-                                          store.trending = item.1
-                                          store.tag = ""
-                                          store.load()
-                                      } label: {
-                                          Text(item.0)
-                                              .font(.system(size: 13, weight: .bold))
-                                              .foregroundColor(store.trending == item.1 ? .black : Color.storeSub)
-                                              .padding(.horizontal, 16).padding(.vertical, 8)
-                                              .background(Capsule().fill(store.trending == item.1 ? Color.storeAccent : Color.storeCard))
-                                      }
-                                      .buttonStyle(.plain)
-                                  }
-                                  Spacer()
-                              }
+                              .pickerStyle(.segmented)
                               .padding(.horizontal, 18)
 
-                              if !store.tags.isEmpty {
-                                  ScrollView(.horizontal, showsIndicators: false) {
-                                      HStack(spacing: 8) {
-                                          ForEach(store.tags) { t in
+                              if section == 2 {
+                                  ONEsNewsList()
+                              } else if section == 3 {
+                                  ONEsOffersList()
+                              } else {
+                                  if !session.isSignedIn {
+                                      ONEsAuthView()
+                                  } else if section == 0 {
+                                      VStack(alignment: .leading, spacing: 10) {
+                                          TextField("", text: $draft, prompt: Text("اكتب منشورًا… #تحديثات @username")
+                                              .foregroundColor(.white.opacity(0.4)), axis: .vertical)
+                                              .foregroundColor(.white)
+                                              .lineLimit(3...6)
+                                              .padding(12)
+                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+                                          HStack {
+                                              Picker("", selection: $kind) {
+                                                  Text("منشور").tag("post")
+                                                  Text("خبر").tag("news")
+                                              }
+                                              .pickerStyle(.segmented)
+                                              .frame(width: 170)
+                                              Spacer()
                                               Button {
-                                                  store.tag = (store.tag == t.name) ? "" : t.name
-                                                  store.load()
+                                                  busy = true
+                                                  content.publish(body: draft, kind: kind) { ok in
+                                                      busy = false
+                                                      if ok { draft = "" }
+                                                  }
                                               } label: {
-                                                  Text("#\(t.name) \(t.count)")
-                                                      .font(.system(size: 12, weight: .semibold))
-                                                      .foregroundColor(store.tag == t.name ? .black : Color.storeAccent)
-                                                      .padding(.horizontal, 12).padding(.vertical, 6)
-                                                      .background(Capsule().fill(store.tag == t.name ? Color.storeAccent : Color.storeCard))
+                                                  Text(busy ? "…" : "نشر")
+                                                      .font(.system(size: 14, weight: .bold))
+                                                      .foregroundColor(.white)
+                                                      .padding(.horizontal, 22).padding(.vertical, 9)
+                                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
                                               }
                                               .buttonStyle(.plain)
+                                              .disabled(busy || draft.isEmpty)
                                           }
                                       }
+                                      .padding(14)
+                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.05)))
                                       .padding(.horizontal, 18)
                                   }
-                              }
 
-                              if account.isSignedIn {
-                                  HubProfileEditor()
-                                  VStack(spacing: 8) {
-                                      TextField("ما الجديد؟ استخدم #هاشتاغ و @منشن", text: $draft, axis: .vertical)
-                                          .lineLimit(1...5)
-                                          .padding(12)
-                                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
-                                          .foregroundColor(Color.storeText)
-                                      if showComposer {
-                                          TextField("رابط صورة (اختياري)", text: $imageLink)
-                                              .autocapitalization(.none)
-                                              .padding(10)
-                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                                              .foregroundColor(Color.storeText)
-                                          TextField("رابط فيديو (اختياري)", text: $videoLink)
-                                              .autocapitalization(.none)
-                                              .padding(10)
-                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                                              .foregroundColor(Color.storeText)
-                                      }
-                                      HStack {
-                                          Button { withAnimation { showComposer.toggle() } } label: {
-                                              Image(systemName: "photo.on.rectangle.angled")
-                                                  .foregroundColor(Color.storeAccent)
-                                          }
-                                          .buttonStyle(.plain)
-                                          Spacer()
-                                          Button {
-                                              HubClient.shared.forumAction([
-                                                  "action": "post",
-                                                  "text": draft,
-                                                  "imageUrl": imageLink,
-                                                  "videoUrl": videoLink,
-                                                  "kind": "post"
-                                              ]) { ok in
-                                                  if ok { draft = ""; imageLink = ""; videoLink = ""; showComposer = false }
-                                                  StatusCenter.shared.show(text: ok ? "تم النشر" : "تعذر النشر")
-                                                  store.load()
-                                              }
-                                          } label: {
-                                              Text("نشر")
-                                                  .font(.system(size: 13, weight: .bold))
-                                                  .foregroundColor(.black)
-                                                  .padding(.horizontal, 22).padding(.vertical, 9)
-                                                  .background(Capsule().fill(Color.storeAccent))
-                                          }
-                                          .buttonStyle(.plain)
-                                          .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                                  LazyVStack(spacing: 12) {
+                                      ForEach(section == 1
+                                              ? content.posts.sorted { ($0.likes + $0.reposts * 2) > ($1.likes + $1.reposts * 2) }
+                                              : content.posts) { post in
+                                          ONEsPostCard(post: post)
                                       }
                                   }
                                   .padding(.horizontal, 18)
-                              } else {
-                                  HubAuthView()
-                              }
-
-                              ForEach(store.posts) { p in
-                                  HubPostRow(post: p) { store.load() }
-                              }
-
-                              if store.posts.isEmpty && !store.loading {
-                                  Text("لا توجد منشورات بعد — كن أول من ينشر")
-                                      .font(.system(size: 13))
-                                      .foregroundColor(Color.storeSub)
-                                      .padding(.top, 30)
                               }
                           }
-                          .padding(.vertical, 16)
+                          .padding(.vertical, 14)
                       }
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationTitle("المنتدى")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .refreshable { store.load() }
+                      .toolbar {
+                          if session.isSignedIn {
+                              ToolbarItem(placement: .topBarTrailing) {
+                                  Button("خروج") { session.signOut() }
+                                      .foregroundColor(Color.storePrimary)
+                              }
+                          }
+                      }
                   }
                   .onAppear {
-                      store.load()
-                      HubStore.shared.refresh()
+                      ONEsContent.shared.loadForum()
+                      ONEsContent.shared.loadStoreContent()
                   }
               }
           }
-          COMMEOF
+
+          // ================= REPORTS =================
+          struct ONEsReportSheet: View {
+              let kind: String
+              let targetID: String
+              let appName: String
+              let bundleID: String
+
+              @Environment(\.dismiss) private var dismiss
+              @State private var message = ""
+              @State private var busy = false
+              @State private var done = false
+
+              var body: some View {
+                  VStack(spacing: 14) {
+                      Text("إبلاغ الإدارة")
+                          .font(.system(size: 18, weight: .black))
+                          .foregroundColor(.white)
+                      Text(appName)
+                          .font(.system(size: 12))
+                          .foregroundColor(.white.opacity(0.6))
+
+                      if done {
+                          Text("تم إرسال البلاغ للإدارة ✅")
+                              .font(.system(size: 14, weight: .bold))
+                              .foregroundColor(.green)
+                      } else {
+                          TextField("", text: $message, prompt: Text("اشرح المشكلة…").foregroundColor(.white.opacity(0.4)), axis: .vertical)
+                              .foregroundColor(.white)
+                              .lineLimit(4...8)
+                              .padding(12)
+                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+
+                          Button {
+                              busy = true
+                              ONEsContent.shared.report(kind: kind, targetID: targetID, appName: appName,
+                                                        bundleID: bundleID, message: message) { ok in
+                                  busy = false
+                                  done = ok
+                              }
+                          } label: {
+                              Text(busy ? "جارٍ الإرسال…" : "إرسال البلاغ")
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .frame(maxWidth: .infinity)
+                                  .padding(.vertical, 12)
+                                  .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange))
+                          }
+                          .buttonStyle(.plain)
+                          .disabled(busy || message.isEmpty)
+                      }
+
+                      Button("إغلاق") { dismiss() }
+                          .font(.system(size: 13, weight: .semibold))
+                          .foregroundColor(Color.storePrimary)
+                      Spacer()
+                  }
+                  .padding(20)
+                  .frame(maxWidth: .infinity, maxHeight: .infinity)
+                  .background(Color.storeBg.ignoresSafeArea())
+              }
+          }
+
+          // Report row placed next to the comments button inside every app page
+          struct ONEsReportRow: View {
+              let appName: String
+              let bundleID: String
+              @State private var show = false
+
+              var body: some View {
+                  Button { show = true } label: {
+                      HStack {
+                          Image(systemName: "flag.fill")
+                              .font(.system(size: 14))
+                              .foregroundColor(.orange)
+                          Text("إبلاغ عن مشكلة في التطبيق")
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(Color.storeText)
+                          Spacer()
+                          Image(systemName: "chevron.left")
+                              .font(.system(size: 12))
+                              .foregroundColor(Color.storeSub)
+                      }
+                      .padding(14)
+                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.06)))
+                  }
+                  .buttonStyle(.plain)
+                  .padding(.horizontal, 20)
+                  .sheet(isPresented: $show) {
+                      ONEsReportSheet(kind: "app", targetID: "", appName: appName, bundleID: bundleID)
+                  }
+              }
+          }
+          ONESEOF
 
       # =========================================================
       # SOURCE CODE - VIP21StoreApp.swift (main app with gate)
@@ -5502,7 +5300,7 @@ jobs:
             GreenWave.swift \
             StatusScreens.swift \
             StoreView.swift \
-            CommunityHub.swift \
+            ONEsSocial.swift \
             ContentView.swift \
             VIP21StoreApp.swift \
             -sdk "$SDK" \
