@@ -4323,6 +4323,21 @@ jobs:
                   }.resume()
               }
 
+              static func rowsDetailed(_ path: String, token: String = "",
+                                       completion: @escaping ([[String: Any]], Bool) -> Void) {
+                  guard let req = request(path, token: token) else { completion([], false); return }
+                  URLSession.shared.dataTask(with: req) { data, resp, err in
+                      let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                      let ok = err == nil && (200..<300).contains(code)
+                      var out: [[String: Any]] = []
+                      if let data = data,
+                         let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                          out = json
+                      }
+                      DispatchQueue.main.async { completion(out, ok) }
+                  }.resume()
+              }
+
               static func send(_ path: String, method: String, body: Any?, token: String = "",
                                completion: @escaping (Bool, [String: Any]?) -> Void) {
                   guard let req = request(path, method: method, body: body, token: token) else {
@@ -4463,7 +4478,10 @@ jobs:
               @Published var names: [String: String] = [:]
               @Published var likedIDs: Set<String> = []
               @Published var repostedIDs: Set<String> = []
+              @Published var commentCounts: [String: Int] = [:]
               @Published var isLoading = false
+              @Published var isOffline = false
+              @Published var lastSync: Date? = nil
 
               private init() {}
 
@@ -4513,15 +4531,21 @@ jobs:
                       }
                       self.names = map
                   }
-                  ONEsCloud.rows("/rest/v1/posts?select=*&order=pinned.desc,created_at.desc&limit=100", token: token) { rows in
+                  ONEsCloud.rowsDetailed("/rest/v1/posts?select=*&order=pinned.desc,created_at.desc&limit=100", token: token) { rows, ok in
                       self.isLoading = false
-                      self.posts = rows.map {
-                          ONEsPost(id: S($0["id"]), author: S($0["author_id"]), body: S($0["body"]),
-                                   image: S($0["image_url"]), video: S($0["video_url"]), kind: S($0["kind"]),
-                                   likes: I($0["like_count"]), reposts: I($0["repost_count"]),
-                                   pinned: B($0["pinned"]), createdAt: S($0["created_at"]))
+                      self.isOffline = !ok
+                      if ok {
+                          self.posts = rows.map {
+                              ONEsPost(id: S($0["id"]), author: S($0["author_id"]), body: S($0["body"]),
+                                       image: S($0["image_url"]), video: S($0["video_url"]), kind: S($0["kind"]),
+                                       likes: I($0["like_count"]), reposts: I($0["repost_count"]),
+                                       pinned: B($0["pinned"]), createdAt: S($0["created_at"]))
+                          }
+                          self.lastSync = Date()
                       }
                   }
+                  self.loadCommentCounts()
+                  ONEsLocalPrefs.shared.syncFromServer()
                   guard !ONEsSession.shared.userID.isEmpty else { return }
                   let uid = ONEsSession.shared.userID
                   ONEsCloud.rows("/rest/v1/post_likes?select=post_id&user_id=eq.\(uid)", token: token) { rows in
@@ -4529,6 +4553,19 @@ jobs:
                   }
                   ONEsCloud.rows("/rest/v1/post_reposts?select=post_id&user_id=eq.\(uid)", token: token) { rows in
                       self.repostedIDs = Set(rows.map { S($0["post_id"]) })
+                  }
+              }
+
+              func loadCommentCounts() {
+                  let token = ONEsSession.shared.token
+                  ONEsCloud.rows("/rest/v1/comments?select=post_id&limit=2000", token: token) { rows in
+                      var map: [String: Int] = [:]
+                      for r in rows {
+                          let pid = S(r["post_id"])
+                          guard !pid.isEmpty else { continue }
+                          map[pid, default: 0] += 1
+                      }
+                      self.commentCounts = map
                   }
               }
 
@@ -5028,7 +5065,7 @@ jobs:
               }
           }
 
-          // ---- local-only extras (bookmarks) ----
+          // ---- bookmarks (server-backed, local cache for offline) ----
           final class ONEsLocalPrefs: ObservableObject {
               static let shared = ONEsLocalPrefs()
               private let key = "ones_bookmarks_v1"
@@ -5038,9 +5075,33 @@ jobs:
                   bookmarks = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
               }
 
-              func toggleBookmark(_ id: String) {
-                  if bookmarks.contains(id) { bookmarks.remove(id) } else { bookmarks.insert(id) }
+              private func cache() {
                   UserDefaults.standard.set(Array(bookmarks), forKey: key)
+              }
+
+              func syncFromServer() {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { return }
+                  ONEsCloud.rowsDetailed("/rest/v1/bookmarks?select=post_id&user_id=eq.\(s.userID)", token: s.token) { rows, ok in
+                      guard ok else { return }
+                      self.bookmarks = Set(rows.map { S($0["post_id"]) }.filter { !$0.isEmpty })
+                      self.cache()
+                  }
+              }
+
+              func toggleBookmark(_ id: String) {
+                  let s = ONEsSession.shared
+                  let adding = !bookmarks.contains(id)
+                  if adding { bookmarks.insert(id) } else { bookmarks.remove(id) }
+                  cache()
+                  guard !s.userID.isEmpty else { return }
+                  if adding {
+                      ONEsCloud.send("/rest/v1/bookmarks", method: "POST",
+                                     body: ["post_id": id, "user_id": s.userID], token: s.token) { _, _ in }
+                  } else {
+                      ONEsCloud.send("/rest/v1/bookmarks?post_id=eq.\(id)&user_id=eq.\(s.userID)",
+                                     method: "DELETE", body: nil, token: s.token) { _, _ in }
+                  }
               }
           }
 
@@ -5079,7 +5140,7 @@ jobs:
                                  body: ["post_id": post.id, "author_id": session.userID, "body": text],
                                  token: session.token) { ok, _ in
                       busy = false
-                      if ok { draft = ""; load() }
+                      if ok { draft = ""; load(); content.loadCommentCounts() }
                   }
               }
 
@@ -5342,7 +5403,7 @@ jobs:
 
                               HStack(spacing: 2) {
                                   ONEsActionButton(icon: "bubble.right",
-                                                   label: "",
+                                                   label: ONEsFmt.count(content.commentCounts[post.id] ?? 0),
                                                    active: false,
                                                    activeTint: Color.storePrimary) { showComments = true }
 
@@ -5548,6 +5609,22 @@ jobs:
 
                           VStack(spacing: 0) {
                               ONEsFeedTabs(section: $section)
+
+                              if content.isOffline {
+                                  HStack(spacing: 7) {
+                                      Image(systemName: "wifi.exclamationmark").font(.system(size: 12))
+                                      Text("تعذّر الاتصال بالخادم — يتم عرض آخر نسخة محفوظة")
+                                          .font(.system(size: 11, weight: .semibold))
+                                      Spacer(minLength: 0)
+                                      Button("إعادة") { content.loadForum() }
+                                          .font(.system(size: 11, weight: .bold))
+                                          .foregroundColor(Color.storePrimary)
+                                          .buttonStyle(.plain)
+                                  }
+                                  .foregroundColor(.orange)
+                                  .padding(.horizontal, 16).padding(.vertical, 8)
+                                  .background(Color.orange.opacity(0.12))
+                              }
 
                               if showSearch {
                                   HStack(spacing: 8) {
