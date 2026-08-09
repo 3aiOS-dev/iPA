@@ -2625,9 +2625,25 @@ jobs:
               }
           }
 
+          // Modified ONEsTopBar with settings button
           struct ONEsTopBar: View {
+              var onSettingsTap: (() -> Void)? = nil
+
               var body: some View {
                   HStack {
+                      if let onSettingsTap {
+                          Button(action: onSettingsTap) {
+                              Image(systemName: "gearshape")
+                                  .font(.system(size: 20, weight: .semibold))
+                                  .foregroundColor(Color.storeText)
+                                  .frame(width: 42, height: 42)
+                                  .background(Circle().fill(Color.storeCard))
+                                  .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
+                          }
+                          .buttonStyle(.plain)
+                      } else {
+                          Color.clear.frame(width: 42, height: 42)
+                      }
                       Spacer()
                       HStack(spacing: 8) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -2636,6 +2652,7 @@ jobs:
                               .foregroundColor(Color.storeText)
                       }
                       Spacer()
+                      Color.clear.frame(width: 42, height: 42)
                   }
                   .padding(.horizontal, 18)
                   .padding(.top, 6)
@@ -4019,10 +4036,12 @@ jobs:
               var onGoApps: (() -> Void)? = nil
               var onGoFiles: (() -> Void)? = nil
 
+              @State private var showCertificateSheet = false
+
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar()
+                          ONEsTopBar(onSettingsTap: { showCertificateSheet = true })
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4088,6 +4107,9 @@ jobs:
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
+                      }
+                      .sheet(isPresented: $showCertificateSheet) {
+                          CertificateSettingsView()
                       }
                   }
               }
@@ -4207,6 +4229,55 @@ jobs:
                       lastFingerprint = fp
                       UserDefaults.standard.set(fp, forKey: "live_catalog_fp")
                   } catch {
+                  }
+              }
+          }
+
+          // ================= Certificate Settings View =================
+          struct CertificateSettingsView: View {
+              @Environment(\.dismiss) private var dismiss
+              @State private var certificateStatus: String = "غير معروف"
+              @State private var isRefreshing = false
+
+              var body: some View {
+                  NavigationView {
+                      VStack(spacing: 20) {
+                          Text("إدارة الشهادة")
+                              .font(.title2)
+                              .bold()
+                          Text("حالة الشهادة: \(certificateStatus)")
+                              .font(.body)
+                          Button("استرداد الشهادة") {
+                              isRefreshing = true
+                              StoreInstaller.shared.fetchCertificate { cert in
+                                  isRefreshing = false
+                                  if cert != nil {
+                                      certificateStatus = "موجودة ✅"
+                                      StatusCenter.shared.show(text: "تم استرداد الشهادة بنجاح")
+                                      HapticManager.shared.success()
+                                  } else {
+                                      certificateStatus = "غير موجودة ❌"
+                                      StatusCenter.shared.show(text: "فشل استرداد الشهادة")
+                                      HapticManager.shared.error()
+                                  }
+                              }
+                          }
+                          .disabled(isRefreshing)
+                          .buttonStyle(.borderedProminent)
+                          Spacer()
+                      }
+                      .padding()
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button("تم") { dismiss() }
+                          }
+                      }
+                  }
+                  .onAppear {
+                      StoreInstaller.shared.fetchCertificate { cert in
+                          certificateStatus = cert != nil ? "موجودة ✅" : "غير موجودة ❌"
+                      }
                   }
               }
           }
