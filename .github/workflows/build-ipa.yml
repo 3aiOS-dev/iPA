@@ -4900,79 +4900,617 @@ jobs:
               }
           }
 
-          // ================= FORUM =================
+          // ================= FORUM (X / Instagram style) =================
+
+          // ---- helpers ----
+          enum ONEsFmt {
+              static func timeAgo(_ iso: String) -> String {
+                  guard !iso.isEmpty else { return "" }
+                  let f = ISO8601DateFormatter()
+                  f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                  var date = f.date(from: iso)
+                  if date == nil {
+                      let f2 = ISO8601DateFormatter()
+                      f2.formatOptions = [.withInternetDateTime]
+                      date = f2.date(from: iso)
+                  }
+                  if date == nil {
+                      let df = DateFormatter()
+                      df.locale = Locale(identifier: "en_US_POSIX")
+                      df.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                      date = df.date(from: String(iso.prefix(19)))
+                  }
+                  guard let d = date else { return "" }
+                  let s = Int(Date().timeIntervalSince(d))
+                  if s < 60 { return "الآن" }
+                  if s < 3600 { return "\(s / 60) د" }
+                  if s < 86400 { return "\(s / 3600) س" }
+                  if s < 604800 { return "\(s / 86400) ي" }
+                  let df = DateFormatter()
+                  df.locale = Locale(identifier: "ar")
+                  df.dateFormat = "d MMM"
+                  return df.string(from: d)
+              }
+
+              static func count(_ n: Int) -> String {
+                  if n >= 1_000_000 { return String(format: "%.1fم", Double(n) / 1_000_000) }
+                  if n >= 1000 { return String(format: "%.1fك", Double(n) / 1000) }
+                  return n > 0 ? "\(n)" : ""
+              }
+
+              static func handle(_ name: String) -> String {
+                  let clean = name.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
+                  return "@" + (clean.isEmpty ? "user" : clean)
+              }
+          }
+
+          struct ONEsAvatar: View {
+              let name: String
+              var size: CGFloat = 44
+              var ring: Bool = false
+
+              private var colors: [Color] {
+                  let seed = abs(name.hashValue)
+                  let palettes: [[Color]] = [
+                      [Color(red: 0.42, green: 0.36, blue: 0.98), Color(red: 0.24, green: 0.66, blue: 0.98)],
+                      [Color(red: 0.98, green: 0.36, blue: 0.55), Color(red: 0.98, green: 0.62, blue: 0.30)],
+                      [Color(red: 0.16, green: 0.78, blue: 0.62), Color(red: 0.20, green: 0.55, blue: 0.90)],
+                      [Color(red: 0.85, green: 0.35, blue: 0.95), Color(red: 0.45, green: 0.30, blue: 0.95)],
+                      [Color(red: 0.98, green: 0.75, blue: 0.25), Color(red: 0.95, green: 0.38, blue: 0.32)]
+                  ]
+                  return palettes[seed % palettes.count]
+              }
+
+              var body: some View {
+                  Circle()
+                      .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                      .frame(width: size, height: size)
+                      .overlay(
+                          Text(String(name.isEmpty ? "؟" : name.prefix(1)).uppercased())
+                              .font(.system(size: size * 0.42, weight: .black))
+                              .foregroundColor(.white)
+                      )
+                      .overlay(
+                          Circle().stroke(Color.white.opacity(0.10), lineWidth: 1)
+                      )
+                      .padding(ring ? 3 : 0)
+                      .background(
+                          Group {
+                              if ring {
+                                  Circle().stroke(
+                                      AngularGradient(colors: [Color(red: 0.98, green: 0.62, blue: 0.20),
+                                                               Color(red: 0.95, green: 0.28, blue: 0.45),
+                                                               Color(red: 0.55, green: 0.30, blue: 0.95),
+                                                               Color(red: 0.98, green: 0.62, blue: 0.20)],
+                                                     center: .center),
+                                      lineWidth: 2.5
+                                  )
+                              }
+                          }
+                      )
+              }
+          }
+
+          struct ONEsActionButton: View {
+              let icon: String
+              let label: String
+              var tint: Color = Color.white.opacity(0.55)
+              var active: Bool = false
+              var activeTint: Color = Color.storePrimary
+              let action: () -> Void
+
+              @State private var bump = false
+
+              var body: some View {
+                  Button {
+                      withAnimation(.spring(response: 0.28, dampingFraction: 0.5)) { bump = true }
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { bump = false }
+                      action()
+                  } label: {
+                      HStack(spacing: 5) {
+                          Image(systemName: icon)
+                              .font(.system(size: 13.5, weight: .semibold))
+                              .scaleEffect(bump ? 1.35 : 1.0)
+                          if !label.isEmpty {
+                              Text(label)
+                                  .font(.system(size: 12, weight: .semibold))
+                          }
+                      }
+                      .foregroundColor(active ? activeTint : tint)
+                      .padding(.vertical, 6)
+                      .padding(.horizontal, 8)
+                      .background(
+                          Capsule().fill(active ? activeTint.opacity(0.12) : Color.clear)
+                      )
+                      .contentShape(Rectangle())
+                  }
+                  .buttonStyle(.plain)
+              }
+          }
+
+          // ---- local-only extras (bookmarks) ----
+          final class ONEsLocalPrefs: ObservableObject {
+              static let shared = ONEsLocalPrefs()
+              private let key = "ones_bookmarks_v1"
+              @Published var bookmarks: Set<String> = []
+
+              private init() {
+                  bookmarks = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+              }
+
+              func toggleBookmark(_ id: String) {
+                  if bookmarks.contains(id) { bookmarks.remove(id) } else { bookmarks.insert(id) }
+                  UserDefaults.standard.set(Array(bookmarks), forKey: key)
+              }
+          }
+
+          // ---- comments ----
+          struct ONEsComment: Identifiable {
+              let id: String, author: String, body: String, createdAt: String
+          }
+
+          struct ONEsCommentsSheet: View {
+              let post: ONEsPost
+              @Environment(\.dismiss) private var dismiss
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var session = ONEsSession.shared
+              @State private var comments: [ONEsComment] = []
+              @State private var draft = ""
+              @State private var busy = false
+              @State private var loading = true
+
+              private func load() {
+                  loading = true
+                  ONEsCloud.rows("/rest/v1/comments?select=*&post_id=eq.\(post.id)&order=created_at.asc&limit=200",
+                                 token: session.token) { rows in
+                      loading = false
+                      comments = rows.map {
+                          ONEsComment(id: S($0["id"]), author: S($0["author_id"]),
+                                      body: S($0["body"]), createdAt: S($0["created_at"]))
+                      }
+                  }
+              }
+
+              private func send() {
+                  let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !text.isEmpty, !session.userID.isEmpty else { return }
+                  busy = true
+                  ONEsCloud.send("/rest/v1/comments", method: "POST",
+                                 body: ["post_id": post.id, "author_id": session.userID, "body": text],
+                                 token: session.token) { ok, _ in
+                      busy = false
+                      if ok { draft = ""; load() }
+                  }
+              }
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      Capsule().fill(Color.white.opacity(0.18))
+                          .frame(width: 38, height: 4)
+                          .padding(.top, 10)
+
+                      Text("الردود")
+                          .font(.system(size: 15, weight: .black))
+                          .foregroundColor(.white)
+                          .padding(.vertical, 12)
+
+                      Divider().background(Color.white.opacity(0.08))
+
+                      ScrollView(showsIndicators: false) {
+                          VStack(alignment: .leading, spacing: 14) {
+                              HStack(alignment: .top, spacing: 10) {
+                                  ONEsAvatar(name: content.names[post.author] ?? "مستخدم", size: 36)
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text(content.names[post.author] ?? "مستخدم")
+                                          .font(.system(size: 13, weight: .bold))
+                                          .foregroundColor(.white)
+                                      Text(post.body)
+                                          .font(.system(size: 13))
+                                          .foregroundColor(.white.opacity(0.85))
+                                  }
+                                  Spacer(minLength: 0)
+                              }
+                              .padding(.top, 14)
+
+                              Divider().background(Color.white.opacity(0.08))
+
+                              if loading {
+                                  ProgressView().tint(.white).frame(maxWidth: .infinity).padding(.top, 20)
+                              } else if comments.isEmpty {
+                                  Text("لا توجد ردود بعد — كن أول من يرد")
+                                      .font(.system(size: 12))
+                                      .foregroundColor(.white.opacity(0.45))
+                                      .frame(maxWidth: .infinity)
+                                      .padding(.top, 24)
+                              } else {
+                                  ForEach(comments) { c in
+                                      HStack(alignment: .top, spacing: 10) {
+                                          ONEsAvatar(name: content.names[c.author] ?? "مستخدم", size: 32)
+                                          VStack(alignment: .leading, spacing: 3) {
+                                              HStack(spacing: 6) {
+                                                  Text(content.names[c.author] ?? "مستخدم")
+                                                      .font(.system(size: 12.5, weight: .bold))
+                                                      .foregroundColor(.white)
+                                                  Text(ONEsFmt.timeAgo(c.createdAt))
+                                                      .font(.system(size: 11))
+                                                      .foregroundColor(.white.opacity(0.4))
+                                              }
+                                              Text(c.body)
+                                                  .font(.system(size: 13))
+                                                  .foregroundColor(.white.opacity(0.85))
+                                                  .fixedSize(horizontal: false, vertical: true)
+                                          }
+                                          Spacer(minLength: 0)
+                                      }
+                                  }
+                              }
+                          }
+                          .padding(.horizontal, 16)
+                          .padding(.bottom, 20)
+                      }
+
+                      if session.isSignedIn {
+                          HStack(spacing: 10) {
+                              TextField("", text: $draft,
+                                        prompt: Text("اكتب ردًا…").foregroundColor(.white.opacity(0.35)))
+                                  .foregroundColor(.white)
+                                  .padding(.vertical, 10).padding(.horizontal, 14)
+                                  .background(Capsule().fill(Color.white.opacity(0.08)))
+
+                              Button { send() } label: {
+                                  Image(systemName: "paperplane.fill")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(10)
+                                      .background(Circle().fill(Color.storePrimary))
+                              }
+                              .buttonStyle(.plain)
+                              .disabled(busy || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                              .opacity(draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+                          }
+                          .padding(.horizontal, 14)
+                          .padding(.vertical, 10)
+                          .background(Color.white.opacity(0.03))
+                      }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .onAppear { load() }
+              }
+          }
+
+          // ---- composer ----
+          struct ONEsComposerSheet: View {
+              @Environment(\.dismiss) private var dismiss
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var session = ONEsSession.shared
+              @State private var draft = ""
+              @State private var kind = "post"
+              @State private var busy = false
+              @FocusState private var focused: Bool
+
+              private let limit = 500
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      HStack {
+                          Button("إلغاء") { dismiss() }
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.white.opacity(0.7))
+                          Spacer()
+                          Text("منشور جديد")
+                              .font(.system(size: 15, weight: .black))
+                              .foregroundColor(.white)
+                          Spacer()
+                          Button {
+                              busy = true
+                              content.publish(body: draft.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind) { ok in
+                                  busy = false
+                                  if ok { dismiss() }
+                              }
+                          } label: {
+                              Text(busy ? "…" : "نشر")
+                                  .font(.system(size: 14, weight: .black))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 20).padding(.vertical, 8)
+                                  .background(Capsule().fill(Color.storePrimary))
+                                  .opacity(draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.45 : 1)
+                          }
+                          .buttonStyle(.plain)
+                          .disabled(busy || draft.trimmingCharacters(in: .whitespaces).isEmpty || draft.count > limit)
+                      }
+                      .padding(.horizontal, 16)
+                      .padding(.vertical, 14)
+
+                      Divider().background(Color.white.opacity(0.08))
+
+                      HStack(alignment: .top, spacing: 10) {
+                          ONEsAvatar(name: session.username.isEmpty ? "أنا" : session.username, size: 40)
+                          VStack(alignment: .leading, spacing: 8) {
+                              TextField("", text: $draft,
+                                        prompt: Text("ما الذي يحدث؟").foregroundColor(.white.opacity(0.35)),
+                                        axis: .vertical)
+                                  .focused($focused)
+                                  .foregroundColor(.white)
+                                  .font(.system(size: 16))
+                                  .lineLimit(4...14)
+                          }
+                      }
+                      .padding(16)
+
+                      Spacer()
+
+                      HStack(spacing: 14) {
+                          Picker("", selection: $kind) {
+                              Text("منشور").tag("post")
+                              Text("خبر").tag("news")
+                          }
+                          .pickerStyle(.segmented)
+                          .frame(width: 160)
+
+                          Spacer()
+
+                          Text("\(draft.count)/\(limit)")
+                              .font(.system(size: 12, weight: .semibold))
+                              .foregroundColor(draft.count > limit ? .red : .white.opacity(0.45))
+                      }
+                      .padding(.horizontal, 16)
+                      .padding(.bottom, 16)
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .onAppear { focused = true }
+              }
+          }
+
+          // ---- post card ----
           struct ONEsPostCard: View {
               let post: ONEsPost
               @ObservedObject private var content = ONEsContent.shared
               @ObservedObject private var session = ONEsSession.shared
+              @ObservedObject private var prefs = ONEsLocalPrefs.shared
               @State private var showReport = false
-              @State private var reportText = ""
+              @State private var showComments = false
+              @State private var heart = false
+
+              private var authorName: String { content.names[post.author] ?? "مستخدم" }
+              private var isMine: Bool { !session.userID.isEmpty && session.userID == post.author }
 
               var body: some View {
-                  VStack(alignment: .leading, spacing: 10) {
+                  VStack(alignment: .leading, spacing: 0) {
                       if post.pinned {
-                          Text("📌 منشور مثبّت من الإدارة")
-                              .font(.system(size: 11, weight: .bold))
-                              .foregroundColor(.orange)
-                      }
-                      HStack(spacing: 8) {
-                          Circle().fill(Color.storePrimary.opacity(0.3)).frame(width: 34, height: 34)
-                              .overlay(Text(String((content.names[post.author] ?? "؟").prefix(1)))
-                                  .font(.system(size: 14, weight: .black)).foregroundColor(.white))
-                          VStack(alignment: .leading, spacing: 2) {
-                              Text(content.names[post.author] ?? "مستخدم")
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(.white)
-                              Text(post.kind == "news" ? "خبر" : "منشور")
-                                  .font(.system(size: 10))
-                                  .foregroundColor(.white.opacity(0.5))
+                          HStack(spacing: 5) {
+                              Image(systemName: "pin.fill").font(.system(size: 10))
+                              Text("مثبّت من الإدارة").font(.system(size: 11, weight: .bold))
                           }
-                          Spacer()
+                          .foregroundColor(.orange)
+                          .padding(.bottom, 8)
                       }
 
-                      Text(post.body)
-                          .font(.system(size: 14))
-                          .foregroundColor(.white.opacity(0.9))
-                          .fixedSize(horizontal: false, vertical: true)
+                      HStack(alignment: .top, spacing: 11) {
+                          ONEsAvatar(name: authorName, size: 44)
 
-                      if !post.image.isEmpty { ONEsRemoteImage(url: post.image, height: 190) }
-
-                      HStack(spacing: 16) {
-                          Button { content.toggleLike(post) } label: {
-                              HStack(spacing: 4) {
-                                  Text(content.likedIDs.contains(post.id) ? "❤️" : "🤍")
-                                  Text("\(post.likes)").font(.system(size: 12)).foregroundColor(.white.opacity(0.7))
-                              }
-                          }.buttonStyle(.plain)
-
-                          Button { content.toggleRepost(post) } label: {
-                              HStack(spacing: 4) {
-                                  Text("🔄")
-                                  Text("\(post.reposts)").font(.system(size: 12)).foregroundColor(.white.opacity(0.7))
-                              }
-                          }.buttonStyle(.plain)
-
-                          Button { showReport = true } label: {
-                              Image(systemName: "flag.fill")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(.orange)
-                          }.buttonStyle(.plain)
-
-                          if session.isSignedIn {
-                              Button { content.deletePost(post) } label: {
-                                  Image(systemName: "trash")
+                          VStack(alignment: .leading, spacing: 6) {
+                              HStack(spacing: 5) {
+                                  Text(authorName)
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .lineLimit(1)
+                                  Image(systemName: "checkmark.seal.fill")
+                                      .font(.system(size: 11))
+                                      .foregroundColor(Color.storePrimary)
+                                  Text(ONEsFmt.handle(authorName))
                                       .font(.system(size: 12))
-                                      .foregroundColor(.red.opacity(0.8))
-                              }.buttonStyle(.plain)
+                                      .foregroundColor(.white.opacity(0.4))
+                                      .lineLimit(1)
+                                  Text("·").foregroundColor(.white.opacity(0.35))
+                                  Text(ONEsFmt.timeAgo(post.createdAt))
+                                      .font(.system(size: 12))
+                                      .foregroundColor(.white.opacity(0.4))
+                                  Spacer(minLength: 0)
+                                  Menu {
+                                      Button("إبلاغ عن المنشور", systemImage: "flag") { showReport = true }
+                                      Button(prefs.bookmarks.contains(post.id) ? "إزالة الحفظ" : "حفظ المنشور",
+                                             systemImage: "bookmark") { prefs.toggleBookmark(post.id) }
+                                      if isMine || session.isSignedIn {
+                                          Button("حذف", systemImage: "trash", role: .destructive) {
+                                              content.deletePost(post)
+                                          }
+                                      }
+                                  } label: {
+                                      Image(systemName: "ellipsis")
+                                          .font(.system(size: 13, weight: .bold))
+                                          .foregroundColor(.white.opacity(0.4))
+                                          .padding(.leading, 4)
+                                  }
+                              }
+
+                              if post.kind == "news" {
+                                  Text("خبر")
+                                      .font(.system(size: 10, weight: .black))
+                                      .foregroundColor(Color.storePrimary)
+                                      .padding(.horizontal, 8).padding(.vertical, 3)
+                                      .background(Capsule().fill(Color.storePrimary.opacity(0.14)))
+                              }
+
+                              if !post.body.isEmpty {
+                                  ONEsRichText(text: post.body)
+                              }
+
+                              if !post.image.isEmpty {
+                                  ONEsRemoteImage(url: post.image, height: 230, corner: 18)
+                                      .padding(.top, 2)
+                              }
+
+                              HStack(spacing: 2) {
+                                  ONEsActionButton(icon: "bubble.right",
+                                                   label: "",
+                                                   active: false,
+                                                   activeTint: Color.storePrimary) { showComments = true }
+
+                                  ONEsActionButton(icon: "arrow.2.squarepath",
+                                                   label: ONEsFmt.count(post.reposts),
+                                                   active: content.repostedIDs.contains(post.id),
+                                                   activeTint: Color.green) { content.toggleRepost(post) }
+
+                                  ONEsActionButton(icon: content.likedIDs.contains(post.id) ? "heart.fill" : "heart",
+                                                   label: ONEsFmt.count(post.likes),
+                                                   active: content.likedIDs.contains(post.id),
+                                                   activeTint: Color(red: 0.97, green: 0.25, blue: 0.44)) {
+                                      content.toggleLike(post)
+                                  }
+
+                                  ONEsActionButton(icon: prefs.bookmarks.contains(post.id) ? "bookmark.fill" : "bookmark",
+                                                   label: "",
+                                                   active: prefs.bookmarks.contains(post.id),
+                                                   activeTint: Color.storePrimary) { prefs.toggleBookmark(post.id) }
+
+                                  ONEsActionButton(icon: "square.and.arrow.up", label: "") {
+                                      let text = "\(authorName): \(post.body)"
+                                      let av = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                                      UIApplication.shared.connectedScenes
+                                          .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+                                          .first?.rootViewController?.present(av, animated: true)
+                                  }
+
+                                  Spacer(minLength: 0)
+                              }
+                              .padding(.top, 2)
                           }
-                          Spacer()
                       }
                   }
-                  .padding(14)
-                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                  .padding(.horizontal, 16)
+                  .padding(.vertical, 14)
+                  .background(Color.white.opacity(0.02))
+                  .overlay(alignment: .bottom) {
+                      Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.6)
+                  }
+                  .contentShape(Rectangle())
+                  .onTapGesture(count: 2) {
+                      content.toggleLike(post)
+                  }
+                  .sheet(isPresented: $showComments) {
+                      ONEsCommentsSheet(post: post)
+                  }
                   .sheet(isPresented: $showReport) {
                       ONEsReportSheet(kind: "post", targetID: post.id,
-                                      appName: "منشور " + (content.names[post.author] ?? ""), bundleID: "")
+                                      appName: "منشور " + authorName, bundleID: "")
+                  }
+              }
+          }
+
+          // ---- hashtag / mention styling ----
+          struct ONEsRichText: View {
+              let text: String
+
+              var body: some View {
+                  Text(attributed)
+                      .font(.system(size: 15))
+                      .foregroundColor(.white.opacity(0.92))
+                      .fixedSize(horizontal: false, vertical: true)
+                      .multilineTextAlignment(.leading)
+              }
+
+              private var attributed: AttributedString {
+                  var out = AttributedString("")
+                  for word in text.split(separator: " ", omittingEmptySubsequences: false) {
+                      var piece = AttributedString(String(word) + " ")
+                      if word.hasPrefix("#") || word.hasPrefix("@") {
+                          piece.foregroundColor = Color.storePrimary
+                          piece.font = .system(size: 15, weight: .semibold)
+                      }
+                      out.append(piece)
+                  }
+                  return out
+              }
+          }
+
+          // ---- stories bar (Instagram style) ----
+          struct ONEsStoriesBar: View {
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var session = ONEsSession.shared
+              var onCompose: () -> Void
+
+              private var people: [String] {
+                  var seen: [String] = []
+                  for p in content.posts {
+                      let name = content.names[p.author] ?? ""
+                      if !name.isEmpty && !seen.contains(name) { seen.append(name) }
+                      if seen.count >= 14 { break }
+                  }
+                  return seen
+              }
+
+              var body: some View {
+                  ScrollView(.horizontal, showsIndicators: false) {
+                      HStack(spacing: 14) {
+                          VStack(spacing: 6) {
+                              ZStack(alignment: .bottomTrailing) {
+                                  ONEsAvatar(name: session.username.isEmpty ? "أنا" : session.username, size: 58)
+                                  Image(systemName: "plus.circle.fill")
+                                      .font(.system(size: 17))
+                                      .foregroundColor(Color.storePrimary)
+                                      .background(Circle().fill(Color.storeBg))
+                              }
+                              Text("منشورك")
+                                  .font(.system(size: 11, weight: .semibold))
+                                  .foregroundColor(.white.opacity(0.7))
+                          }
+                          .onTapGesture { onCompose() }
+
+                          ForEach(people, id: \.self) { name in
+                              VStack(spacing: 6) {
+                                  ONEsAvatar(name: name, size: 58, ring: true)
+                                  Text(name)
+                                      .font(.system(size: 11))
+                                      .foregroundColor(.white.opacity(0.65))
+                                      .lineLimit(1)
+                                      .frame(width: 64)
+                              }
+                          }
+                      }
+                      .padding(.horizontal, 16)
+                      .padding(.vertical, 12)
+                  }
+              }
+          }
+
+          // ---- feed tabs ----
+          struct ONEsFeedTabs: View {
+              @Binding var section: Int
+              private let titles = ["لك", "الترند", "المحفوظ", "الأخبار", "العروض"]
+              @Namespace private var ns
+
+              var body: some View {
+                  ScrollView(.horizontal, showsIndicators: false) {
+                      HStack(spacing: 4) {
+                          ForEach(titles.indices, id: \.self) { i in
+                              Button {
+                                  withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { section = i }
+                              } label: {
+                                  VStack(spacing: 8) {
+                                      Text(titles[i])
+                                          .font(.system(size: 14, weight: section == i ? .black : .semibold))
+                                          .foregroundColor(section == i ? .white : .white.opacity(0.45))
+                                      ZStack {
+                                          Capsule().fill(Color.clear).frame(height: 3)
+                                          if section == i {
+                                              Capsule().fill(Color.storePrimary)
+                                                  .frame(height: 3)
+                                                  .matchedGeometryEffect(id: "tab", in: ns)
+                                          }
+                                      }
+                                  }
+                                  .padding(.horizontal, 16)
+                                  .padding(.top, 10)
+                                  .contentShape(Rectangle())
+                              }
+                              .buttonStyle(.plain)
+                          }
+                      }
+                      .padding(.horizontal, 8)
+                  }
+                  .background(Color.storeBg.opacity(0.98))
+                  .overlay(alignment: .bottom) {
+                      Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.6)
                   }
               }
           }
@@ -4980,91 +5518,176 @@ jobs:
           struct ONEsForumTabView: View {
               @ObservedObject private var content = ONEsContent.shared
               @ObservedObject private var session = ONEsSession.shared
-              @State private var draft = ""
-              @State private var kind = "post"
-              @State private var busy = false
+              @ObservedObject private var prefs = ONEsLocalPrefs.shared
               @State private var section = 0
+              @State private var showComposer = false
+              @State private var query = ""
+              @State private var showSearch = false
+
+              private var feed: [ONEsPost] {
+                  var list = content.posts
+                  if section == 1 {
+                      list = list.sorted { ($0.likes * 2 + $0.reposts * 3) > ($1.likes * 2 + $1.reposts * 3) }
+                  } else if section == 2 {
+                      list = list.filter { prefs.bookmarks.contains($0.id) }
+                  }
+                  let q = query.trimmingCharacters(in: .whitespaces)
+                  if !q.isEmpty {
+                      list = list.filter {
+                          $0.body.localizedCaseInsensitiveContains(q)
+                              || (content.names[$0.author] ?? "").localizedCaseInsensitiveContains(q)
+                      }
+                  }
+                  return list
+              }
 
               var body: some View {
                   NavigationStack {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 14) {
-                              Picker("", selection: $section) {
-                                  Text("المنتدى").tag(0)
-                                  Text("الترند").tag(1)
-                                  Text("الأخبار").tag(2)
-                                  Text("العروض").tag(3)
-                              }
-                              .pickerStyle(.segmented)
-                              .padding(.horizontal, 18)
+                      ZStack(alignment: .bottomTrailing) {
+                          Color.storeBg.ignoresSafeArea()
 
-                              if section == 2 {
-                                  ONEsNewsList()
-                              } else if section == 3 {
-                                  ONEsOffersList()
-                              } else {
-                                  if !session.isSignedIn {
-                                      ONEsAuthView()
-                                  } else if section == 0 {
-                                      VStack(alignment: .leading, spacing: 10) {
-                                          TextField("", text: $draft, prompt: Text("اكتب منشورًا… #تحديثات @username")
-                                              .foregroundColor(.white.opacity(0.4)), axis: .vertical)
-                                              .foregroundColor(.white)
-                                              .lineLimit(3...6)
-                                              .padding(12)
-                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
-                                          HStack {
-                                              Picker("", selection: $kind) {
-                                                  Text("منشور").tag("post")
-                                                  Text("خبر").tag("news")
-                                              }
-                                              .pickerStyle(.segmented)
-                                              .frame(width: 170)
-                                              Spacer()
-                                              Button {
-                                                  busy = true
-                                                  content.publish(body: draft, kind: kind) { ok in
-                                                      busy = false
-                                                      if ok { draft = "" }
+                          VStack(spacing: 0) {
+                              ONEsFeedTabs(section: $section)
+
+                              if showSearch {
+                                  HStack(spacing: 8) {
+                                      Image(systemName: "magnifyingglass")
+                                          .font(.system(size: 13))
+                                          .foregroundColor(.white.opacity(0.4))
+                                      TextField("", text: $query,
+                                                prompt: Text("ابحث في المنتدى…").foregroundColor(.white.opacity(0.35)))
+                                          .foregroundColor(.white)
+                                          .font(.system(size: 14))
+                                      if !query.isEmpty {
+                                          Button { query = "" } label: {
+                                              Image(systemName: "xmark.circle.fill")
+                                                  .foregroundColor(.white.opacity(0.35))
+                                          }
+                                          .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.horizontal, 14).padding(.vertical, 10)
+                                  .background(Capsule().fill(Color.white.opacity(0.07)))
+                                  .padding(.horizontal, 16)
+                                  .padding(.top, 10)
+                                  .transition(.move(edge: .top).combined(with: .opacity))
+                              }
+
+                              ScrollView(showsIndicators: false) {
+                                  LazyVStack(spacing: 0) {
+                                      if section == 3 {
+                                          ONEsNewsList().padding(.top, 14)
+                                      } else if section == 4 {
+                                          ONEsOffersList().padding(.top, 14)
+                                      } else {
+                                          if !session.isSignedIn {
+                                              ONEsAuthView().padding(.top, 16)
+                                          } else {
+                                              ONEsStoriesBar { showComposer = true }
+                                              Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.6)
+
+                                              Button { showComposer = true } label: {
+                                                  HStack(spacing: 11) {
+                                                      ONEsAvatar(name: session.username.isEmpty ? "أنا" : session.username, size: 38)
+                                                      Text("ما الذي يحدث؟")
+                                                          .font(.system(size: 15))
+                                                          .foregroundColor(.white.opacity(0.38))
+                                                      Spacer()
+                                                      Image(systemName: "photo.on.rectangle.angled")
+                                                          .font(.system(size: 15))
+                                                          .foregroundColor(Color.storePrimary)
                                                   }
-                                              } label: {
-                                                  Text(busy ? "…" : "نشر")
-                                                      .font(.system(size: 14, weight: .bold))
-                                                      .foregroundColor(.white)
-                                                      .padding(.horizontal, 22).padding(.vertical, 9)
-                                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary))
+                                                  .padding(.horizontal, 16)
+                                                  .padding(.vertical, 13)
+                                                  .contentShape(Rectangle())
                                               }
                                               .buttonStyle(.plain)
-                                              .disabled(busy || draft.isEmpty)
+
+                                              Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.6)
+                                          }
+
+                                          if content.isLoading && content.posts.isEmpty {
+                                              ProgressView().tint(.white)
+                                                  .frame(maxWidth: .infinity)
+                                                  .padding(.top, 40)
+                                          } else if feed.isEmpty {
+                                              VStack(spacing: 10) {
+                                                  Image(systemName: section == 2 ? "bookmark" : "text.bubble")
+                                                      .font(.system(size: 34))
+                                                      .foregroundColor(.white.opacity(0.25))
+                                                  Text(section == 2 ? "لا توجد منشورات محفوظة" : "لا توجد منشورات بعد")
+                                                      .font(.system(size: 13, weight: .semibold))
+                                                      .foregroundColor(.white.opacity(0.4))
+                                              }
+                                              .frame(maxWidth: .infinity)
+                                              .padding(.top, 60)
+                                          } else {
+                                              ForEach(feed) { post in
+                                                  ONEsPostCard(post: post)
+                                                      .transition(.opacity)
+                                              }
                                           }
                                       }
-                                      .padding(14)
-                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.05)))
-                                      .padding(.horizontal, 18)
                                   }
-
-                                  LazyVStack(spacing: 12) {
-                                      ForEach(section == 1
-                                              ? content.posts.sorted { ($0.likes + $0.reposts * 2) > ($1.likes + $1.reposts * 2) }
-                                              : content.posts) { post in
-                                          ONEsPostCard(post: post)
-                                      }
-                                  }
-                                  .padding(.horizontal, 18)
+                                  .padding(.bottom, 90)
+                              }
+                              .refreshable {
+                                  ONEsContent.shared.loadForum()
+                                  ONEsContent.shared.loadStoreContent()
                               }
                           }
-                          .padding(.vertical, 14)
+
+                          if session.isSignedIn && section < 3 {
+                              Button { showComposer = true } label: {
+                                  Image(systemName: "square.and.pencil")
+                                      .font(.system(size: 20, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(width: 56, height: 56)
+                                      .background(
+                                          Circle().fill(
+                                              LinearGradient(colors: [Color.storePrimary, Color.storePrimary.opacity(0.7)],
+                                                             startPoint: .topLeading, endPoint: .bottomTrailing)
+                                          )
+                                      )
+                                      .shadow(color: Color.storePrimary.opacity(0.45), radius: 14, x: 0, y: 8)
+                              }
+                              .buttonStyle(.plain)
+                              .padding(.trailing, 20)
+                              .padding(.bottom, 24)
+                          }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
                       .navigationTitle("المنتدى")
+                      .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
-                          if session.isSignedIn {
-                              ToolbarItem(placement: .topBarTrailing) {
-                                  Button("خروج") { session.signOut() }
+                          ToolbarItem(placement: .topBarLeading) {
+                              Button {
+                                  withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                      showSearch.toggle()
+                                      if !showSearch { query = "" }
+                                  }
+                              } label: {
+                                  Image(systemName: showSearch ? "xmark" : "magnifyingglass")
                                       .foregroundColor(Color.storePrimary)
                               }
                           }
+                          if session.isSignedIn {
+                              ToolbarItem(placement: .topBarTrailing) {
+                                  Menu {
+                                      Text(session.username)
+                                      Button("تحديث", systemImage: "arrow.clockwise") {
+                                          ONEsContent.shared.loadForum()
+                                      }
+                                      Button("خروج", systemImage: "rectangle.portrait.and.arrow.right",
+                                             role: .destructive) { session.signOut() }
+                                  } label: {
+                                      ONEsAvatar(name: session.username.isEmpty ? "أنا" : session.username, size: 30)
+                                  }
+                              }
+                          }
                       }
+                  }
+                  .sheet(isPresented: $showComposer) {
+                      ONEsComposerSheet()
                   }
                   .onAppear {
                       ONEsContent.shared.loadForum()
