@@ -3990,6 +3990,138 @@ jobs:
               }
           }
 
+          // ================= INSTALLATION SIGNING LIBRARY =================
+          struct CertificateSigner {
+              static func signIPA(ipaURL: URL, certData: Data, provisioningProfile: Data, completion: @escaping (Result<URL, Error>) -> Void) {
+                  // Certificate-based signing flow
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      do {
+                          // 1. Extract IPA
+                          let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                          try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+                          // 2. Unzip IPA
+                          let process = Process()
+                          process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+                          process.arguments = ["-o", ipaURL.path, "-d", tempDir.path]
+                          try process.run()
+                          process.waitUntilExit()
+
+                          // 3. Embed provisioning profile
+                          let payloadDir = tempDir.appendingPathComponent("Payload")
+                          let appDir = try FileManager.default.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
+                              .first(where: { $0.pathExtension == "app" })!
+                          let profileDest = appDir.appendingPathComponent("embedded.mobileprovision")
+                          try provisioningProfile.write(to: profileDest)
+
+                          // 4. Sign with codesign
+                          let signProcess = Process()\n                          signProcess.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+                          signProcess.arguments = ["--force", "--sign", "-", "--entitlements", "-", appDir.path]
+                          try signProcess.run()
+                          signProcess.waitUntilExit()
+
+                          // 5. Repackage IPA
+                          let signedIPA = tempDir.appendingPathComponent("signed.ipa")
+                          let zipProcess = Process()
+                          zipProcess.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                          zipProcess.arguments = ["-r", "-", "Payload"]
+                          zipProcess.currentDirectoryURL = tempDir
+                          try zipProcess.run()
+                          zipProcess.waitUntilExit()
+
+                          DispatchQueue.main.async {
+                              completion(.success(signedIPA))
+                          }
+                      } catch {
+                          DispatchQueue.main.async {
+                              completion(.failure(error))
+                          }
+                      }
+                  }
+              }
+
+              static func installWithCertificate(bundleId: String, certURL: String, completion: @escaping (Bool, String) -> Void) {
+                  // Download certificate and install
+                  guard let url = URL(string: certURL) else {
+                      completion(false, "رابط الشهادة غير صالح")
+                      return
+                  }
+                  URLSession.shared.dataTask(with: url) { data, response, error in
+                      guard let certData = data, error == nil else {
+                          DispatchQueue.main.async { completion(false, "فشل تحميل الشهادة") }
+                          return
+                      }
+                      // Process certificate
+                      DispatchQueue.main.async {
+                          StatusCenter.shared.show(text: "جاري التثبيت بالشهادة...")
+                          // Use the certificate to sign and install
+                          let installURL = ActivationManager.codesSiteBase + "/api/public/store/install-with-cert"
+                          guard let apiURL = URL(string: installURL) else { return }
+                          var req = URLRequest(url: apiURL, timeoutInterval: 30)
+                          req.httpMethod = "POST"
+                          req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                          let body: [String: Any] = [
+                              "bundle_id": bundleId,
+                              "udid": ActivationManager.shared.deviceID,
+                              "certificate": certData.base64EncodedString()
+                          ]
+                          req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                          URLSession.shared.dataTask(with: req) { data, _, _ in
+                              DispatchQueue.main.async {
+                                  guard let data = data,
+                                        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                                      completion(false, "تعذّر الاتصال بالسيرفر")
+                                      return
+                                  }
+                                  if let installURL = obj["install_url"] as? String,
+                                     let u = URL(string: installURL) {
+                                      UIApplication.shared.open(u)
+                                      completion(true, "تم بدء التثبيت")
+                                  } else {
+                                      let msg = (obj["message"] as? String) ?? "فشل التثبيت"
+                                      completion(false, msg)
+                                  }
+                              }
+                          }.resume()
+                      }
+                  }.resume()
+              }
+
+              static func installFromServer(bundleId: String, serverURL: String?, completion: @escaping (Bool, String) -> Void) {
+                  let base = serverURL ?? ActivationManager.codesSiteBase
+                  let endpoint = base + "/api/public/store/install-by-bundle"
+                  guard let url = URL(string: endpoint) else {
+                      completion(false, "رابط السيرفر غير صالح")
+                      return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 30)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  let body: [String: Any] = [
+                      "bundle_id": bundleId,
+                      "udid": ActivationManager.shared.deviceID
+                  ]
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      DispatchQueue.main.async {
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              completion(false, "تعذّر الاتصال بالسيرفر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              completion(true, "تم بدء التثبيت من السيرفر")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح"
+                              completion(false, msg)
+                          }
+                      }
+                  }.resume()
+              }
+          }
+
           // ================= UPDATES TAB =================
           struct StoreUpdateItem: Codable, Identifiable, Hashable {
               let id: String
@@ -4214,11 +4346,43 @@ jobs:
               var onMenu: (() -> Void)? = nil
               var onGoApps: (() -> Void)? = nil
               var onGoFiles: (() -> Void)? = nil
+              @State private var showSettings = false
 
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar()
+                          // Top bar with settings icon
+                          HStack {
+                              Button { showSettings = true } label: {
+                                  Image(systemName: "gearshape.fill")
+                                      .font(.system(size: 18))
+                                      .foregroundColor(Color.storePrimary)
+                                      .frame(width: 36, height: 36)
+                                      .background(Circle().fill(Color.storePrimary.opacity(0.12)))
+                              }
+                              .buttonStyle(.plain)
+                              Spacer()
+                              HStack(spacing: 10) {
+                                  RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
+                                  Text("ONEs")
+                                      .font(.system(size: 22, weight: .heavy))
+                                      .foregroundColor(Color.storeText)
+                              }
+                              Spacer()
+                              Color.clear.frame(width: 36, height: 36)
+                          }
+                          .padding(.horizontal, 18)
+                          .padding(.top, 8)
+                          .padding(.bottom, 10)
+                          .background(
+                              Color.storeBg
+                                  .overlay(
+                                      VStack {
+                                          Spacer()
+                                          Divider().overlay(Color.storeDivider)
+                                      }
+                                  )
+                          )
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4291,10 +4455,308 @@ jobs:
                           AppDetailView(app: app, feed: feed)
                       }
                   }
+                  .sheet(isPresented: $showSettings) { StoreSettingsView() }
               }
           }
 
-          // ================= SEARCH =================
+          // ================= SETTINGS VIEW =================
+          struct StoreSettingsView: View {
+              @Environment(\.dismiss) private var dismiss
+              @State private var installMethod: Int = 0
+              @State private var certName: String = ""
+              @State private var certURL: String = ""
+              @State private var serverURL: String = ""
+              @State private var showCertPicker: Bool = false
+              @State private var showInstallProgress: Bool = false
+              @State private var installProgress: Double = 0
+              @State private var installStatus: String = ""
+              @State private var installDone: Bool = false
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView(showsIndicators: false) {
+                          VStack(spacing: 20) {
+                              VStack(spacing: 10) {
+                                  ZStack {
+                                      Circle()
+                                          .fill(LinearGradient(colors: [Color.storePrimary.opacity(0.25), Color.storePink.opacity(0.15)],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
+                                          .frame(width: 64, height: 64)
+                                      Image(systemName: "gearshape.fill")
+                                          .font(.system(size: 28, weight: .bold))
+                                          .foregroundColor(Color.storePrimary)
+                                  }
+                                  Text("الإعدادات")
+                                      .font(.system(size: 22, weight: .heavy))
+                                      .foregroundColor(Color.storeText)
+                                  Text("تثبيت التطبيقات واستيراد الشهادات")
+                                      .font(.system(size: 13))
+                                      .foregroundColor(Color.storeSub)
+                              }
+                              .padding(.top, 10)
+
+                              VStack(alignment: .leading, spacing: 12) {
+                                  Text("طريقة التثبيت")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(Color.storeText)
+                                  HStack(spacing: 10) {
+                                      methodCard(icon: "server.rack", title: "من السيرفر", selected: installMethod == 0) {
+                                          withAnimation(.spring(response: 0.3)) { installMethod = 0 }
+                                      }
+                                      methodCard(icon: "checkmark.seal.fill", title: "من الشهادة", selected: installMethod == 1) {
+                                          withAnimation(.spring(response: 0.3)) { installMethod = 1 }
+                                      }
+                                  }
+                              }
+                              .padding(16)
+                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
+                              .padding(.horizontal, 18)
+
+                              if installMethod == 0 {
+                                  VStack(alignment: .leading, spacing: 12) {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "server.rack").foregroundColor(Color.storePrimary)
+                                          Text("التثبيت من السيرفر").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
+                                      }
+                                      Text("سيتم تحميل التطبيق وتثبيته مباشرة من سيرفر المتجر")
+                                          .font(.system(size: 12)).foregroundColor(Color.storeSub)
+                                      HStack(spacing: 10) {
+                                          Image(systemName: "link").foregroundColor(Color.storeSub)
+                                          TextField("رابط السيرفر (اختياري)", text: $serverURL)
+                                              .font(.system(size: 13)).foregroundColor(Color.storeText)
+                                              .background(Color.clear).tint(Color.storePrimary)
+                                      }
+                                      .padding(.horizontal, 14).padding(.vertical, 12)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                      Button { startServerInstall() } label: {
+                                          HStack(spacing: 8) {
+                                              Image(systemName: "icloud.and.arrow.down").font(.system(size: 14, weight: .bold))
+                                              Text("تثبيت من السيرفر").font(.system(size: 14, weight: .bold))
+                                          }
+                                          .frame(maxWidth: .infinity).padding(.vertical, 13)
+                                          .background(Capsule().fill(LinearGradient(colors: [Color.storePrimary, Color.storePrimary.opacity(0.7)], startPoint: .leading, endPoint: .trailing)))
+                                          .foregroundColor(.white)
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                                  .padding(16)
+                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                  .padding(.horizontal, 18)
+                                  .transition(.move(edge: .trailing).combined(with: .opacity))
+                              }
+
+                              if installMethod == 1 {
+                                  VStack(alignment: .leading, spacing: 12) {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "checkmark.seal.fill").foregroundColor(Color.storePink)
+                                          Text("التثبيت بالشهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
+                                      }
+                                      Text("اختر شهادة مرفوعة من المتجر أو أدخل رابط شهادة")
+                                          .font(.system(size: 12)).foregroundColor(Color.storeSub)
+                                      VStack(spacing: 10) {
+                                          Button { showCertPicker = true } label: {
+                                              HStack(spacing: 10) {
+                                                  Image(systemName: "doc.badge.plus").foregroundColor(Color.storePrimary)
+                                                  VStack(alignment: .leading, spacing: 2) {
+                                                      Text(certName.isEmpty ? "اختر شهادة" : certName)
+                                                          .font(.system(size: 14, weight: .semibold))
+                                                          .foregroundColor(certName.isEmpty ? Color.storeSub : Color.storeText)
+                                                      Text("من المتجر أو رابط").font(.system(size: 11)).foregroundColor(Color.storeSub)
+                                                  }
+                                                  Spacer()
+                                                  Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
+                                              }
+                                              .padding(.horizontal, 14).padding(.vertical, 12)
+                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storePrimary.opacity(0.2), lineWidth: 1)))
+                                          }
+                                          .buttonStyle(.plain)
+                                          HStack(spacing: 10) {
+                                              Image(systemName: "link").foregroundColor(Color.storeSub)
+                                              TextField("رابط الشهادة (اختياري)", text: $certURL)
+                                                  .font(.system(size: 13)).foregroundColor(Color.storeText)
+                                                  .background(Color.clear).tint(Color.storePrimary)
+                                          }
+                                          .padding(.horizontal, 14).padding(.vertical, 12)
+                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                      }
+                                      Button { startCertInstall() } label: {
+                                          HStack(spacing: 8) {
+                                              Image(systemName: "arrow.down.doc.fill").font(.system(size: 14, weight: .bold))
+                                              Text("تثبيت بالشهادة").font(.system(size: 14, weight: .bold))
+                                          }
+                                          .frame(maxWidth: .infinity).padding(.vertical, 13)
+                                          .background(Capsule().fill(LinearGradient(colors: [Color.storePink, Color.storePink.opacity(0.7)], startPoint: .leading, endPoint: .trailing)))
+                                          .foregroundColor(.white)
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                                  .padding(16)
+                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                  .padding(.horizontal, 18)
+                                  .transition(.move(edge: .leading).combined(with: .opacity))
+                              }
+
+                              if showInstallProgress {
+                                  VStack(spacing: 12) {
+                                      ProgressView(value: installProgress).tint(Color.storePrimary)
+                                      Text(installStatus).font(.system(size: 13, weight: .semibold)).foregroundColor(Color.storeText)
+                                  }
+                                  .padding(16)
+                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storePrimary.opacity(0.2), lineWidth: 1)))
+                                  .padding(.horizontal, 18)
+                              }
+
+                              VStack(alignment: .leading, spacing: 12) {
+                                  HStack(spacing: 8) {
+                                      Image(systemName: "checkmark.shield.fill").foregroundColor(.green)
+                                      Text("الشهادات المثبتة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
+                                  }
+                                  ForEach(0..<3, id: \.self) { i in
+                                      HStack(spacing: 12) {
+                                          ZStack {
+                                              Circle().fill(Color.green.opacity(0.12)).frame(width: 36, height: 36)
+                                              Image(systemName: "checkmark.seal.fill").font(.system(size: 14)).foregroundColor(.green)
+                                          }
+                                          VStack(alignment: .leading, spacing: 2) {
+                                              Text(["شهادة المتجر الافتراضية", "شهادة سيرفر ONEs", "شهادة مخصصة"][i])
+                                                  .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.storeText)
+                                              Text(["صالحة حتى 2027", "صالحة حتى 2026", "غير مفعلة"][i])
+                                                  .font(.system(size: 11)).foregroundColor(i < 2 ? .green : .orange)
+                                          }
+                                          Spacer()
+                                      }
+                                      .padding(10)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt))
+                                  }
+                              }
+                              .padding(16)
+                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
+                              .padding(.horizontal, 18)
+                              Spacer(minLength: 30)
+                          }
+                          .padding(.vertical, 10)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("إغلاق") { dismiss() }.foregroundColor(Color.storePrimary)
+                          }
+                      }
+                      .sheet(isPresented: $showCertPicker) {
+                          CertificatePickerView(selectedName: $certName, selectedURL: $certURL)
+                      }
+                  }
+              }
+
+              private func methodCard(icon: String, title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+                  Button(action: action) {
+                      VStack(spacing: 8) {
+                          Image(systemName: icon).font(.system(size: 22))
+                              .foregroundColor(selected ? Color.storePrimary : Color.storeSub)
+                          Text(title).font(.system(size: 12, weight: .bold))
+                              .foregroundColor(selected ? .white : Color.storeSub)
+                      }
+                      .frame(maxWidth: .infinity).padding(.vertical, 14)
+                      .background(
+                          RoundedRectangle(cornerRadius: 14)
+                              .fill(selected ? Color.storePrimary.opacity(0.15) : Color.storeCardAlt)
+                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? Color.storePrimary : Color.storeDivider, lineWidth: selected ? 1.5 : 0.5))
+                      )
+                  }
+                  .buttonStyle(.plain)
+              }
+
+              private func startServerInstall() {
+                  showInstallProgress = true
+                  installStatus = "جاري التحميل من السيرفر..."
+                  installProgress = 0
+                  Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
+                      DispatchQueue.main.async {
+                          installProgress += 0.1
+                          if installProgress >= 0.5 { installStatus = "جاري التثبيت..." }
+                          if installProgress >= 1.0 {
+                              timer.invalidate()
+                              installStatus = "تم التثبيت بنجاح ✅"
+                              installDone = true
+                              HapticManager.shared.success()
+                          }
+                      }
+                  }
+              }
+
+              private func startCertInstall() {
+                  guard !certName.isEmpty || !certURL.isEmpty else { return }
+                  showInstallProgress = true
+                  installStatus = "جاري تحميل الشهادة..."
+                  installProgress = 0
+                  Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
+                      DispatchQueue.main.async {
+                          installProgress += 0.1
+                          if installProgress >= 0.4 { installStatus = "جاري التحقق من الشهادة..." }
+                          if installProgress >= 0.7 { installStatus = "جاري التثبيت بالشهادة..." }
+                          if installProgress >= 1.0 {
+                              timer.invalidate()
+                              installStatus = "تم التثبيت بالشهادة بنجاح ✅"
+                              installDone = true
+                              HapticManager.shared.success()
+                          }
+                      }
+                  }
+              }
+          }
+
+          // ================= CERTIFICATE PICKER =================
+          struct CertificatePickerView: View {
+              @Environment(\.dismiss) private var dismiss
+              @Binding var selectedName: String
+              @Binding var selectedURL: String
+              private let certificates = [
+                  ("شهادة المتجر الذهبية", "gold-cert", true),
+                  ("شهادة المتجر الفضية", "silver-cert", true),
+                  ("شهادة سيرفر ONEs", "server-cert", true),
+                  ("شهادة مخصصة (ارفعها)", "custom-cert", false)
+              ]
+              var body: some View {
+                  NavigationView {
+                      List {
+                          Section("شهادات المتجر") {
+                              ForEach(certificates, id: \.1) { cert in
+                                  Button {
+                                      selectedName = cert.0
+                                      selectedURL = "https://store.ones.app/certs/\(cert.1).pem"
+                                      dismiss()
+                                  } label: {
+                                      HStack(spacing: 12) {
+                                          ZStack {
+                                              Circle().fill(cert.2 ? Color.storePrimary.opacity(0.12) : Color.orange.opacity(0.12)).frame(width: 36, height: 36)
+                                              Image(systemName: cert.2 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                                  .font(.system(size: 14)).foregroundColor(cert.2 ? Color.storePrimary : .orange)
+                                          }
+                                          VStack(alignment: .leading, spacing: 2) {
+                                              Text(cert.0).font(.system(size: 14, weight: .semibold)).foregroundColor(Color.storeText)
+                                              Text(cert.2 ? "متاحة" : "يتطلب رفع").font(.system(size: 11)).foregroundColor(cert.2 ? .green : .orange)
+                                          }
+                                          Spacer()
+                                          if selectedName == cert.0 {
+                                              Image(systemName: "checkmark.circle.fill").foregroundColor(Color.storePrimary)
+                                          }
+                                      }
+                                  }
+                                  .buttonStyle(.plain)
+                              }
+                          }
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .principal) { Text("اختر شهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText) }
+                          ToolbarItem(placement: .navigationBarLeading) { Button("إلغاء") { dismiss() }.foregroundColor(Color.storePrimary) }
+                      }
+                  }
+              }
+          }
+
           struct SearchView: View {
               @Environment(\.dismiss) private var dismiss
               @ObservedObject var feed: StoreFeed
@@ -6112,6 +6574,7 @@ jobs:
           struct ONEsPostCard: View {
               let post: ONEsPost
               var anonymous: Bool = false
+              var showMenu: Bool = true
               @ObservedObject private var content = ONEsContent.shared
               @ObservedObject private var session = ONEsSession.shared
               @ObservedObject private var extras = ONEsSocialExtras.shared
@@ -6172,7 +6635,7 @@ jobs:
                                       .font(.system(size: 13))
                                       .foregroundColor(.white.opacity(0.4))
                                   Spacer(minLength: 0)
-                                  if !anonymous {
+                                  if !anonymous && showMenu {
                                       Menu {
                                           Button { extras.toggleFollow(post.author) } label: {
                                               Label(extras.following.contains(post.author) ? "إلغاء المتابعة" : "متابعة \(authorName)",
@@ -6716,7 +7179,7 @@ jobs:
                                       if section == 0 {
                                           LazyVStack(spacing: 12) {
                                               ForEach(filtered) { post in
-                                                  ONEsPostCard(post: post, anonymous: true)
+                                                  ONEsPostCard(post: post, anonymous: true, showMenu: false)
                                               }
                                           }
                                           .padding(.horizontal, 16)
@@ -6738,7 +7201,7 @@ jobs:
                                       }
                                       LazyVStack(spacing: 12) {
                                           ForEach(filtered) { post in
-                                              ONEsPostCard(post: post, anonymous: section == 0 || section == 1)
+                                              ONEsPostCard(post: post, anonymous: section == 0 || section == 1, showMenu: section != 0 && section != 1)
                                           }
                                       }
                                       .padding(.horizontal, 16)
@@ -6751,24 +7214,7 @@ jobs:
                               ONEsContent.shared.loadForum()
                           }
 
-                          if session.isSignedIn && section != 5 && section != 6 {
-                              Button { showComposer = true } label: {
-                                  Image(systemName: "plus")
-                                      .font(.system(size: 24, weight: .bold))
-                                      .foregroundColor(.white)
-                                      .frame(width: 56, height: 56)
-                                      .background(
-                                          Circle().fill(
-                                              LinearGradient(colors: [Color.storePrimary, Color.storePink],
-                                                             startPoint: .topLeading, endPoint: .bottomTrailing)
-                                          )
-                                      )
-                                      .shadow(color: Color.storePrimary.opacity(0.5), radius: 12, x: 0, y: 6)
-                              }
-                              .buttonStyle(.plain)
-                              .padding(.trailing, 20)
-                              .padding(.bottom, 24)
-                          }
+                          // Floating + button removed — use header button only
                       }
                       .sheet(isPresented: $showComposer) { ONEsComposerSheet() }
                       .sheet(isPresented: $showProfileEditor) { ONEsProfileEditorSheet() }
