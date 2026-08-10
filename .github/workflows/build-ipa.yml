@@ -38,8 +38,7 @@ jobs:
       - name: Install required tools
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install ldid zip 2>/dev/null || true
-          command -v ldid || { echo "ldid not installed"; exit 1; }
+          brew install zip 2>/dev/null || true
           command -v zip || { echo "zip not installed"; exit 1; }
 
       # =========================================================
@@ -142,7 +141,32 @@ jobs:
                   <string>UIInterfaceOrientationPortrait</string>
                   <string>UIInterfaceOrientationPortraitUpsideDown</string>
               </array>
-              <!-- App icons intentionally hidden: no CFBundleIconFile / CFBundleIcons keys. -->
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60@2x</string>
+                          <string>AppIcon60x60@3x</string>
+                      </array>
+                      <key>CFBundleIconIsPrerendered</key>
+                      <true/>
+                  </dict>
+              </dict>
+              <key>CFBundleIcons~ipad</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon76x76@2x</string>
+                          <string>AppIcon83.5x83.5@2x</string>
+                      </array>
+                      <key>CFBundleIconIsPrerendered</key>
+                      <true/>
+                  </dict>
+              </dict>
               <key>UIPrerenderedIcon</key>              <true/>
               <key>UILaunchScreen</key>
               <dict/>
@@ -925,13 +949,8 @@ jobs:
 
               public var deviceID: String {
                   let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  if !clean.isEmpty { return clean }
-                  if let saved = UserDefaults.standard.string(forKey: "activation_device_id_v1"), !saved.isEmpty {
-                      return saved
-                  }
-                  let generated = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-                  UserDefaults.standard.set(generated, forKey: "activation_device_id_v1")
-                  return generated
+                  // لا تستخدم أي معرّف بديل؛ توقيع Apple مرتبط بالـ UDID الرسمي فقط.
+                  return clean
               }
 
               private init() {
@@ -1067,6 +1086,11 @@ jobs:
               /// التحقق من صحة الاشتراك الحالي مع السيرفر
               public func verify(completion: ((Bool) -> Void)? = nil) {
                   guard !code.isEmpty else { completion?(false); return }
+                  guard !deviceID.isEmpty else {
+                      lastError = LS("ألصق UDID الرسمي للجهاز أولًا")
+                      completion?(false)
+                      return
+                  }
                   var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
@@ -1797,7 +1821,8 @@ jobs:
                   guard let req = authRequest("/auth/v1/signup",
                                               body: ["email": mail,
                                                      "password": password,
-                                                     "data": ["username": username]]) else {
+                                                      "data": ["username": username,
+                                                               "udid": ActivationManager.shared.deviceID]]) else {
                       completion?(false); return
                   }
                   URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
@@ -3190,16 +3215,6 @@ jobs:
                                   .background(Capsule().fill(Color.storePrimary))
                           }
                           .buttonStyle(.plain)
-                      } else {
-                          Button {
-                              HapticManager.shared.success()
-                              StoreInstaller.shared.install(app: app)
-                          } label: {
-                              Image(systemName: "arrow.down.circle.fill")
-                                  .font(.system(size: 27, weight: .semibold))
-                                  .foregroundColor(Color.storePrimary)
-                          }
-                          .buttonStyle(.plain)
                       }
                   }
                   .padding(14)
@@ -3535,18 +3550,6 @@ jobs:
                                           .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
                                   }
                                   Spacer()
-                                  Button {
-                                      HapticManager.shared.success()
-                                      StoreInstaller.shared.install(app: app)
-                                  } label: {
-                                      Image(systemName: "arrow.down.circle.fill")
-                                          .font(.system(size: 27, weight: .bold))
-                                          .foregroundColor(.white)
-                                          .frame(width: 40, height: 40)
-                                          .background(Circle().fill(Color.white.opacity(0.14)))
-                                  }
-                                  .buttonStyle(.plain)
-                                  .padding(.trailing, 6)
                               }
                               .padding(.horizontal, 20)
                               .padding(.top, 8)
@@ -3958,15 +3961,25 @@ jobs:
               }
 
               func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
+                   let activation = ActivationManager.shared
+                   guard !activation.deviceID.isEmpty else {
+                       StatusCenter.shared.show(text: "ألصق UDID الرسمي للجهاز أولًا")
+                       done(nil)
+                       return
+                   }
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
                       done(nil); return
                   }
                   var req = URLRequest(url: url, timeoutInterval: 25)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                   if !BackendAccount.shared.accessToken.isEmpty {
+                       req.setValue("Bearer \(BackendAccount.shared.accessToken)", forHTTPHeaderField: "Authorization")
+                   }
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code
+                       "udid": activation.deviceID,
+                       "code": activation.code,
+                       "account_id": BackendAccount.shared.remoteUserID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
                       var result: [String: Any]? = nil
@@ -3974,6 +3987,12 @@ jobs:
                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                          (obj["ok"] as? Bool) == true {
                           result = obj["certificate"] as? [String: Any]
+                       } else if let data = data,
+                                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                 let message = obj["message"] as? String {
+                           DispatchQueue.main.async {
+                               StatusCenter.shared.show(text: message)
+                           }
                       }
                       DispatchQueue.main.async { done(result) }
                   }.resume()
@@ -3994,15 +4013,26 @@ jobs:
 
               private func performInstall(bundleId: String?, name: String) {
                   guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
+                   let activation = ActivationManager.shared
+                   guard !activation.deviceID.isEmpty else {
+                       isWorking = false
+                       StatusCenter.shared.show(text: "ألصق UDID الرسمي للجهاز أولًا")
+                       return
+                   }
                   isWorking = true
                   StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
                   var req = URLRequest(url: url, timeoutInterval: 30)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                   if !BackendAccount.shared.accessToken.isEmpty {
+                       req.setValue("Bearer \(BackendAccount.shared.accessToken)", forHTTPHeaderField: "Authorization")
+                   }
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "bundle_id": bundleId ?? "",
                       "name": name,
-                      "udid": ActivationManager.shared.deviceID
+                       "udid": activation.deviceID,
+                       "code": activation.code,
+                       "account_id": BackendAccount.shared.remoteUserID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
@@ -4012,8 +4042,13 @@ jobs:
                               StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
                               return
                           }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
+                          let serverOK = (obj["ok"] as? Bool) == true
+                          let installURL = (obj["install_url"] as? String)
+                              ?? (obj["installation_url"] as? String)
+                          if serverOK,
+                              let installURL,
+                              let u = URL(string: installURL),
+                              u.scheme == "itms-services" {
                               UIApplication.shared.open(u)
                               ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
                               StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
@@ -4388,15 +4423,6 @@ jobs:
                                                   Text("\(app.category ?? "التطبيقات") · \(app.ipaSize ?? "-")").font(.system(size: 11)).foregroundColor(Color.storeSub)
                                               }
                                               Spacer()
-                                              Button {
-                                                  HapticManager.shared.success()
-                                                  StoreInstaller.shared.install(app: app)
-                                              } label: {
-                                                  Image(systemName: "arrow.down.circle.fill")
-                                                      .font(.system(size: 26, weight: .semibold))
-                                                      .foregroundColor(Color.storePrimary)
-                                              }
-                                              .buttonStyle(.plain)
                                               Image(systemName: "chevron.right").foregroundColor(Color.storeSub).font(.system(size: 12))
                                           }
                                           .padding(10)
@@ -7839,7 +7865,6 @@ jobs:
           IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
           IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
           IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
-          ICON_OBFUSCATION_KEY: ${{ secrets.ICON_OBFUSCATION_KEY }}
         run: |
           set -euo pipefail
           export COPYFILE_DISABLE=1
@@ -7848,6 +7873,7 @@ jobs:
           mkdir -p build-output/Payload/VIP21Store.app
           cp -X VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
           cp -X Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
+          cp -X Resources/AppIcon*.png               build-output/Payload/VIP21Store.app/
           cp -X Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
           cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
           cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
@@ -7858,64 +7884,46 @@ jobs:
           find build-output -name ".DS_Store" -delete
           find build-output -name "._*" -delete
 
-          if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
-            echo "::warning::Apple signing secrets are not configured; creating an unsigned IPA artifact."
-            echo "::warning::Add IOS_P12_BASE64, IOS_P12_PASSWORD, and IOS_MOBILEPROVISION_BASE64 together for real iPhone installation."
-            SIGNED_FOR_DEVICE=false
-          else
-            SIGNED_FOR_DEVICE=true
-          fi
+          : "${IOS_P12_BASE64:?IOS_P12_BASE64 is required; refusing to create an unsigned IPA.}"
+          : "${IOS_P12_PASSWORD:?IOS_P12_PASSWORD is required; refusing to create an unsigned IPA.}"
+          : "${IOS_MOBILEPROVISION_BASE64:?IOS_MOBILEPROVISION_BASE64 is required; refusing to create an unsigned IPA.}"
+          SIGNED_FOR_DEVICE=true
           echo "SIGNED_FOR_DEVICE=$SIGNED_FOR_DEVICE" >> "$GITHUB_ENV"
 
-          if [ "$SIGNED_FOR_DEVICE" = "true" ]; then
-            KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
-            KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-            P12_PATH="$RUNNER_TEMP/signing.p12"
-            PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
-            echo "$IOS_P12_BASE64" | base64 --decode > "$P12_PATH"
-            echo "$IOS_MOBILEPROVISION_BASE64" | base64 --decode > "$PROFILE_PATH"
-            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN"
-            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-            security import "$P12_PATH" -k "$KEYCHAIN" -P "$IOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-            security list-keychains -d user -s "$KEYCHAIN"
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          P12_PATH="$RUNNER_TEMP/signing.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          echo "$IOS_P12_BASE64" | base64 --decode > "$P12_PATH"
+          echo "$IOS_MOBILEPROVISION_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12_PATH" -k "$KEYCHAIN" -P "$IOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-            security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
-            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
-            PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
-            PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
-            PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
-            if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
+          PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
+          PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
+          if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ]; then
             echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
             exit 1
-            fi
-            cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
-            /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
-            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F\" '/Apple Development|Apple Distribution|iPhone Distribution|iPhone Developer/{print $2; exit}')
-            if [ -z "$SIGN_IDENTITY" ]; then
+          fi
+          if ! /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+            echo "::error::The profile must be Development or Ad Hoc and contain ProvisionedDevices. App Store profiles cannot install by OTA."
+            exit 1
+          fi
+          cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
+          /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
+          SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F\" '/Apple Distribution|iPhone Distribution|Apple Development|iPhone Developer/{print $2; exit}')
+          if [ -z "$SIGN_IDENTITY" ]; then
             echo "::error::No valid Apple code-signing identity was found in IOS_P12_BASE64."
             exit 1
-            fi
-            /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
-            /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
           fi
-
-          # Hide + encrypt the icon assets
-          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
-          mkdir -p build-output/Payload/VIP21Store.app/.private
-          for f in Resources/AppIcon*.png; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
-              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
-          done
-          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          echo "Icons hidden and stored encrypted under .private/"
+          /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
+          /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
 
           rm -f artifacts/21s.ipa
           find build-output -name ".DS_Store" -delete
@@ -7934,6 +7942,11 @@ jobs:
             echo "Error: IPA does not contain a valid App Bundle"
             exit 1
           fi
+          CHECK_DIR="$(mktemp -d)"
+          unzip -q artifacts/21s.ipa -d "$CHECK_DIR"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$CHECK_DIR/Payload/VIP21Store.app"
+          test -f "$CHECK_DIR/Payload/VIP21Store.app/embedded.mobileprovision"
+          rm -rf "$CHECK_DIR"
           echo "IPA: $(du -sh artifacts/21s.ipa)"
 
       - name: Verify IPA package
@@ -7997,7 +8010,9 @@ jobs:
           fi
           MANIFEST_CODE=$(curl -sS -o /tmp/manifest.plist -w "%{http_code}" "$MANIFEST_ENDPOINT")
           MANIFEST_TYPE=$(file -b --mime-type /tmp/manifest.plist || true)
-          if [ "$MANIFEST_CODE" != "200" ] || ! grep -q '<key>items</key>' /tmp/manifest.plist; then
+          if [ "$MANIFEST_CODE" != "200" ] \
+             || ! grep -q '<key>items</key>' /tmp/manifest.plist \
+             || ! grep -q '<string>https://' /tmp/manifest.plist; then
             echo "::error::The intermediary did not return a valid Apple manifest (HTTP $MANIFEST_CODE, $MANIFEST_TYPE)."
             head -c 300 /tmp/manifest.plist || true
             exit 1
@@ -8020,7 +8035,7 @@ jobs:
             echo "- Store: $INSTALL_SERVER/"
             echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
             echo "- Apple signed for normal iPhone: ${SIGNED_FOR_DEVICE:-false}"
-            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (unsigned IPA or no upload token)' }}"
+            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'not uploaded' }}"
             echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
