@@ -370,13 +370,11 @@ jobs:
 
               // Store surfaces
               static var storeBg: Color       { rgb(ThemeManager.p.bg) }
-              static var storeBG: Color       { rgb(ThemeManager.p.bg) }   // alias (uppercase) used in StoreView
               static var storeCard: Color     { rgb(ThemeManager.p.card) }
               static var storeCardAlt: Color  { rgb(ThemeManager.p.cardAlt) }
               static var storeText: Color     { rgb(ThemeManager.p.text) }
               static var storeSub: Color      { rgb(ThemeManager.p.sub) }
               static var storeDivider: Color  { rgb(ThemeManager.p.divider) }
-              static var storeLine: Color     { rgb(ThemeManager.p.divider) }  // alias used in StoreView overlays
           }
 
           extension UIImage {
@@ -2128,7 +2126,6 @@ jobs:
           import SwiftUI
           import UIKit
           import ImageIO
-          import UniformTypeIdentifiers
 
           // Brand colors
           extension Color {
@@ -2695,17 +2692,6 @@ jobs:
                               .badge(updates.recentCount)
                               .tag(2)
 
-                          CertificateSettingsView()
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: tab == 5 ? "person.badge.key.fill" : "person.badge.key")
-                                          .font(.system(size: 20))
-                                      Text(LS("الشهادة"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .tag(5)
-
                           ONEsForumTabView()
                               .tabItem {
                                   VStack(spacing: 2) {
@@ -3192,17 +3178,29 @@ jobs:
                           }
                       }
                       Spacer()
-                      Button {
-                          HapticManager.shared.success()
-                          StoreInstaller.shared.install(app: app)
-                      } label: {
-                          Text("تثبيت")
-                              .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.white)
-                              .padding(.horizontal, 14).padding(.vertical, 7)
-                              .background(Capsule().fill(Color.storePrimary))
+                      if showInstall {
+                          Button {
+                              HapticManager.shared.success()
+                              StoreInstaller.shared.install(app: app)
+                          } label: {
+                              Text("تثبيت")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14).padding(.vertical, 7)
+                                  .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                      } else {
+                          Button {
+                              HapticManager.shared.success()
+                              StoreInstaller.shared.install(app: app)
+                          } label: {
+                              Image(systemName: "arrow.down.circle.fill")
+                                  .font(.system(size: 27, weight: .semibold))
+                                  .foregroundColor(Color.storePrimary)
+                          }
+                          .buttonStyle(.plain)
                       }
-                      .buttonStyle(.plain)
                   }
                   .padding(14)
                   .background(
@@ -3537,6 +3535,18 @@ jobs:
                                           .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
                                   }
                                   Spacer()
+                                  Button {
+                                      HapticManager.shared.success()
+                                      StoreInstaller.shared.install(app: app)
+                                  } label: {
+                                      Image(systemName: "arrow.down.circle.fill")
+                                          .font(.system(size: 27, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .frame(width: 40, height: 40)
+                                          .background(Circle().fill(Color.white.opacity(0.14)))
+                                  }
+                                  .buttonStyle(.plain)
+                                  .padding(.trailing, 6)
                               }
                               .padding(.horizontal, 20)
                               .padding(.top, 8)
@@ -3936,376 +3946,80 @@ jobs:
               }
           }
 
-          // ================= USER CERTIFICATE (P12 + MOBILEPROVISION) =================
-          struct CertificateDocumentPicker: UIViewControllerRepresentable {
-              enum Kind { case p12, mobileProvision }
-              let kind: Kind
-              let completion: (URL) -> Void
-              @Environment(\.dismiss) private var dismiss
-
-              func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
-              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-                  let ext = kind == .p12 ? "p12" : "mobileprovision"
-                  let type = UTType(filenameExtension: ext) ?? .data
-                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [type, .data], asCopy: true)
-                  picker.allowsMultipleSelection = false
-                  picker.delegate = context.coordinator
-                  return picker
-              }
-              func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
-
-              final class Coordinator: NSObject, UIDocumentPickerDelegate {
-                  let parent: CertificateDocumentPicker
-                  init(parent: CertificateDocumentPicker) { self.parent = parent }
-                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                      guard let url = urls.first else { return }
-                      parent.completion(url)
-                      parent.dismiss()
-                  }
-                  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { parent.dismiss() }
-              }
-          }
-
-          @MainActor
-          final class UserCertificateStore: ObservableObject {
-              static let shared = UserCertificateStore()
-              @Published var p12Name = ""
-              @Published var profileName = ""
-              @Published var password = ""
-              @Published var isUploading = false
-              @Published var isReady = false
-              private var p12Data: Data?
-              private var profileData: Data?
-              private init() {}
-
-              func selectP12(_ url: URL) {
-                  guard url.pathExtension.lowercased() == "p12", let data = try? Data(contentsOf: url), !data.isEmpty else {
-                      StatusCenter.shared.show(text: "اختر ملف شهادة بصيغة P12 صالح")
-                      return
-                  }
-                  p12Data = data
-                  p12Name = url.lastPathComponent
-                  isReady = false
-              }
-
-              func selectProfile(_ url: URL) {
-                  guard url.pathExtension.lowercased() == "mobileprovision", let data = try? Data(contentsOf: url), !data.isEmpty else {
-                      StatusCenter.shared.show(text: "اختر ملف mobileprovision صالح")
-                      return
-                  }
-                  profileData = data
-                  profileName = url.lastPathComponent
-                  isReady = false
-              }
-
-              private func multipartRequest(path: String, boundary: String, body: Data) -> URLRequest? {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + path) else { return nil }
-                  var request = URLRequest(url: url, timeoutInterval: 120)
-                  request.httpMethod = "POST"
-                  request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                  request.setValue("application/json", forHTTPHeaderField: "Accept")
-                  request.setValue(ActivationManager.shared.deviceID, forHTTPHeaderField: "X-Device-UDID")
-                  request.setValue(ActivationManager.shared.code, forHTTPHeaderField: "X-Activation-Code")
-                  request.httpBody = body
-                  return request
-              }
-
-              private func addField(_ name: String, _ value: String, boundary: String, to body: inout Data) {
-                  body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8) ?? Data())
-              }
-
-              private func addFile(_ name: String, filename: String, mime: String, data: Data, boundary: String, to body: inout Data) {
-                  body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: \(mime)\r\n\r\n".data(using: .utf8) ?? Data())
-                  body.append(data)
-                  body.append("\r\n".data(using: .utf8) ?? Data())
-              }
-
-              func upload() {
-                  guard !ActivationManager.shared.deviceID.isEmpty, !ActivationManager.shared.code.isEmpty else {
-                      StatusCenter.shared.show(text: "فعّل جهازك أولًا")
-                      return
-                  }
-                  guard let p12Data = p12Data, let profileData = profileData else {
-                      StatusCenter.shared.show(text: "أضف ملف P12 وملف mobileprovision")
-                      return
-                  }
-                  guard !password.isEmpty else {
-                      StatusCenter.shared.show(text: "أدخل كلمة مرور شهادة P12")
-                      return
-                  }
-                  isUploading = true
-                  isReady = false
-                  StatusCenter.shared.show(text: "جارٍ رفع الشهادة والتحقق منها...")
-
-                  let boundary = "Boundary-\(UUID().uuidString)"
-                  var body = Data()
-                  addField("udid", ActivationManager.shared.deviceID, boundary: boundary, to: &body)
-                  addField("code", ActivationManager.shared.code, boundary: boundary, to: &body)
-                  addField("password", password, boundary: boundary, to: &body)
-                  addField("p12_password", password, boundary: boundary, to: &body)
-                  addFile("p12", filename: p12Name, mime: "application/x-pkcs12", data: p12Data, boundary: boundary, to: &body)
-                  addFile("certificate", filename: p12Name, mime: "application/x-pkcs12", data: p12Data, boundary: boundary, to: &body)
-                  addFile("mobileprovision", filename: profileName, mime: "application/octet-stream", data: profileData, boundary: boundary, to: &body)
-                  addFile("provisioning_profile", filename: profileName, mime: "application/octet-stream", data: profileData, boundary: boundary, to: &body)
-                  body.append("--\(boundary)--\r\n".data(using: .utf8) ?? Data())
-                  upload(path: "/api/public/store/certificate/upload", boundary: boundary, body: body, allowFallback: true)
-              }
-
-              private func upload(path: String, boundary: String, body: Data, allowFallback: Bool) {
-                  guard let request = multipartRequest(path: path, boundary: boundary, body: body) else {
-                      isUploading = false
-                      StatusCenter.shared.show(text: "رابط السيرفر غير صالح")
-                      return
-                  }
-                  URLSession.shared.dataTask(with: request) { data, response, error in
-                      let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                      var object: [String: Any] = [:]
-                      if let data = data { object = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:] }
-                      if allowFallback && (status == 404 || status == 405) {
-                          // Re-enter on the MainActor: `UserCertificateStore` is @MainActor
-                          // and URLSession's completion runs on a background queue.
-                          Task { @MainActor in
-                              self.upload(path: "/api/public/store/certificate", boundary: boundary, body: body, allowFallback: false)
-                          }
-                          return
-                      }
-                      DispatchQueue.main.async {
-                          self.isUploading = false
-                          if error == nil && (200..<300).contains(status) && (object["ok"] as? Bool) != false {
-                              self.isReady = true
-                              self.password = ""
-                              StatusCenter.shared.show(text: "تم حفظ الشهادة وربطها بجهازك")
-                          } else {
-                              let message = (object["message"] as? String) ?? (object["error"] as? String) ?? error?.localizedDescription ?? "رفض السيرفر ملفات الشهادة"
-                              StatusCenter.shared.show(text: message)
-                          }
-                      }
-                  }.resume()
-              }
-          }
-
-          struct CertificateSettingsView: View {
-              @ObservedObject private var store = UserCertificateStore.shared
-              @State private var picker: CertificateDocumentPicker.Kind?
-
-              var body: some View {
-                  NavigationStack {
-                      ScrollView {
-                          VStack(spacing: 18) {
-                              VStack(alignment: .leading, spacing: 8) {
-                                  Text("شهادة التثبيت").font(.system(size: 28, weight: .bold)).foregroundColor(Color.storeText)
-                                  Text("اربط شهادة P12 وملف mobileprovision بجهازك ليوقّع السيرفر التطبيقات قبل تثبيتها.")
-                                      .font(.system(size: 14)).foregroundColor(Color.storeSub).fixedSize(horizontal: false, vertical: true)
-                              }.frame(maxWidth: .infinity, alignment: .leading)
-
-                              certificateFileRow(title: "شهادة P12", filename: store.p12Name, icon: "key.fill") { picker = .p12 }
-                              certificateFileRow(title: "ملف mobileprovision", filename: store.profileName, icon: "doc.badge.gearshape.fill") { picker = .mobileProvision }
-
-                              SecureField("كلمة مرور P12", text: $store.password)
-                                  .textContentType(.password)
-                                  .padding(14)
-                                  .background(Color.storeCard)
-                                  .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                  .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.storeLine, lineWidth: 1))
-
-                              Button(action: { store.upload() }) {
-                                  HStack(spacing: 9) {
-                                      if store.isUploading { ProgressView().tint(.white) }
-                                      Image(systemName: store.isReady ? "checkmark.shield.fill" : "icloud.and.arrow.up.fill")
-                                      Text(store.isUploading ? "جارٍ الحفظ..." : (store.isReady ? "الشهادة جاهزة للتثبيت" : "حفظ وربط الشهادة"))
-                                          .font(.system(size: 15, weight: .bold))
-                                  }
-                                  .foregroundColor(.white).frame(maxWidth: .infinity).padding(.vertical, 14)
-                                  .background(Color.storePrimary).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                              }
-                              .disabled(store.isUploading)
-                          }
-                          .padding(20)
-                      }
-                      .background(Color.storeBG.ignoresSafeArea())
-                      .sheet(item: $picker) { kind in
-                          CertificateDocumentPicker(kind: kind) { url in
-                              if kind == .p12 { store.selectP12(url) } else { store.selectProfile(url) }
-                          }
-                      }
-                  }
-              }
-
-              private func certificateFileRow(title: String, filename: String, icon: String, action: @escaping () -> Void) -> some View {
-                  Button(action: action) {
-                      HStack(spacing: 12) {
-                          Image(systemName: icon).font(.system(size: 22)).foregroundColor(Color.storePrimary).frame(width: 34)
-                          VStack(alignment: .leading, spacing: 3) {
-                              Text(title).font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                              Text(filename.isEmpty ? "اضغط لاختيار الملف" : filename).font(.system(size: 12)).foregroundColor(Color.storeSub).lineLimit(1)
-                          }
-                          Spacer()
-                          Image(systemName: filename.isEmpty ? "plus.circle.fill" : "checkmark.circle.fill").foregroundColor(Color.storePrimary)
-                      }
-                      .padding(14).background(Color.storeCard).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                      .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.storeLine, lineWidth: 1))
-                  }
-              }
-          }
-
-          extension CertificateDocumentPicker.Kind: Identifiable {
-              var id: String { self == .p12 ? "p12" : "mobileprovision" }
-          }
-
-          // ================= INSTALLER (REAL OTA / MULTI CERT) =================
+          // ================= INSTALLER =================
           @MainActor
           final class StoreInstaller: ObservableObject {
               static let shared = MainActor.assumeIsolated { StoreInstaller() }
               @Published var isWorking: Bool = false
               private init() {}
 
-              // MARK: helpers
-              private var udid: String { ActivationManager.shared.deviceID }
-              private var code: String { ActivationManager.shared.code }
-
-              private func jsonRequest(_ path: String, body: [String: Any], timeout: TimeInterval = 40) -> URLRequest? {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + path) else { return nil }
-                  var req = URLRequest(url: url, timeoutInterval: timeout)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.setValue("application/json", forHTTPHeaderField: "Accept")
-                  req.setValue(udid, forHTTPHeaderField: "X-Device-UDID")
-                  req.setValue(code, forHTTPHeaderField: "X-Activation-Code")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                  return req
-              }
-
-              /// Turns whatever the server returns into a valid itms-services install URL.
-              private func itmsURL(from raw: String) -> URL? {
-                  let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard !value.isEmpty else { return nil }
-                  if value.lowercased().hasPrefix("itms-services://") {
-                      return URL(string: value)
-                  }
-                  // https manifest (.plist) or any manifest endpoint -> wrap it
-                  let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-                  let encoded = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-                  return URL(string: "itms-services://?action=download-manifest&url=\(encoded)")
-              }
-
-              private func manifestValue(_ obj: [String: Any]) -> String? {
-                  // itms link first, then manifest/plist links produced by the panel
-                  for key in ["itms_url", "itms", "install_url", "manifest_url", "plist_url", "manifest", "plist", "url"] {
-                      if let v = obj[key] as? String, !v.trimmingCharacters(in: .whitespaces).isEmpty {
-                          return v
-                      }
-                  }
-                  if let nested = obj["data"] as? [String: Any] { return manifestValue(nested) }
-                  return nil
-              }
-
-              private func serverMessage(_ obj: [String: Any]?) -> String {
-                  guard let obj = obj else { return "تعذّر الاتصال بسيرفر المتجر" }
-                  for key in ["message", "error", "detail", "reason"] {
-                      if let v = obj[key] as? String, !v.isEmpty { return v }
-                  }
-                  return "التثبيت غير متاح حاليًا"
-              }
-
-              private func finish(_ text: String) {
-                  isWorking = false
-                  StatusCenter.shared.show(text: text)
-              }
-
-              // MARK: public entry points
               func install(app: StoreAPIApp) {
                   install(bundleId: app.bundleId, name: app.name)
               }
 
-              /// Reads the certificate that the control panel issued for THIS device (UDID + code).
               func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
-                  guard let req = jsonRequest("/api/public/store/certificate",
-                                              body: ["udid": udid, "code": code],
-                                              timeout: 30) else { done(nil); return }
-                  URLSession.shared.dataTask(with: req) { data, response, _ in
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
+                      done(nil); return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "udid": ActivationManager.shared.deviceID,
+                      "code": ActivationManager.shared.code
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
                       var result: [String: Any]? = nil
-                      let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                      if (200..<300).contains(status), let data = data,
-                         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-                          if let cert = obj["certificate"] as? [String: Any] {
-                              result = cert
-                          } else if (obj["ok"] as? Bool) == true {
-                              result = obj
-                          }
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                         (obj["ok"] as? Bool) == true {
+                          result = obj["certificate"] as? [String: Any]
                       }
                       DispatchQueue.main.async { done(result) }
                   }.resume()
               }
 
               func install(bundleId: String?, name: String) {
-                  let bid = (bundleId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard !udid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                      finish("سجّل الدخول وفعّل جهازك أولًا")
-                      return
-                  }
                   isWorking = true
                   StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
                   fetchCertificate { cert in
-                      guard let cert = cert else {
-                          self.finish("لا توجد شهادة مرتبطة بجهازك، تواصل مع الدعم")
+                      guard cert != nil else {
+                          self.isWorking = false
+                          StatusCenter.shared.show(text: "لا توجد شهادة مرتبطة بجهازك، تواصل مع الدعم")
                           return
                       }
-                      // certificate id is forwarded so the panel signs with the exact
-                      // (multi) certificate assigned to this account.
-                      var certID: String? = nil
-                      for key in ["id", "cert_id", "certificate_id", "uuid"] {
-                          if let v = cert[key] as? String, !v.isEmpty { certID = v; break }
-                          if let n = cert[key] as? Int { certID = String(n); break }
-                      }
-                      self.performInstall(bundleId: bid, name: name, certID: certID)
+                      self.performInstall(bundleId: bundleId, name: name)
                   }
               }
 
-              private func performInstall(bundleId: String, name: String, certID: String?) {
-                  var body: [String: Any] = [
-                      "bundle_id": bundleId,
-                      "name": name,
-                      "udid": udid,
-                      "code": code
-                  ]
-                  if let certID = certID { body["certificate_id"] = certID }
-
-                  guard let req = jsonRequest("/api/public/store/install-by-bundle", body: body) else {
-                      finish("رابط السيرفر غير صالح")
-                      return
-                  }
+              private func performInstall(bundleId: String?, name: String) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
                   isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت بشهادتك...")
-
-                  URLSession.shared.dataTask(with: req) { data, response, error in
+                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
+                  var req = URLRequest(url: url, timeoutInterval: 30)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "bundle_id": bundleId ?? "",
+                      "name": name,
+                      "udid": ActivationManager.shared.deviceID
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
-                          if let error = error {
-                              self.finish("تعذّر الاتصال بالسيرفر: \(error.localizedDescription)")
-                              return
-                          }
-                          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                          var obj: [String: Any]? = nil
-                          if let data = data {
-                              obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                          }
-                          guard (200..<300).contains(status) else {
-                              self.finish(self.serverMessage(obj))
-                              return
-                          }
-                          guard let obj = obj, let raw = self.manifestValue(obj), let link = self.itmsURL(from: raw) else {
-                              self.finish(self.serverMessage(obj))
-                              return
-                          }
                           self.isWorking = false
-                          UIApplication.shared.open(link, options: [:]) { opened in
-                              DispatchQueue.main.async {
-                                  if opened {
-                                      ONEsContent.shared.bumpInstall(bundleID: bundleId, name: name)
-                                      StatusCenter.shared.show(text: "تأكيد التثبيت من الشاشة الرئيسية")
-                                  } else {
-                                      StatusCenter.shared.show(text: "تعذّر فتح رابط التثبيت، حاول مرة أخرى")
-                                  }
-                              }
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
+                              StatusCenter.shared.show(text: msg)
                           }
                       }
                   }.resume()
