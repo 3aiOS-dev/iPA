@@ -2694,18 +2694,6 @@ jobs:
                               }
                               .tag(0)
 
-                          FavoritesView(feed: feed, onMenu: {  })
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: tab == 1 ? "heart.fill" : "heart")
-                                          .font(.system(size: 20))
-                                      Text(LS("المفضلة"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .badge(favs.items.count)
-                              .tag(1)
-
                           AppsListView(feed: feed, onMenu: {  })
                               .tabItem {
                                   VStack(spacing: 2) {
@@ -2754,6 +2742,11 @@ jobs:
                       StatusCenter.shared.start()
                       NotificationsManager.shared.requestAuthorization()
                       ONEsContent.shared.loadStoreContent()
+                      ONEsContent.shared.loadSources()
+                      ONEsContent.shared.loadInstalls()
+                      ONEsContent.shared.loadNotifications()
+                      ONEsContent.shared.loadMyReports()
+                      ONEsContent.shared.startPolling()
                   }
                   .sheet(isPresented: $showSearch) { SearchView(feed: feed) }
                   .environment(\.locale, lang.locale)
@@ -2792,8 +2785,28 @@ jobs:
           }
 
           struct ONEsTopBar: View {
+              @ObservedObject private var content = ONEsContent.shared
+              @State private var showInbox = false
+
               var body: some View {
                   HStack {
+                      Button { showInbox = true } label: {
+                          ZStack(alignment: .topTrailing) {
+                              Image(systemName: "bell.fill")
+                                  .font(.system(size: 18, weight: .bold))
+                                  .foregroundColor(Color.storeText)
+                                  .frame(width: 34, height: 34)
+                              if content.inboxUnread > 0 {
+                                  Text("\(content.inboxUnread)")
+                                      .font(.system(size: 9, weight: .black))
+                                      .foregroundColor(.white)
+                                      .padding(4)
+                                      .background(Circle().fill(Color.red))
+                                      .offset(x: 2, y: -2)
+                              }
+                          }
+                      }
+                      .buttonStyle(.plain)
                       Spacer()
                       HStack(spacing: 10) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -2802,6 +2815,7 @@ jobs:
                               .foregroundColor(Color.storeText)
                       }
                       Spacer()
+                      Color.clear.frame(width: 34, height: 34)
                   }
                   .padding(.horizontal, 18)
                   .padding(.top, 8)
@@ -2815,6 +2829,11 @@ jobs:
                               }
                           )
                   )
+                  .sheet(isPresented: $showInbox) { ONEsInboxSheet() }
+                  .onAppear {
+                      ONEsContent.shared.loadNotifications()
+                      ONEsContent.shared.loadMyReports()
+                  }
               }
           }
 
@@ -3537,13 +3556,7 @@ jobs:
                           .padding(.horizontal, 20)
                           .offset(y: -40)
 
-                          HStack {
-                              StatCell(top: "v\(app.bundleVersion ?? "-")", bottom: "الإصدار")
-                              Divider().frame(height: 40)
-                              StatCell(top: app.ipaSize ?? "-", bottom: "الحجم")
-                              Divider().frame(height: 40)
-                              StatCell(top: (app.host ?? "-").capitalized, bottom: "المصدر")
-                          }
+                          ONEsAppStatsRow(app: app)
                           .padding(.horizontal, 30)
                           .offset(y: -20)
 
@@ -3980,6 +3993,7 @@ jobs:
                           if let installURL = obj["install_url"] as? String,
                              let u = URL(string: installURL) {
                               UIApplication.shared.open(u)
+                              ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
                               StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
                           } else {
                               let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
@@ -4314,6 +4328,30 @@ jobs:
                           .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
                           .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 0.5))
                           .padding(.horizontal, 16).padding(.top, 8)
+
+                          if !query.trimmingCharacters(in: .whitespaces).isEmpty && !results.isEmpty {
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 8) {
+                                      ForEach(results.prefix(8)) { s in
+                                          Button { query = s.name } label: {
+                                              HStack(spacing: 6) {
+                                                  Image(systemName: "magnifyingglass")
+                                                      .font(.system(size: 10))
+                                                  Text(s.name)
+                                                      .font(.system(size: 12, weight: .semibold))
+                                                      .lineLimit(1)
+                                              }
+                                              .foregroundColor(Color.storeText)
+                                              .padding(.horizontal, 12).padding(.vertical, 7)
+                                              .background(Capsule().fill(Color.storeCard))
+                                          }
+                                          .buttonStyle(.plain)
+                                      }
+                                  }
+                                  .padding(.horizontal, 16)
+                              }
+                              .padding(.top, 8)
+                          }
 
                           ScrollView {
                               LazyVStack(spacing: 10) {
@@ -4653,7 +4691,31 @@ jobs:
           }
 
           struct ONEsComment: Identifiable {
-              let id: String, postID: String, author: String, body: String, createdAt: String
+              let id: String, postID: String, author: String, authorName: String
+              let body: String, createdAt: String, parentID: String
+          }
+
+          struct ONEsSource: Identifiable {
+              let id: String, name: String, link: String, icon: String
+          }
+
+          struct ONEsReportItem: Identifiable {
+              let id: String, appName: String, message: String, status: String, reply: String, createdAt: String
+              var statusLabel: String {
+                  switch status {
+                  case "new": return "جديد"
+                  case "working": return "قيد المعالجة"
+                  case "done": return "تم الحل"
+                  default: return status
+                  }
+              }
+              var statusColor: Color {
+                  switch status {
+                  case "new": return .orange
+                  case "working": return .blue
+                  default: return .green
+                  }
+              }
           }
 
           // ================= SESSION =================
@@ -4747,7 +4809,13 @@ jobs:
               @Published var repostedIDs: Set<String> = []
               @Published var notifications: [ONEsNotification] = []
               @Published var unreadNotifs: Int = 0
+              @Published var sources: [ONEsSource] = []
+              @Published var installs: [String: Int] = [:]
+              @Published var myReports: [ONEsReportItem] = []
               @Published var isLoading = false
+
+              private var pollTimer: Timer? = nil
+              var inboxUnread: Int { unreadNotifs + myReports.filter { !$0.reply.isEmpty }.count }
 
               private let kLastSeenNotif = "ones_last_seen_notif_v2"
               private let kLocalAvatar   = "ones_my_avatar_v2"
@@ -4923,7 +4991,8 @@ jobs:
               }
 
               // ---- Publish (with optional image + auto-broadcast) ----
-              func publish(body: String, kind: String, imageBase64: String = "", completion: @escaping (Bool) -> Void) {
+              func publish(body: String, kind: String, imageBase64: String = "",
+                           videoBase64: String = "", completion: @escaping (Bool) -> Void) {
                   let s = ONEsSession.shared
                   guard !s.userID.isEmpty else { completion(false); return }
                   var payload: [String: Any] = [
@@ -4932,6 +5001,7 @@ jobs:
                       "kind": kind
                   ]
                   if !imageBase64.isEmpty { payload["image_url"] = imageBase64 }
+                  if !videoBase64.isEmpty { payload["video_url"] = videoBase64 }
                   ONEsCloud.send("/rest/v1/posts", method: "POST", body: payload, token: s.token) { ok, json in
                       if ok {
                           let newID = S(json?["id"])
@@ -5052,6 +5122,120 @@ jobs:
                       }
                   }
               }
+
+              // ---- Full profile (display name + username + bio) ----
+              func setMyProfile(displayName: String, username: String, bio: String,
+                                completion: @escaping (Bool) -> Void) {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { completion(false); return }
+                  var payload: [String: Any] = [
+                      "id": s.userID,
+                      "updated_at": ISO8601DateFormatter().string(from: Date())
+                  ]
+                  let dn = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                  let un = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                  if !dn.isEmpty { payload["display_name"] = dn }
+                  if !un.isEmpty { payload["username"] = un }
+                  payload["bio"] = bio
+                  ONEsCloud.send("/rest/v1/profiles?id=eq.\(s.userID)", method: "PATCH",
+                                 body: payload, token: s.token) { ok, _ in
+                      DispatchQueue.main.async {
+                          if ok {
+                              if !dn.isEmpty { self.names[s.userID] = dn }
+                              self.bios[s.userID] = bio
+                              self.loadForum()
+                          }
+                          completion(ok)
+                      }
+                  }
+              }
+
+              // ---- Sources (رابط مصدر) ----
+              func loadSources() {
+                  ONEsCloud.rows("/rest/v1/sources?active=eq.true&order=sort_order.asc") { rows in
+                      self.sources = rows.map {
+                          ONEsSource(id: S($0["id"]), name: S($0["name"]),
+                                     link: S($0["link_url"]), icon: S($0["icon_url"]))
+                      }
+                  }
+              }
+
+              // ---- Install counters ----
+              func loadInstalls() {
+                  ONEsCloud.rows("/rest/v1/app_installs?select=bundle_id,install_count&limit=1000") { rows in
+                      var map: [String: Int] = [:]
+                      for r in rows { map[S(r["bundle_id"])] = I(r["install_count"]) }
+                      self.installs = map
+                  }
+              }
+
+              func bumpInstall(bundleID: String, name: String) {
+                  guard !bundleID.isEmpty else { return }
+                  let payload: [String: Any] = ["_bundle_id": bundleID, "_app_name": name]
+                  ONEsCloud.send("/rest/v1/rpc/bump_install", method: "POST", body: payload,
+                                 token: ONEsSession.shared.token) { _, _ in
+                      DispatchQueue.main.async {
+                          self.installs[bundleID] = (self.installs[bundleID] ?? 0) + 1
+                          self.loadInstalls()
+                      }
+                  }
+              }
+
+              // ---- My reports + admin replies ----
+              func loadMyReports() {
+                  let s = ONEsSession.shared
+                  guard !s.userID.isEmpty else { self.myReports = []; return }
+                  ONEsCloud.rows("/rest/v1/reports?select=*&reporter_id=eq.\(s.userID)&order=created_at.desc&limit=60",
+                                 token: s.token) { rows in
+                      let list = rows.map {
+                          ONEsReportItem(id: S($0["id"]), appName: S($0["app_name"]), message: S($0["message"]),
+                                         status: S($0["status"]), reply: S($0["admin_reply"]),
+                                         createdAt: S($0["created_at"]))
+                      }
+                      DispatchQueue.main.async {
+                          self.myReports = list
+                          self.fireReplyNotifications(list)
+                      }
+                  }
+              }
+
+              private let kSeenReplies = "ones_seen_report_replies_v1"
+
+              private func fireReplyNotifications(_ list: [ONEsReportItem]) {
+                  var seen = Set(UserDefaults.standard.stringArray(forKey: kSeenReplies) ?? [])
+                  let center = UNUserNotificationCenter.current()
+                  for r in list where !r.reply.isEmpty {
+                      let key = r.id + "|" + String(r.reply.hashValue)
+                      if seen.contains(key) { continue }
+                      seen.insert(key)
+                      let content = UNMutableNotificationContent()
+                      content.title = "📩  رد الإدارة على بلاغك"
+                      content.body = r.reply
+                      content.sound = .default
+                      center.add(UNNotificationRequest(identifier: key, content: content, trigger: nil),
+                                 withCompletionHandler: nil)
+                  }
+                  UserDefaults.standard.set(Array(seen), forKey: kSeenReplies)
+              }
+
+              // ---- Polling so notifications arrive even without opening the tab ----
+              func startPolling() {
+                  pollTimer?.invalidate()
+                  let t = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { _ in
+                      self.loadNotifications()
+                      self.loadMyReports()
+                      self.loadStoreContent()
+                  }
+                  RunLoop.main.add(t, forMode: .common)
+                  pollTimer = t
+              }
+
+              func refreshInBackground() {
+                  loadNotifications()
+                  loadMyReports()
+                  loadStoreContent()
+                  loadInstalls()
+              }
           }
 
           // ================= EXTRAS (comments + bookmarks + following) =================
@@ -5087,8 +5271,10 @@ jobs:
                   ONEsCloud.rows("/rest/v1/post_comments?select=*&post_id=eq.\(postID)&order=created_at.asc&limit=200",
                                  token: token) { rows in
                       let list = rows.map {
-                          ONEsComment(id: S($0["id"]), postID: S($0["post_id"]), author: S($0["author_id"]),
-                                      body: S($0["body"]), createdAt: S($0["created_at"]))
+                          ONEsComment(id: S($0["id"]), postID: S($0["post_id"]), author: S($0["user_id"]),
+                                      authorName: S($0["author_name"]),
+                                      body: S($0["body"]), createdAt: S($0["created_at"]),
+                                      parentID: S($0["parent_id"]))
                       }
                       DispatchQueue.main.async {
                           self.comments[postID] = list
@@ -5097,12 +5283,15 @@ jobs:
                   }
               }
 
-              func addComment(postID: String, body: String, completion: @escaping (Bool) -> Void) {
+              func addComment(postID: String, body: String, parentID: String = "",
+                              completion: @escaping (Bool) -> Void) {
                   let s = ONEsSession.shared
                   guard !s.userID.isEmpty, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                       completion(false); return
                   }
-                  let payload: [String: Any] = ["post_id": postID, "author_id": s.userID, "body": body]
+                  var payload: [String: Any] = ["post_id": postID, "user_id": s.userID, "body": body,
+                                                "author_name": s.username]
+                  if !parentID.isEmpty { payload["parent_id"] = parentID }
                   ONEsCloud.send("/rest/v1/post_comments", method: "POST", body: payload, token: s.token) { ok, _ in
                       if ok {
                           self.loadComments(for: postID)
@@ -5857,6 +6046,7 @@ jobs:
               @Environment(\.dismiss) private var dismiss
               @State private var draft = ""
               @State private var busy = false
+              @State private var replyTo: ONEsComment? = nil
 
               var body: some View {
                   VStack(spacing: 0) {
@@ -5901,7 +6091,10 @@ jobs:
                                   .frame(maxWidth: .infinity)
                                   .padding(.top, 40)
                               }
-                              ForEach(list) { c in
+                              ForEach(list.filter { $0.parentID.isEmpty }) { c in
+                                  ONEsCommentRow(comment: c, all: list, depth: 0, replyTo: $replyTo)
+                              }
+                              ForEach([ONEsComment]()) { c in
                                   let name = content.names[c.author] ?? "مستخدم"
                                   HStack(alignment: .top, spacing: 10) {
                                       ONEsAvatar(name: name, uid: c.author, size: 34)
@@ -5932,6 +6125,24 @@ jobs:
                       }
 
                       if session.isSignedIn {
+                          if let r = replyTo {
+                              HStack(spacing: 8) {
+                                  Image(systemName: "arrowshape.turn.up.left.fill")
+                                      .font(.system(size: 11))
+                                      .foregroundColor(Color.storePrimary)
+                                  Text("ترد على \(content.names[r.author] ?? (r.authorName.isEmpty ? "مستخدم" : r.authorName))")
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(.white.opacity(0.7))
+                                  Spacer()
+                                  Button { replyTo = nil } label: {
+                                      Image(systemName: "xmark.circle.fill")
+                                          .font(.system(size: 14))
+                                          .foregroundColor(.white.opacity(0.4))
+                                  }
+                                  .buttonStyle(.plain)
+                              }
+                              .padding(.horizontal, 16).padding(.top, 8)
+                          }
                           HStack(spacing: 10) {
                               ONEsAvatar(name: session.username, uid: session.userID, size: 32)
                               TextField("", text: $draft, prompt: Text("أضف تعليقًا…").foregroundColor(.white.opacity(0.35)), axis: .vertical)
@@ -5942,9 +6153,10 @@ jobs:
                                   .background(Capsule().fill(Color.white.opacity(0.08)))
                               Button {
                                   busy = true
-                                  extras.addComment(postID: post.id, body: draft) { ok in
+                                  extras.addComment(postID: post.id, body: draft,
+                                                    parentID: replyTo?.id ?? "") { ok in
                                       busy = false
-                                      if ok { draft = "" }
+                                      if ok { draft = ""; replyTo = nil }
                                   }
                               } label: {
                                   Image(systemName: busy ? "hourglass" : "paperplane.fill")
@@ -5980,6 +6192,8 @@ jobs:
               @State private var busy = false
               @State private var attachedImage: UIImage? = nil
               @State private var showPicker = false
+              @State private var attachedVideo: String = ""
+              @State private var showVideoPicker = false
               @State private var broadcastOn = true
 
               private let maxChars = 500
@@ -5998,7 +6212,8 @@ jobs:
                           Button {
                               busy = true
                               let imgB64 = (attachedImage.flatMap { ONEsImageUtil.toBase64JPEG(ONEsImageUtil.resized($0, maxDim: 1280)) }) ?? ""
-                              content.publish(body: draft, kind: kind, imageBase64: imgB64) { ok in
+                              content.publish(body: draft, kind: kind, imageBase64: imgB64,
+                                              videoBase64: attachedVideo) { ok in
                                   busy = false
                                   if ok {
                                       if broadcastOn {
@@ -6105,6 +6320,39 @@ jobs:
                   .sheet(isPresented: $showPicker) {
                       ONEsImagePicker(image: $attachedImage)
                   }
+                  .sheet(isPresented: $showVideoPicker) {
+                      ONEsVideoPicker(base64: $attachedVideo)
+                  }
+                  .overlay(alignment: .bottom) {
+                      HStack(spacing: 10) {
+                          Button { showPicker = true } label: {
+                              Label("صورة", systemImage: "photo.on.rectangle")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14).padding(.vertical, 9)
+                                  .background(Capsule().fill(Color.white.opacity(0.1)))
+                          }
+                          .buttonStyle(.plain)
+                          Button { showVideoPicker = true } label: {
+                              Label(attachedVideo.isEmpty ? "فيديو" : "تم اختيار فيديو",
+                                    systemImage: "video.fill")
+                                  .font(.system(size: 13, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14).padding(.vertical, 9)
+                                  .background(Capsule().fill(attachedVideo.isEmpty ? Color.white.opacity(0.1) : Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                          if !attachedVideo.isEmpty {
+                              Button { attachedVideo = "" } label: {
+                                  Image(systemName: "xmark.circle.fill")
+                                      .font(.system(size: 18))
+                                      .foregroundColor(.white.opacity(0.5))
+                              }
+                              .buttonStyle(.plain)
+                          }
+                      }
+                      .padding(.bottom, 18)
+                  }
               }
           }
 
@@ -6119,6 +6367,7 @@ jobs:
               @State private var showComments = false
               @State private var burst = false
               @State private var likeScale: CGFloat = 1
+              @State private var showProfile = false
 
               private var authorName: String { content.names[post.author] ?? "مستخدم" }
               private var liked: Bool { content.likedIDs.contains(post.id) }
@@ -6172,8 +6421,11 @@ jobs:
                                       .font(.system(size: 13))
                                       .foregroundColor(.white.opacity(0.4))
                                   Spacer(minLength: 0)
-                                  if !anonymous {
+                                  if true {
                                       Menu {
+                                          Button { showProfile = true } label: {
+                                              Label("عرض الملف الشخصي", systemImage: "person.crop.circle")
+                                          }
                                           Button { extras.toggleFollow(post.author) } label: {
                                               Label(extras.following.contains(post.author) ? "إلغاء المتابعة" : "متابعة \(authorName)",
                                                     systemImage: "person.badge.plus")
@@ -6299,6 +6551,9 @@ jobs:
                   }
                   .sheet(isPresented: $showComments) {
                       ONEsCommentsSheet(post: post)
+                  }
+                  .sheet(isPresented: $showProfile) {
+                      ONEsUserProfileSheet(uid: post.author)
                   }
                   .onAppear { if extras.counts[post.id] == nil { extras.loadComments(for: post.id) } }
               }
@@ -6449,6 +6704,8 @@ jobs:
               @State private var picked: UIImage? = nil
               @State private var showPicker = false
               @State private var bio: String = ""
+              @State private var displayName: String = ""
+              @State private var userName: String = ""
               @State private var busy = false
               @State private var savedOK = false
 
@@ -6475,12 +6732,10 @@ jobs:
                                       group.leave()
                                   }
                               }
-                              if !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                  group.enter()
-                                  content.setMyBio(bio) { ok in
-                                      if !ok { allOK = false }
-                                      group.leave()
-                                  }
+                              group.enter()
+                              content.setMyProfile(displayName: displayName, username: userName, bio: bio) { ok in
+                                  if !ok { allOK = false }
+                                  group.leave()
                               }
                               group.notify(queue: .main) {
                                   busy = false
@@ -6544,6 +6799,29 @@ jobs:
                                   .foregroundColor(.white.opacity(0.5))
 
                               VStack(alignment: .leading, spacing: 6) {
+                                  Text("الاسم المعروض (عربي أو إنجليزي)")
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(.white.opacity(0.6))
+                                  TextField("", text: $displayName,
+                                            prompt: Text("مثال: أحمد").foregroundColor(.white.opacity(0.35)))
+                                      .foregroundColor(.white)
+                                      .font(.system(size: 14))
+                                      .padding(12)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+                                  Text("اسم المستخدم")
+                                      .font(.system(size: 12, weight: .semibold))
+                                      .foregroundColor(.white.opacity(0.6))
+                                  TextField("", text: $userName,
+                                            prompt: Text("username").foregroundColor(.white.opacity(0.35)))
+                                      .foregroundColor(.white)
+                                      .font(.system(size: 14))
+                                      .autocapitalization(.none)
+                                      .padding(12)
+                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.07)))
+                              }
+                              .padding(.horizontal, 18)
+
+                              VStack(alignment: .leading, spacing: 6) {
                                   Text("نبذة عنك")
                                       .font(.system(size: 12, weight: .semibold))
                                       .foregroundColor(.white.opacity(0.6))
@@ -6572,7 +6850,11 @@ jobs:
                   .sheet(isPresented: $showPicker) {
                       ONEsImagePicker(image: $picked)
                   }
-                  .onAppear { bio = content.bios[session.userID] ?? "" }
+                  .onAppear {
+                      bio = content.bios[session.userID] ?? ""
+                      displayName = content.names[session.userID] ?? session.username
+                      userName = session.username
+                  }
               }
           }
 
@@ -6716,7 +6998,7 @@ jobs:
                                       if section == 0 {
                                           LazyVStack(spacing: 12) {
                                               ForEach(filtered) { post in
-                                                  ONEsPostCard(post: post, anonymous: true)
+                                                  ONEsPostCard(post: post, anonymous: false)
                                               }
                                           }
                                           .padding(.horizontal, 16)
@@ -6738,7 +7020,7 @@ jobs:
                                       }
                                       LazyVStack(spacing: 12) {
                                           ForEach(filtered) { post in
-                                              ONEsPostCard(post: post, anonymous: section == 0 || section == 1)
+                                              ONEsPostCard(post: post, anonymous: false)
                                           }
                                       }
                                       .padding(.horizontal, 16)
@@ -6751,7 +7033,7 @@ jobs:
                               ONEsContent.shared.loadForum()
                           }
 
-                          if session.isSignedIn && section != 5 && section != 6 {
+                          if false {
                               Button { showComposer = true } label: {
                                   Image(systemName: "plus")
                                       .font(.system(size: 24, weight: .bold))
@@ -6797,6 +7079,273 @@ jobs:
                   case 3: return "لا يوجد ترند بعد — انشر منشورًا مميزًا!"
                   case 4: return "لا توجد منشورات محفوظة"
                   default: return "لا توجد منشورات بعد — كن أول من ينشر!"
+                  }
+              }
+          }
+
+          // ================= COMMENT ROW (with replies) =================
+          struct ONEsCommentRow: View {
+              let comment: ONEsComment
+              let all: [ONEsComment]
+              let depth: Int
+              @Binding var replyTo: ONEsComment?
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var extras = ONEsSocialExtras.shared
+              @ObservedObject private var session = ONEsSession.shared
+
+              private var name: String {
+                  content.names[comment.author] ?? (comment.authorName.isEmpty ? "مستخدم" : comment.authorName)
+              }
+              private var replies: [ONEsComment] { all.filter { $0.parentID == comment.id } }
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      HStack(alignment: .top, spacing: 10) {
+                          ONEsAvatar(name: name, uid: comment.author, size: depth > 0 ? 28 : 34)
+                          VStack(alignment: .leading, spacing: 3) {
+                              HStack(spacing: 6) {
+                                  Text(name)
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.white)
+                                  Text(onesTimeAgo(comment.createdAt))
+                                      .font(.system(size: 11))
+                                      .foregroundColor(.white.opacity(0.45))
+                                  Spacer()
+                                  if session.userID == comment.author {
+                                      Button { extras.deleteComment(comment) } label: {
+                                          Image(systemName: "trash")
+                                              .font(.system(size: 11))
+                                              .foregroundColor(.red.opacity(0.75))
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                              }
+                              ONEsRichText(text: comment.body, baseSize: 14)
+                              Button { replyTo = comment } label: {
+                                  Label("رد", systemImage: "arrowshape.turn.up.left")
+                                      .font(.system(size: 11, weight: .bold))
+                                      .foregroundColor(Color.storePrimary)
+                              }
+                              .buttonStyle(.plain)
+                          }
+                      }
+                      ForEach(replies) { r in
+                          ONEsCommentRow(comment: r, all: all, depth: depth + 1, replyTo: $replyTo)
+                              .padding(.leading, 22)
+                      }
+                  }
+              }
+          }
+
+          // ================= VIDEO PICKER (from photo library) =================
+          struct ONEsVideoPicker: UIViewControllerRepresentable {
+              @Binding var base64: String
+              @Environment(\.dismiss) private var dismiss
+
+              func makeUIViewController(context: Context) -> UIImagePickerController {
+                  let picker = UIImagePickerController()
+                  picker.sourceType = .photoLibrary
+                  picker.mediaTypes = ["public.movie"]
+                  picker.videoQuality = .typeMedium
+                  picker.delegate = context.coordinator
+                  return picker
+              }
+
+              func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+              func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+              final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+                  let parent: ONEsVideoPicker
+                  init(_ parent: ONEsVideoPicker) { self.parent = parent }
+
+                  func imagePickerController(_ picker: UIImagePickerController,
+                                             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+                      if let url = info[.mediaURL] as? URL,
+                         let data = try? Data(contentsOf: url),
+                         data.count < 9_000_000 {
+                          parent.base64 = "data:video/mp4;base64," + data.base64EncodedString()
+                      } else {
+                          StatusCenter.shared.show(text: "الفيديو كبير جدًا — اختر مقطعًا أقصر")
+                      }
+                      parent.dismiss()
+                  }
+
+                  func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
+              }
+          }
+
+          // ================= PUBLIC USER PROFILE =================
+          struct ONEsUserProfileSheet: View {
+              let uid: String
+              @ObservedObject private var content = ONEsContent.shared
+              @ObservedObject private var extras = ONEsSocialExtras.shared
+              @Environment(\.dismiss) private var dismiss
+
+              private var name: String { content.names[uid] ?? "مستخدم" }
+              private var posts: [ONEsPost] { content.posts.filter { $0.author == uid } }
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      HStack {
+                          Button("إغلاق") { dismiss() }
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.white.opacity(0.7))
+                          Spacer()
+                          Text("الملف الشخصي")
+                              .font(.system(size: 15, weight: .black))
+                              .foregroundColor(.white)
+                          Spacer()
+                          Color.clear.frame(width: 44, height: 1)
+                      }
+                      .padding(16)
+                      Divider().overlay(Color.white.opacity(0.08))
+                      ScrollView {
+                          VStack(spacing: 12) {
+                              ONEsAvatar(name: name, uid: uid, size: 90, ring: true)
+                                  .padding(.top, 18)
+                              Text(name)
+                                  .font(.system(size: 18, weight: .black))
+                                  .foregroundColor(.white)
+                              Text(onesHandle(name))
+                                  .font(.system(size: 12))
+                                  .foregroundColor(.white.opacity(0.5))
+                              if let bio = content.bios[uid], !bio.isEmpty {
+                                  Text(bio)
+                                      .font(.system(size: 13))
+                                      .foregroundColor(.white.opacity(0.75))
+                                      .multilineTextAlignment(.center)
+                                      .padding(.horizontal, 30)
+                              }
+                              Button { extras.toggleFollow(uid) } label: {
+                                  Text(extras.following.contains(uid) ? "إلغاء المتابعة" : "متابعة")
+                                      .font(.system(size: 14, weight: .black))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 26).padding(.vertical, 10)
+                                      .background(Capsule().fill(extras.following.contains(uid) ? Color.white.opacity(0.15) : Color.storePrimary))
+                              }
+                              .buttonStyle(.plain)
+
+                              LazyVStack(spacing: 12) {
+                                  ForEach(posts) { p in
+                                      ONEsPostCard(post: p, anonymous: false)
+                                  }
+                              }
+                              .padding(.top, 10)
+                          }
+                          .padding(.bottom, 40)
+                      }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+              }
+          }
+
+          // ================= INBOX (notifications + report replies) =================
+          struct ONEsInboxSheet: View {
+              @ObservedObject private var content = ONEsContent.shared
+              @Environment(\.dismiss) private var dismiss
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      HStack {
+                          Button("إغلاق") { dismiss() }
+                              .font(.system(size: 14, weight: .semibold))
+                              .foregroundColor(.white.opacity(0.7))
+                          Spacer()
+                          Text("الإشعارات والردود")
+                              .font(.system(size: 15, weight: .black))
+                              .foregroundColor(.white)
+                          Spacer()
+                          Color.clear.frame(width: 44, height: 1)
+                      }
+                      .padding(16)
+                      Divider().overlay(Color.white.opacity(0.08))
+                      ScrollView {
+                          VStack(alignment: .leading, spacing: 14) {
+                              if !content.myReports.isEmpty {
+                                  Text("بلاغاتك وردود الإدارة")
+                                      .font(.system(size: 13, weight: .black))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 16)
+                                  ForEach(content.myReports) { r in
+                                      VStack(alignment: .leading, spacing: 6) {
+                                          HStack {
+                                              Text(r.appName.isEmpty ? "بلاغ" : r.appName)
+                                                  .font(.system(size: 13, weight: .bold))
+                                                  .foregroundColor(.white)
+                                              Spacer()
+                                              Text(r.statusLabel)
+                                                  .font(.system(size: 11, weight: .black))
+                                                  .foregroundColor(r.statusColor)
+                                                  .padding(.horizontal, 8).padding(.vertical, 3)
+                                                  .background(Capsule().fill(r.statusColor.opacity(0.15)))
+                                          }
+                                          Text(r.message)
+                                              .font(.system(size: 12))
+                                              .foregroundColor(.white.opacity(0.6))
+                                          if !r.reply.isEmpty {
+                                              HStack(alignment: .top, spacing: 8) {
+                                                  Image(systemName: "arrowshape.turn.up.left.fill")
+                                                      .font(.system(size: 11))
+                                                      .foregroundColor(Color.storePrimary)
+                                                  Text(r.reply)
+                                                      .font(.system(size: 13, weight: .semibold))
+                                                      .foregroundColor(.white)
+                                              }
+                                              .padding(10)
+                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storePrimary.opacity(0.12)))
+                                          }
+                                      }
+                                      .padding(14)
+                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.05)))
+                                      .padding(.horizontal, 16)
+                                  }
+                              }
+                              Text("إشعارات المتجر والمنتدى")
+                                  .font(.system(size: 13, weight: .black))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 16)
+                                  .padding(.top, 6)
+                              ONEsNotificationsView()
+                                  .padding(.horizontal, 16)
+                          }
+                          .padding(.vertical, 14)
+                      }
+                  }
+                  .background(Color.storeBg.ignoresSafeArea())
+                  .onAppear {
+                      content.loadNotifications()
+                      content.loadMyReports()
+                      content.markAllNotificationsRead()
+                  }
+              }
+          }
+
+          // ================= APP STATS ROW (version / size / source / installs) =================
+          struct ONEsAppStatsRow: View {
+              let app: StoreAPIApp
+              @ObservedObject private var content = ONEsContent.shared
+
+              private var sourceName: String {
+                  if let first = content.sources.first, !first.name.isEmpty { return first.name }
+                  return (app.host ?? "-").capitalized
+              }
+              private var installs: Int {
+                  content.installs[app.bundleId ?? ""] ?? 0
+              }
+
+              var body: some View {
+                  HStack {
+                      StatCell(top: "v\(app.bundleVersion ?? "-")", bottom: "الإصدار")
+                      Divider().frame(height: 40)
+                      StatCell(top: app.ipaSize ?? "-", bottom: "الحجم")
+                      Divider().frame(height: 40)
+                      StatCell(top: sourceName, bottom: "المصدر")
+                      Divider().frame(height: 40)
+                      StatCell(top: "\(installs)", bottom: "التثبيتات")
+                  }
+                  .onAppear {
+                      content.loadSources()
+                      content.loadInstalls()
                   }
               }
           }
@@ -6994,6 +7543,7 @@ jobs:
                   scheduleAppRefresh()
                   let workItem = Task.detached(priority: .background) {
                       await CatalogRefresher.shared.refreshAndNotify()
+                      await MainActor.run { ONEsContent.shared.refreshInBackground() }
                       await MainActor.run { task.setTaskCompleted(success: true) }
                   }
                   task.expirationHandler = {
