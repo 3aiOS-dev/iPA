@@ -3992,103 +3992,46 @@ jobs:
 
           // ================= INSTALLATION SIGNING LIBRARY =================
           struct CertificateSigner {
-              static func signIPA(ipaURL: URL, certData: Data, provisioningProfile: Data, completion: @escaping (Result<URL, Error>) -> Void) {
-                  // Certificate-based signing flow
-                  DispatchQueue.global(qos: .userInitiated).async {
-                      do {
-                          // 1. Extract IPA
-                          let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                          try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-                          // 2. Unzip IPA
-                          let process = Process()
-                          process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-                          process.arguments = ["-o", ipaURL.path, "-d", tempDir.path]
-                          try process.run()
-                          process.waitUntilExit()
-
-                          // 3. Embed provisioning profile
-                          let payloadDir = tempDir.appendingPathComponent("Payload")
-                          let appDir = try FileManager.default.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
-                              .first(where: { $0.pathExtension == "app" })!
-                          let profileDest = appDir.appendingPathComponent("embedded.mobileprovision")
-                          try provisioningProfile.write(to: profileDest)
-
-                          // 4. Sign with codesign
-                          let signProcess = Process()\n                          signProcess.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-                          signProcess.arguments = ["--force", "--sign", "-", "--entitlements", "-", appDir.path]
-                          try signProcess.run()
-                          signProcess.waitUntilExit()
-
-                          // 5. Repackage IPA
-                          let signedIPA = tempDir.appendingPathComponent("signed.ipa")
-                          let zipProcess = Process()
-                          zipProcess.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-                          zipProcess.arguments = ["-r", "-", "Payload"]
-                          zipProcess.currentDirectoryURL = tempDir
-                          try zipProcess.run()
-                          zipProcess.waitUntilExit()
-
-                          DispatchQueue.main.async {
-                              completion(.success(signedIPA))
-                          }
-                      } catch {
-                          DispatchQueue.main.async {
-                              completion(.failure(error))
-                          }
-                      }
-                  }
-              }
-
-              static func installWithCertificate(bundleId: String, certURL: String, completion: @escaping (Bool, String) -> Void) {
-                  // Download certificate and install
-                  guard let url = URL(string: certURL) else {
-                      completion(false, "رابط الشهادة غير صالح")
+              @MainActor
+              static func installWithCertificate(bundleId: String, certData: Data, completion: @escaping (Bool, String) -> Void) {
+                  StatusCenter.shared.show(text: "جاري التثبيت بالشهادة...")
+                  let installURL = MainActor.assumeIsolated { ActivationManager.codesSiteBase } + "/api/public/store/install-with-cert"
+                  guard let apiURL = URL(string: installURL) else {
+                      completion(false, "رابط السيرفر غير صالح")
                       return
                   }
-                  URLSession.shared.dataTask(with: url) { data, response, error in
-                      guard let certData = data, error == nil else {
-                          DispatchQueue.main.async { completion(false, "فشل تحميل الشهادة") }
-                          return
-                      }
-                      // Process certificate
+                  var req = URLRequest(url: apiURL, timeoutInterval: 30)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  let deviceID = MainActor.assumeIsolated { ActivationManager.shared.deviceID }
+                  let body: [String: Any] = [
+                      "bundle_id": bundleId,
+                      "udid": deviceID,
+                      "certificate": certData.base64EncodedString()
+                  ]
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
-                          StatusCenter.shared.show(text: "جاري التثبيت بالشهادة...")
-                          // Use the certificate to sign and install
-                          let installURL = ActivationManager.codesSiteBase + "/api/public/store/install-with-cert"
-                          guard let apiURL = URL(string: installURL) else { return }
-                          var req = URLRequest(url: apiURL, timeoutInterval: 30)
-                          req.httpMethod = "POST"
-                          req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                          let body: [String: Any] = [
-                              "bundle_id": bundleId,
-                              "udid": ActivationManager.shared.deviceID,
-                              "certificate": certData.base64EncodedString()
-                          ]
-                          req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                          URLSession.shared.dataTask(with: req) { data, _, _ in
-                              DispatchQueue.main.async {
-                                  guard let data = data,
-                                        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                                      completion(false, "تعذّر الاتصال بالسيرفر")
-                                      return
-                                  }
-                                  if let installURL = obj["install_url"] as? String,
-                                     let u = URL(string: installURL) {
-                                      UIApplication.shared.open(u)
-                                      completion(true, "تم بدء التثبيت")
-                                  } else {
-                                      let msg = (obj["message"] as? String) ?? "فشل التثبيت"
-                                      completion(false, msg)
-                                  }
-                              }
-                          }.resume()
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              completion(false, "تعذّر الاتصال بالسيرفر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              completion(true, "تم بدء التثبيت بالشهادة")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "فشل التثبيت"
+                              completion(false, msg)
+                          }
                       }
                   }.resume()
               }
 
+              @MainActor
               static func installFromServer(bundleId: String, serverURL: String?, completion: @escaping (Bool, String) -> Void) {
-                  let base = serverURL ?? ActivationManager.codesSiteBase
+                  let base = serverURL ?? MainActor.assumeIsolated { ActivationManager.codesSiteBase }
                   let endpoint = base + "/api/public/store/install-by-bundle"
                   guard let url = URL(string: endpoint) else {
                       completion(false, "رابط السيرفر غير صالح")
@@ -4097,9 +4040,10 @@ jobs:
                   var req = URLRequest(url: url, timeoutInterval: 30)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  let deviceID = MainActor.assumeIsolated { ActivationManager.shared.deviceID }
                   let body: [String: Any] = [
                       "bundle_id": bundleId,
-                      "udid": ActivationManager.shared.deviceID
+                      "udid": deviceID
                   ]
                   req.httpBody = try? JSONSerialization.data(withJSONObject: body)
                   URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -4459,14 +4403,56 @@ jobs:
               }
           }
 
+          // ================= CERTIFICATE FILE PICKER =================
+          struct CertificateFilePicker: UIViewControllerRepresentable {
+              @Binding var certData: Data?
+              @Binding var certName: String
+              @Environment(\.dismiss) private var dismiss
+
+              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [
+                      UTType(filenameExtension: "pem") ?? .data,
+                      UTType(filenameExtension: "p12") ?? .data,
+                      UTType(filenameExtension: "mobileprovision") ?? .data,
+                      .data
+                  ], asCopy: true)
+                  picker.delegate = context.coordinator
+                  picker.allowsMultipleSelection = false
+                  return picker
+              }
+
+              func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+              func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+              final class Coordinator: NSObject, UIDocumentPickerDelegate {
+                  let parent: CertificateFilePicker
+                  init(_ parent: CertificateFilePicker) { self.parent = parent }
+
+                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+                      guard let url = urls.first else { return }
+                      do {
+                          let data = try Data(contentsOf: url)
+                          DispatchQueue.main.async {
+                              self.parent.certData = data
+                              self.parent.certName = url.lastPathComponent
+                          }
+                      } catch {
+                          print("Failed to read certificate: \(error)")
+                      }
+                  }
+              }
+          }
+
           // ================= SETTINGS VIEW =================
           struct StoreSettingsView: View {
               @Environment(\.dismiss) private var dismiss
               @State private var installMethod: Int = 0
               @State private var certName: String = ""
-              @State private var certURL: String = ""
+              @State private var certData: Data? = nil
               @State private var serverURL: String = ""
-              @State private var showCertPicker: Bool = false
+              @State private var showFilePicker: Bool = false
+              @State private var showCertList: Bool = false
               @State private var showInstallProgress: Bool = false
               @State private var installProgress: Double = 0
               @State private var installStatus: String = ""
@@ -4551,34 +4537,54 @@ jobs:
                                           Image(systemName: "checkmark.seal.fill").foregroundColor(Color.storePink)
                                           Text("التثبيت بالشهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
                                       }
-                                      Text("اختر شهادة مرفوعة من المتجر أو أدخل رابط شهادة")
+                                      Text("اختر ملف شهادة من جهازك (.pem / .p12 / .mobileprovision)")
                                           .font(.system(size: 12)).foregroundColor(Color.storeSub)
-                                      VStack(spacing: 10) {
-                                          Button { showCertPicker = true } label: {
-                                              HStack(spacing: 10) {
-                                                  Image(systemName: "doc.badge.plus").foregroundColor(Color.storePrimary)
-                                                  VStack(alignment: .leading, spacing: 2) {
-                                                      Text(certName.isEmpty ? "اختر شهادة" : certName)
-                                                          .font(.system(size: 14, weight: .semibold))
-                                                          .foregroundColor(certName.isEmpty ? Color.storeSub : Color.storeText)
-                                                      Text("من المتجر أو رابط").font(.system(size: 11)).foregroundColor(Color.storeSub)
-                                                  }
-                                                  Spacer()
-                                                  Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
-                                              }
-                                              .padding(.horizontal, 14).padding(.vertical, 12)
-                                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storePrimary.opacity(0.2), lineWidth: 1)))
-                                          }
-                                          .buttonStyle(.plain)
+
+                                      // File picker button
+                                      Button { showFilePicker = true } label: {
                                           HStack(spacing: 10) {
-                                              Image(systemName: "link").foregroundColor(Color.storeSub)
-                                              TextField("رابط الشهادة (اختياري)", text: $certURL)
-                                                  .font(.system(size: 13)).foregroundColor(Color.storeText)
-                                                  .background(Color.clear).tint(Color.storePrimary)
+                                              Image(systemName: certData != nil ? "doc.fill.badge.checkmark" : "doc.badge.plus")
+                                                  .foregroundColor(certData != nil ? .green : Color.storePrimary)
+                                              VStack(alignment: .leading, spacing: 2) {
+                                                  Text(certName.isEmpty ? "اختر ملف الشهادة" : certName)
+                                                      .font(.system(size: 14, weight: .semibold))
+                                                      .foregroundColor(certName.isEmpty ? Color.storeSub : Color.storeText)
+                                                  Text(certData != nil ? "\(certData!.count) بايت - جاهزة للتثبيت" : "من ملفات الجهاز")
+                                                      .font(.system(size: 11))
+                                                      .foregroundColor(certData != nil ? .green : Color.storeSub)
+                                              }
+                                              Spacer()
+                                              Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
                                           }
-                                          .padding(.horizontal, 14).padding(.vertical, 12)
-                                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                          .padding(.horizontal, 14).padding(.vertical, 14)
+                                          .background(
+                                              RoundedRectangle(cornerRadius: 14)
+                                                  .fill(certData != nil ? Color.green.opacity(0.06) : Color.storeCardAlt)
+                                                  .overlay(RoundedRectangle(cornerRadius: 14).stroke(certData != nil ? Color.green.opacity(0.3) : Color.storePrimary.opacity(0.2), lineWidth: 1))
+                                          )
                                       }
+                                      .buttonStyle(.plain)
+
+                                      // Pre-installed certificates
+                                      Button { showCertList = true } label: {
+                                          HStack(spacing: 10) {
+                                              Image(systemName: "folder.fill").foregroundColor(Color.storePrimary)
+                                              VStack(alignment: .leading, spacing: 2) {
+                                                  Text("شهادات المتجر")
+                                                      .font(.system(size: 14, weight: .semibold))
+                                                      .foregroundColor(Color.storeText)
+                                                  Text("اختر من الشهادات المتاحة")
+                                                      .font(.system(size: 11))
+                                                      .foregroundColor(Color.storeSub)
+                                              }
+                                              Spacer()
+                                              Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
+                                          }
+                                          .padding(.horizontal, 14).padding(.vertical, 14)
+                                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 0.5)))
+                                      }
+                                      .buttonStyle(.plain)
+
                                       Button { startCertInstall() } label: {
                                           HStack(spacing: 8) {
                                               Image(systemName: "arrow.down.doc.fill").font(.system(size: 14, weight: .bold))
@@ -4589,6 +4595,8 @@ jobs:
                                           .foregroundColor(.white)
                                       }
                                       .buttonStyle(.plain)
+                                      .disabled(certData == nil)
+                                      .opacity(certData == nil ? 0.5 : 1)
                                   }
                                   .padding(16)
                                   .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
@@ -4643,8 +4651,11 @@ jobs:
                               Button("إغلاق") { dismiss() }.foregroundColor(Color.storePrimary)
                           }
                       }
-                      .sheet(isPresented: $showCertPicker) {
-                          CertificatePickerView(selectedName: $certName, selectedURL: $certURL)
+                      .sheet(isPresented: $showFilePicker) {
+                          CertificateFilePicker(certData: $certData, certName: $certName)
+                      }
+                      .sheet(isPresented: $showCertList) {
+                          StoreCertListView(selectedName: $certName, selectedData: $certData)
                       }
                   }
               }
@@ -4667,75 +4678,66 @@ jobs:
                   .buttonStyle(.plain)
               }
 
+              @MainActor
               private func startServerInstall() {
                   showInstallProgress = true
                   installStatus = "جاري التحميل من السيرفر..."
                   installProgress = 0
-                  Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
-                      DispatchQueue.main.async {
-                          installProgress += 0.1
-                          if installProgress >= 0.5 { installStatus = "جاري التثبيت..." }
-                          if installProgress >= 1.0 {
-                              timer.invalidate()
-                              installStatus = "تم التثبيت بنجاح ✅"
-                              installDone = true
-                              HapticManager.shared.success()
-                          }
-                      }
+                  CertificateSigner.installFromServer(bundleId: "", serverURL: serverURL.isEmpty ? nil : serverURL) { ok, msg in
+                      self.showInstallProgress = false
+                      self.installStatus = msg
+                      if ok { HapticManager.shared.success() }
                   }
               }
 
+              @MainActor
               private func startCertInstall() {
-                  guard !certName.isEmpty || !certURL.isEmpty else { return }
+                  guard let data = certData else { return }
                   showInstallProgress = true
-                  installStatus = "جاري تحميل الشهادة..."
+                  installStatus = "جاري التثبيت بالشهادة..."
                   installProgress = 0
-                  Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
-                      DispatchQueue.main.async {
-                          installProgress += 0.1
-                          if installProgress >= 0.4 { installStatus = "جاري التحقق من الشهادة..." }
-                          if installProgress >= 0.7 { installStatus = "جاري التثبيت بالشهادة..." }
-                          if installProgress >= 1.0 {
-                              timer.invalidate()
-                              installStatus = "تم التثبيت بالشهادة بنجاح ✅"
-                              installDone = true
-                              HapticManager.shared.success()
-                          }
-                      }
+                  CertificateSigner.installWithCertificate(bundleId: "", certData: data) { ok, msg in
+                      self.showInstallProgress = false
+                      self.installStatus = msg
+                      if ok { HapticManager.shared.success() }
                   }
               }
           }
 
-          // ================= CERTIFICATE PICKER =================
-          struct CertificatePickerView: View {
+          // ================= STORE CERT LIST VIEW =================
+          struct StoreCertListView: View {
               @Environment(\.dismiss) private var dismiss
               @Binding var selectedName: String
-              @Binding var selectedURL: String
+              @Binding var selectedData: Data?
+              @State private var loadingCert: String? = nil
+
               private let certificates = [
                   ("شهادة المتجر الذهبية", "gold-cert", true),
                   ("شهادة المتجر الفضية", "silver-cert", true),
-                  ("شهادة سيرفر ONEs", "server-cert", true),
-                  ("شهادة مخصصة (ارفعها)", "custom-cert", false)
+                  ("شهادة سيرفر ONEs", "server-cert", true)
               ]
+
               var body: some View {
                   NavigationView {
                       List {
-                          Section("شهادات المتجر") {
+                          Section("شهادات المتجر المتاحة") {
                               ForEach(certificates, id: \.1) { cert in
                                   Button {
-                                      selectedName = cert.0
-                                      selectedURL = "https://store.ones.app/certs/\(cert.1).pem"
-                                      dismiss()
+                                      loadCertificate(cert)
                                   } label: {
                                       HStack(spacing: 12) {
                                           ZStack {
-                                              Circle().fill(cert.2 ? Color.storePrimary.opacity(0.12) : Color.orange.opacity(0.12)).frame(width: 36, height: 36)
-                                              Image(systemName: cert.2 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                                                  .font(.system(size: 14)).foregroundColor(cert.2 ? Color.storePrimary : .orange)
+                                              Circle().fill(Color.storePrimary.opacity(0.12)).frame(width: 36, height: 36)
+                                              if loadingCert == cert.1 {
+                                                  ProgressView().scaleEffect(0.7)
+                                              } else {
+                                                  Image(systemName: "checkmark.seal.fill")
+                                                      .font(.system(size: 14)).foregroundColor(Color.storePrimary)
+                                              }
                                           }
                                           VStack(alignment: .leading, spacing: 2) {
                                               Text(cert.0).font(.system(size: 14, weight: .semibold)).foregroundColor(Color.storeText)
-                                              Text(cert.2 ? "متاحة" : "يتطلب رفع").font(.system(size: 11)).foregroundColor(cert.2 ? .green : .orange)
+                                              Text("متاحة للتحميل").font(.system(size: 11)).foregroundColor(.green)
                                           }
                                           Spacer()
                                           if selectedName == cert.0 {
@@ -4746,14 +4748,55 @@ jobs:
                                   .buttonStyle(.plain)
                               }
                           }
+
+                          Section("استيراد من الجهاز") {
+                              Button {
+                                  dismiss()
+                              } label: {
+                                  HStack(spacing: 12) {
+                                      ZStack {
+                                          Circle().fill(Color.storePink.opacity(0.12)).frame(width: 36, height: 36)
+                                          Image(systemName: "doc.badge.plus")
+                                              .font(.system(size: 14)).foregroundColor(Color.storePink)
+                                      }
+                                      VStack(alignment: .leading, spacing: 2) {
+                                          Text("رفع شهادة مخصصة").font(.system(size: 14, weight: .semibold)).foregroundColor(Color.storeText)
+                                          Text("اختر ملف .pem أو .p12 من جهازك").font(.system(size: 11)).foregroundColor(Color.storeSub)
+                                      }
+                                      Spacer()
+                                      Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
+                                  }
+                              }
+                              .buttonStyle(.plain)
+                          }
                       }
                       .background(Color.storeBg.ignoresSafeArea())
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
-                          ToolbarItem(placement: .principal) { Text("اختر شهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText) }
-                          ToolbarItem(placement: .navigationBarLeading) { Button("إلغاء") { dismiss() }.foregroundColor(Color.storePrimary) }
+                          ToolbarItem(placement: .principal) {
+                              Text("اختر شهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
+                          }
+                          ToolbarItem(placement: .navigationBarLeading) {
+                              Button("إلغاء") { dismiss() }.foregroundColor(Color.storePrimary)
+                          }
                       }
                   }
+              }
+
+              private func loadCertificate(_ cert: (String, String, Bool)) {
+                  loadingCert = cert.1
+                  let urlStr = ActivationManager.codesSiteBase + "/api/public/store/certificate/\(cert.1)"
+                  guard let url = URL(string: urlStr) else { loadingCert = nil; return }
+                  URLSession.shared.dataTask(with: url) { data, _, _ in
+                      DispatchQueue.main.async {
+                          loadingCert = nil
+                          if let data = data, data.count > 100 {
+                              selectedData = data
+                              selectedName = cert.0
+                              dismiss()
+                          }
+                      }
+                  }.resume()
               }
           }
 
