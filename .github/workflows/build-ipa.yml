@@ -3990,82 +3990,6 @@ jobs:
               }
           }
 
-          // ================= INSTALLATION SIGNING LIBRARY =================
-          struct CertificateSigner {
-              @MainActor
-              static func installWithCertificate(bundleId: String, certData: Data, completion: @escaping (Bool, String) -> Void) {
-                  StatusCenter.shared.show(text: "جاري التثبيت بالشهادة...")
-                  let installURL = MainActor.assumeIsolated { ActivationManager.codesSiteBase } + "/api/public/store/install-with-cert"
-                  guard let apiURL = URL(string: installURL) else {
-                      completion(false, "رابط السيرفر غير صالح")
-                      return
-                  }
-                  var req = URLRequest(url: apiURL, timeoutInterval: 30)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  let deviceID = MainActor.assumeIsolated { ActivationManager.shared.deviceID }
-                  let body: [String: Any] = [
-                      "bundle_id": bundleId,
-                      "udid": deviceID,
-                      "certificate": certData.base64EncodedString()
-                  ]
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              completion(false, "تعذّر الاتصال بالسيرفر")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
-                              completion(true, "تم بدء التثبيت بالشهادة")
-                          } else {
-                              let msg = (obj["message"] as? String) ?? "فشل التثبيت"
-                              completion(false, msg)
-                          }
-                      }
-                  }.resume()
-              }
-
-              @MainActor
-              static func installFromServer(bundleId: String, serverURL: String?, completion: @escaping (Bool, String) -> Void) {
-                  let base = serverURL ?? MainActor.assumeIsolated { ActivationManager.codesSiteBase }
-                  let endpoint = base + "/api/public/store/install-by-bundle"
-                  guard let url = URL(string: endpoint) else {
-                      completion(false, "رابط السيرفر غير صالح")
-                      return
-                  }
-                  var req = URLRequest(url: url, timeoutInterval: 30)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  let deviceID = MainActor.assumeIsolated { ActivationManager.shared.deviceID }
-                  let body: [String: Any] = [
-                      "bundle_id": bundleId,
-                      "udid": deviceID
-                  ]
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              completion(false, "تعذّر الاتصال بالسيرفر")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
-                              completion(true, "تم بدء التثبيت من السيرفر")
-                          } else {
-                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح"
-                              completion(false, msg)
-                          }
-                      }
-                  }.resume()
-              }
-          }
-
           // ================= UPDATES TAB =================
           struct StoreUpdateItem: Codable, Identifiable, Hashable {
               let id: String
@@ -4290,43 +4214,11 @@ jobs:
               var onMenu: (() -> Void)? = nil
               var onGoApps: (() -> Void)? = nil
               var onGoFiles: (() -> Void)? = nil
-              @State private var showSettings = false
 
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          // Top bar with settings icon
-                          HStack {
-                              Button { showSettings = true } label: {
-                                  Image(systemName: "gearshape.fill")
-                                      .font(.system(size: 18))
-                                      .foregroundColor(Color.storePrimary)
-                                      .frame(width: 36, height: 36)
-                                      .background(Circle().fill(Color.storePrimary.opacity(0.12)))
-                              }
-                              .buttonStyle(.plain)
-                              Spacer()
-                              HStack(spacing: 10) {
-                                  RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
-                                  Text("ONEs")
-                                      .font(.system(size: 22, weight: .heavy))
-                                      .foregroundColor(Color.storeText)
-                              }
-                              Spacer()
-                              Color.clear.frame(width: 36, height: 36)
-                          }
-                          .padding(.horizontal, 18)
-                          .padding(.top, 8)
-                          .padding(.bottom, 10)
-                          .background(
-                              Color.storeBg
-                                  .overlay(
-                                      VStack {
-                                          Spacer()
-                                          Divider().overlay(Color.storeDivider)
-                                      }
-                                  )
-                          )
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4399,403 +4291,10 @@ jobs:
                           AppDetailView(app: app, feed: feed)
                       }
                   }
-                  .sheet(isPresented: $showSettings) { StoreSettingsView() }
               }
           }
 
-          // ================= CERTIFICATE FILE PICKER =================
-          struct CertificateFilePicker: UIViewControllerRepresentable {
-              @Binding var certData: Data?
-              @Binding var certName: String
-              @Environment(\.dismiss) private var dismiss
-
-              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-                  let types = ["public.data", "public.content"]
-                  let picker = UIDocumentPickerViewController(documentTypes: types, in: .import)
-                  picker.delegate = context.coordinator
-                  picker.allowsMultipleSelection = false
-                  return picker
-              }
-
-              func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-              func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-              final class Coordinator: NSObject, UIDocumentPickerDelegate {
-                  let parent: CertificateFilePicker
-                  init(_ parent: CertificateFilePicker) { self.parent = parent }
-
-                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-                      guard let url = urls.first else { return }
-                      do {
-                          let data = try Data(contentsOf: url)
-                          DispatchQueue.main.async {
-                              self.parent.certData = data
-                              self.parent.certName = url.lastPathComponent
-                          }
-                      } catch {
-                          print("Failed to read certificate: \(error)")
-                      }
-                  }
-              }
-          }
-
-          // ================= SETTINGS VIEW =================
-          struct StoreSettingsView: View {
-              @Environment(\.dismiss) private var dismiss
-              @State private var installMethod: Int = 0
-              @State private var certName: String = ""
-              @State private var certData: Data? = nil
-              @State private var serverURL: String = ""
-              @State private var showFilePicker: Bool = false
-              @State private var showCertList: Bool = false
-              @State private var showInstallProgress: Bool = false
-              @State private var installProgress: Double = 0
-              @State private var installStatus: String = ""
-              @State private var installDone: Bool = false
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 20) {
-                              VStack(spacing: 10) {
-                                  ZStack {
-                                      Circle()
-                                          .fill(LinearGradient(colors: [Color.storePrimary.opacity(0.25), Color.storePink.opacity(0.15)],
-                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
-                                          .frame(width: 64, height: 64)
-                                      Image(systemName: "gearshape.fill")
-                                          .font(.system(size: 28, weight: .bold))
-                                          .foregroundColor(Color.storePrimary)
-                                  }
-                                  Text("الإعدادات")
-                                      .font(.system(size: 22, weight: .heavy))
-                                      .foregroundColor(Color.storeText)
-                                  Text("تثبيت التطبيقات واستيراد الشهادات")
-                                      .font(.system(size: 13))
-                                      .foregroundColor(Color.storeSub)
-                              }
-                              .padding(.top, 10)
-
-                              VStack(alignment: .leading, spacing: 12) {
-                                  Text("طريقة التثبيت")
-                                      .font(.system(size: 15, weight: .bold))
-                                      .foregroundColor(Color.storeText)
-                                  HStack(spacing: 10) {
-                                      methodCard(icon: "server.rack", title: "من السيرفر", selected: installMethod == 0) {
-                                          withAnimation(.spring(response: 0.3)) { installMethod = 0 }
-                                      }
-                                      methodCard(icon: "checkmark.seal.fill", title: "من الشهادة", selected: installMethod == 1) {
-                                          withAnimation(.spring(response: 0.3)) { installMethod = 1 }
-                                      }
-                                  }
-                              }
-                              .padding(16)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
-                              .padding(.horizontal, 18)
-
-                              if installMethod == 0 {
-                                  VStack(alignment: .leading, spacing: 12) {
-                                      HStack(spacing: 8) {
-                                          Image(systemName: "server.rack").foregroundColor(Color.storePrimary)
-                                          Text("التثبيت من السيرفر").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                                      }
-                                      Text("سيتم تحميل التطبيق وتثبيته مباشرة من سيرفر المتجر")
-                                          .font(.system(size: 12)).foregroundColor(Color.storeSub)
-                                      HStack(spacing: 10) {
-                                          Image(systemName: "link").foregroundColor(Color.storeSub)
-                                          TextField("رابط السيرفر (اختياري)", text: $serverURL)
-                                              .font(.system(size: 13)).foregroundColor(Color.storeText)
-                                              .background(Color.clear).tint(Color.storePrimary)
-                                      }
-                                      .padding(.horizontal, 14).padding(.vertical, 12)
-                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.storeDivider, lineWidth: 0.5)))
-                                      Button { startServerInstall() } label: {
-                                          HStack(spacing: 8) {
-                                              Image(systemName: "icloud.and.arrow.down").font(.system(size: 14, weight: .bold))
-                                              Text("تثبيت من السيرفر").font(.system(size: 14, weight: .bold))
-                                          }
-                                          .frame(maxWidth: .infinity).padding(.vertical, 13)
-                                          .background(Capsule().fill(LinearGradient(colors: [Color.storePrimary, Color.storePrimary.opacity(0.7)], startPoint: .leading, endPoint: .trailing)))
-                                          .foregroundColor(.white)
-                                      }
-                                      .buttonStyle(.plain)
-                                  }
-                                  .padding(16)
-                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
-                                  .padding(.horizontal, 18)
-                                  .transition(.move(edge: .trailing).combined(with: .opacity))
-                              }
-
-                              if installMethod == 1 {
-                                  VStack(alignment: .leading, spacing: 12) {
-                                      HStack(spacing: 8) {
-                                          Image(systemName: "checkmark.seal.fill").foregroundColor(Color.storePink)
-                                          Text("التثبيت بالشهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                                      }
-                                      Text("اختر ملف شهادة من جهازك (.pem / .p12 / .mobileprovision)")
-                                          .font(.system(size: 12)).foregroundColor(Color.storeSub)
-
-                                      // File picker button
-                                      Button { showFilePicker = true } label: {
-                                          HStack(spacing: 10) {
-                                              Image(systemName: certData != nil ? "doc.fill.badge.checkmark" : "doc.badge.plus")
-                                                  .foregroundColor(certData != nil ? .green : Color.storePrimary)
-                                              VStack(alignment: .leading, spacing: 2) {
-                                                  Text(certName.isEmpty ? "اختر ملف الشهادة" : certName)
-                                                      .font(.system(size: 14, weight: .semibold))
-                                                      .foregroundColor(certName.isEmpty ? Color.storeSub : Color.storeText)
-                                                  Text(certData != nil ? "\(certData!.count) بايت - جاهزة للتثبيت" : "من ملفات الجهاز")
-                                                      .font(.system(size: 11))
-                                                      .foregroundColor(certData != nil ? .green : Color.storeSub)
-                                              }
-                                              Spacer()
-                                              Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
-                                          }
-                                          .padding(.horizontal, 14).padding(.vertical, 14)
-                                          .background(
-                                              RoundedRectangle(cornerRadius: 14)
-                                                  .fill(certData != nil ? Color.green.opacity(0.06) : Color.storeCardAlt)
-                                                  .overlay(RoundedRectangle(cornerRadius: 14).stroke(certData != nil ? Color.green.opacity(0.3) : Color.storePrimary.opacity(0.2), lineWidth: 1))
-                                          )
-                                      }
-                                      .buttonStyle(.plain)
-
-                                      // Pre-installed certificates
-                                      Button { showCertList = true } label: {
-                                          HStack(spacing: 10) {
-                                              Image(systemName: "folder.fill").foregroundColor(Color.storePrimary)
-                                              VStack(alignment: .leading, spacing: 2) {
-                                                  Text("شهادات المتجر")
-                                                      .font(.system(size: 14, weight: .semibold))
-                                                      .foregroundColor(Color.storeText)
-                                                  Text("اختر من الشهادات المتاحة")
-                                                      .font(.system(size: 11))
-                                                      .foregroundColor(Color.storeSub)
-                                              }
-                                              Spacer()
-                                              Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
-                                          }
-                                          .padding(.horizontal, 14).padding(.vertical, 14)
-                                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCardAlt).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 0.5)))
-                                      }
-                                      .buttonStyle(.plain)
-
-                                      Button { startCertInstall() } label: {
-                                          HStack(spacing: 8) {
-                                              Image(systemName: "arrow.down.doc.fill").font(.system(size: 14, weight: .bold))
-                                              Text("تثبيت بالشهادة").font(.system(size: 14, weight: .bold))
-                                          }
-                                          .frame(maxWidth: .infinity).padding(.vertical, 13)
-                                          .background(Capsule().fill(LinearGradient(colors: [Color.storePink, Color.storePink.opacity(0.7)], startPoint: .leading, endPoint: .trailing)))
-                                          .foregroundColor(.white)
-                                      }
-                                      .buttonStyle(.plain)
-                                      .disabled(certData == nil)
-                                      .opacity(certData == nil ? 0.5 : 1)
-                                  }
-                                  .padding(16)
-                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
-                                  .padding(.horizontal, 18)
-                                  .transition(.move(edge: .leading).combined(with: .opacity))
-                              }
-
-                              if showInstallProgress {
-                                  VStack(spacing: 12) {
-                                      ProgressView(value: installProgress).tint(Color.storePrimary)
-                                      Text(installStatus).font(.system(size: 13, weight: .semibold)).foregroundColor(Color.storeText)
-                                  }
-                                  .padding(16)
-                                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storePrimary.opacity(0.2), lineWidth: 1)))
-                                  .padding(.horizontal, 18)
-                              }
-
-                              VStack(alignment: .leading, spacing: 12) {
-                                  HStack(spacing: 8) {
-                                      Image(systemName: "checkmark.shield.fill").foregroundColor(.green)
-                                      Text("الشهادات المثبتة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                                  }
-                                  ForEach(0..<3, id: \.self) { i in
-                                      HStack(spacing: 12) {
-                                          ZStack {
-                                              Circle().fill(Color.green.opacity(0.12)).frame(width: 36, height: 36)
-                                              Image(systemName: "checkmark.seal.fill").font(.system(size: 14)).foregroundColor(.green)
-                                          }
-                                          VStack(alignment: .leading, spacing: 2) {
-                                              Text(["شهادة المتجر الافتراضية", "شهادة سيرفر ONEs", "شهادة مخصصة"][i])
-                                                  .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.storeText)
-                                              Text(["صالحة حتى 2027", "صالحة حتى 2026", "غير مفعلة"][i])
-                                                  .font(.system(size: 11)).foregroundColor(i < 2 ? .green : .orange)
-                                          }
-                                          Spacer()
-                                      }
-                                      .padding(10)
-                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCardAlt))
-                                  }
-                              }
-                              .padding(16)
-                              .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.5)))
-                              .padding(.horizontal, 18)
-                              Spacer(minLength: 30)
-                          }
-                          .padding(.vertical, 10)
-                      }
-                      .background(Color.storeBg.ignoresSafeArea())
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarLeading) {
-                              Button("إغلاق") { dismiss() }.foregroundColor(Color.storePrimary)
-                          }
-                      }
-                      .sheet(isPresented: $showFilePicker) {
-                          CertificateFilePicker(certData: $certData, certName: $certName)
-                      }
-                      .sheet(isPresented: $showCertList) {
-                          StoreCertListView(selectedName: $certName, selectedData: $certData)
-                      }
-                  }
-              }
-
-              private func methodCard(icon: String, title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-                  Button(action: action) {
-                      VStack(spacing: 8) {
-                          Image(systemName: icon).font(.system(size: 22))
-                              .foregroundColor(selected ? Color.storePrimary : Color.storeSub)
-                          Text(title).font(.system(size: 12, weight: .bold))
-                              .foregroundColor(selected ? .white : Color.storeSub)
-                      }
-                      .frame(maxWidth: .infinity).padding(.vertical, 14)
-                      .background(
-                          RoundedRectangle(cornerRadius: 14)
-                              .fill(selected ? Color.storePrimary.opacity(0.15) : Color.storeCardAlt)
-                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? Color.storePrimary : Color.storeDivider, lineWidth: selected ? 1.5 : 0.5))
-                      )
-                  }
-                  .buttonStyle(.plain)
-              }
-
-              @MainActor
-              private func startServerInstall() {
-                  showInstallProgress = true
-                  installStatus = "جاري التحميل من السيرفر..."
-                  installProgress = 0
-                  CertificateSigner.installFromServer(bundleId: "", serverURL: serverURL.isEmpty ? nil : serverURL) { ok, msg in
-                      self.showInstallProgress = false
-                      self.installStatus = msg
-                      if ok { HapticManager.shared.success() }
-                  }
-              }
-
-              @MainActor
-              private func startCertInstall() {
-                  guard let data = certData else { return }
-                  showInstallProgress = true
-                  installStatus = "جاري التثبيت بالشهادة..."
-                  installProgress = 0
-                  CertificateSigner.installWithCertificate(bundleId: "", certData: data) { ok, msg in
-                      self.showInstallProgress = false
-                      self.installStatus = msg
-                      if ok { HapticManager.shared.success() }
-                  }
-              }
-          }
-
-          // ================= STORE CERT LIST VIEW =================
-          struct StoreCertListView: View {
-              @Environment(\.dismiss) private var dismiss
-              @Binding var selectedName: String
-              @Binding var selectedData: Data?
-              @State private var loadingCert: String? = nil
-
-              private let certificates = [
-                  ("شهادة المتجر الذهبية", "gold-cert", true),
-                  ("شهادة المتجر الفضية", "silver-cert", true),
-                  ("شهادة سيرفر ONEs", "server-cert", true)
-              ]
-
-              var body: some View {
-                  NavigationView {
-                      List {
-                          Section("شهادات المتجر المتاحة") {
-                              ForEach(certificates, id: \.1) { cert in
-                                  Button {
-                                      loadCertificate(cert)
-                                  } label: {
-                                      HStack(spacing: 12) {
-                                          ZStack {
-                                              Circle().fill(Color.storePrimary.opacity(0.12)).frame(width: 36, height: 36)
-                                              if loadingCert == cert.1 {
-                                                  ProgressView().scaleEffect(0.7)
-                                              } else {
-                                                  Image(systemName: "checkmark.seal.fill")
-                                                      .font(.system(size: 14)).foregroundColor(Color.storePrimary)
-                                              }
-                                          }
-                                          VStack(alignment: .leading, spacing: 2) {
-                                              Text(cert.0).font(.system(size: 14, weight: .semibold)).foregroundColor(Color.storeText)
-                                              Text("متاحة للتحميل").font(.system(size: 11)).foregroundColor(.green)
-                                          }
-                                          Spacer()
-                                          if selectedName == cert.0 {
-                                              Image(systemName: "checkmark.circle.fill").foregroundColor(Color.storePrimary)
-                                          }
-                                      }
-                                  }
-                                  .buttonStyle(.plain)
-                              }
-                          }
-
-                          Section("استيراد من الجهاز") {
-                              Button {
-                                  dismiss()
-                              } label: {
-                                  HStack(spacing: 12) {
-                                      ZStack {
-                                          Circle().fill(Color.storePink.opacity(0.12)).frame(width: 36, height: 36)
-                                          Image(systemName: "doc.badge.plus")
-                                              .font(.system(size: 14)).foregroundColor(Color.storePink)
-                                      }
-                                      VStack(alignment: .leading, spacing: 2) {
-                                          Text("رفع شهادة مخصصة").font(.system(size: 14, weight: .semibold)).foregroundColor(Color.storeText)
-                                          Text("اختر ملف .pem أو .p12 من جهازك").font(.system(size: 11)).foregroundColor(Color.storeSub)
-                                      }
-                                      Spacer()
-                                      Image(systemName: "chevron.left").foregroundColor(Color.storeSub).font(.system(size: 12))
-                                  }
-                              }
-                              .buttonStyle(.plain)
-                          }
-                      }
-                      .background(Color.storeBg.ignoresSafeArea())
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .principal) {
-                              Text("اختر شهادة").font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                          }
-                          ToolbarItem(placement: .navigationBarLeading) {
-                              Button("إلغاء") { dismiss() }.foregroundColor(Color.storePrimary)
-                          }
-                      }
-                  }
-              }
-
-              private func loadCertificate(_ cert: (String, String, Bool)) {
-                  loadingCert = cert.1
-                  let urlStr = ActivationManager.codesSiteBase + "/api/public/store/certificate/\(cert.1)"
-                  guard let url = URL(string: urlStr) else { loadingCert = nil; return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      DispatchQueue.main.async {
-                          loadingCert = nil
-                          if let data = data, data.count > 100 {
-                              selectedData = data
-                              selectedName = cert.0
-                              dismiss()
-                          }
-                      }
-                  }.resume()
-              }
-          }
-
+          // ================= SEARCH =================
           struct SearchView: View {
               @Environment(\.dismiss) private var dismiss
               @ObservedObject var feed: StoreFeed
@@ -6613,7 +6112,6 @@ jobs:
           struct ONEsPostCard: View {
               let post: ONEsPost
               var anonymous: Bool = false
-              var showMenu: Bool = true
               @ObservedObject private var content = ONEsContent.shared
               @ObservedObject private var session = ONEsSession.shared
               @ObservedObject private var extras = ONEsSocialExtras.shared
@@ -6674,7 +6172,7 @@ jobs:
                                       .font(.system(size: 13))
                                       .foregroundColor(.white.opacity(0.4))
                                   Spacer(minLength: 0)
-                                  if !anonymous && showMenu {
+                                  if !anonymous {
                                       Menu {
                                           Button { extras.toggleFollow(post.author) } label: {
                                               Label(extras.following.contains(post.author) ? "إلغاء المتابعة" : "متابعة \(authorName)",
@@ -7218,7 +6716,7 @@ jobs:
                                       if section == 0 {
                                           LazyVStack(spacing: 12) {
                                               ForEach(filtered) { post in
-                                                  ONEsPostCard(post: post, anonymous: true, showMenu: false)
+                                                  ONEsPostCard(post: post, anonymous: true)
                                               }
                                           }
                                           .padding(.horizontal, 16)
@@ -7240,7 +6738,7 @@ jobs:
                                       }
                                       LazyVStack(spacing: 12) {
                                           ForEach(filtered) { post in
-                                              ONEsPostCard(post: post, anonymous: section == 0 || section == 1, showMenu: section != 0 && section != 1)
+                                              ONEsPostCard(post: post, anonymous: section == 0 || section == 1)
                                           }
                                       }
                                       .padding(.horizontal, 16)
@@ -7253,7 +6751,24 @@ jobs:
                               ONEsContent.shared.loadForum()
                           }
 
-                          // Floating + button removed — use header button only
+                          if session.isSignedIn && section != 5 && section != 6 {
+                              Button { showComposer = true } label: {
+                                  Image(systemName: "plus")
+                                      .font(.system(size: 24, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(width: 56, height: 56)
+                                      .background(
+                                          Circle().fill(
+                                              LinearGradient(colors: [Color.storePrimary, Color.storePink],
+                                                             startPoint: .topLeading, endPoint: .bottomTrailing)
+                                          )
+                                      )
+                                      .shadow(color: Color.storePrimary.opacity(0.5), radius: 12, x: 0, y: 6)
+                              }
+                              .buttonStyle(.plain)
+                              .padding(.trailing, 20)
+                              .padding(.bottom, 24)
+                          }
                       }
                       .sheet(isPresented: $showComposer) { ONEsComposerSheet() }
                       .sheet(isPresented: $showProfileEditor) { ONEsProfileEditorSheet() }
@@ -7605,28 +7120,21 @@ jobs:
           mkdir -p artifacts
           rm -rf build-output
           mkdir -p build-output/Payload/VIP21Store.app
+          cp -X VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
+          cp -X Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
+          cp -X Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
+          cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
+          cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
+          cp -X Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
+          # No need for other images
 
-          # Verify binary exists before copying
-          ls -lh VIP21Store
-          file VIP21Store
-
-          cp -p VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
-          cp -p Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
-          cp -p Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
-          cp -p Resources/header_logo.png             build-output/Payload/VIP21Store.app/
-          cp -p Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
-          cp -p Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
-
-          # Verify app bundle contents
-          echo "== App Bundle Contents =="
-          ls -lhA build-output/Payload/VIP21Store.app/
-
-          xattr -cr build-output 2>/dev/null || true
-          find build-output -name ".DS_Store" -delete 2>/dev/null || true
-          find build-output -name "._*" -delete 2>/dev/null || true
+          xattr -cr build-output
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
 
           if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
             echo "::warning::Apple signing secrets are not configured; creating an unsigned IPA artifact."
+            echo "::warning::Add IOS_P12_BASE64, IOS_P12_PASSWORD, and IOS_MOBILEPROVISION_BASE64 together for real iPhone installation."
             SIGNED_FOR_DEVICE=false
           else
             SIGNED_FOR_DEVICE=true
@@ -7653,15 +7161,15 @@ jobs:
             PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
             PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
             if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
-              echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
-              exit 1
+            echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
+            exit 1
             fi
-            cp -p "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
+            cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
             /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
             SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F\" '/Apple Development|Apple Distribution|iPhone Distribution|iPhone Developer/{print $2; exit}')
             if [ -z "$SIGN_IDENTITY" ]; then
-              echo "::error::No valid Apple code-signing identity was found."
-              exit 1
+            echo "::error::No valid Apple code-signing identity was found in IOS_P12_BASE64."
+            exit 1
             fi
             /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
             /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
@@ -7677,36 +7185,30 @@ jobs:
             openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
               -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
           done
-          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete 2>/dev/null || true
+          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
           /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
           /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
           /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
           echo "Icons hidden and stored encrypted under .private/"
 
-          # Create IPA
           rm -f artifacts/21s.ipa
-          cd build-output
-          zip -r -q ../artifacts/21s.ipa Payload
-          cd ..
-
-          # Verify IPA was created
-          if [ ! -f artifacts/21s.ipa ]; then
-            echo "::error::IPA file was not created!"
-            exit 1
-          fi
-
-          echo "== IPA Info =="
+          find build-output -name ".DS_Store" -delete
+          find build-output -name "._*" -delete
+          xattr -cr build-output/Payload || true
+          cd build-output && zip -r -X -q -fz- -Z deflate ../artifacts/21s.ipa Payload && cd ..
+          zip -q -F artifacts/21s.ipa --out artifacts/21s.fixed.ipa >/dev/null 2>&1 \
+            && mv artifacts/21s.fixed.ipa artifacts/21s.ipa || rm -f artifacts/21s.fixed.ipa
           ls -lh artifacts/21s.ipa
 
           if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
-            echo "::error::IPA file is corrupt or invalid."
+            echo "Error: IPA file is corrupt or invalid."
             exit 1
           fi
           if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
-            echo "::error::IPA does not contain a valid App Bundle."
+            echo "Error: IPA does not contain a valid App Bundle"
             exit 1
           fi
-          echo "IPA created successfully: $(du -sh artifacts/21s.ipa)"
+          echo "IPA: $(du -sh artifacts/21s.ipa)"
 
       - name: Verify IPA package
         run: |
