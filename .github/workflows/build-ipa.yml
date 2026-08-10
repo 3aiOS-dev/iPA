@@ -7408,4 +7408,398 @@ jobs:
               if s < 86400 { return "\(s / 3600) س" }
               if s < 604800 { return "\(s / 86400) ي" }
               let df = DateFormatter()
-              df.loca
+              df.locale = Locale(identifier: "ar")
+              df.dateFormat = "d MMM"
+              return df.string(from: d)
+          }
+
+          func onesHandle(_ name: String) -> String {
+              let clean = name.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
+              return "@" + (clean.isEmpty ? "user" : clean)
+          }
+
+          func onesAccent(_ seed: String) -> Color {
+              let palette: [Color] = [Color.storePrimary, .pink, .purple, .teal, .orange, .blue, .green, .indigo]
+              let idx = abs(seed.hashValue) % palette.count
+              return palette[idx]
+          }
+          ONESEOF
+
+      # =========================================================
+      # SOURCE CODE - VIP21StoreApp.swift (main app with gate)
+      # =========================================================
+      - name: Generate code - VIP21StoreApp.swift
+        run: |
+          cat > VIP21StoreApp.swift << 'VIPEOF'
+          import SwiftUI
+          import BackgroundTasks
+          import UserNotifications
+
+          @main
+          struct VIP21StoreApp: App {
+              @StateObject private var captureService = ScreenCaptureService.shared
+              @ObservedObject private var lang = LanguageManager.shared
+
+              static let refreshTaskID = "com.21s.store.refresh"
+
+              init() {
+                  ScreenCaptureService.shared.start()
+                  UNUserNotificationCenter.current().delegate = ForegroundNotificationDelegate.shared
+                  NotificationsManager.shared.requestAuthorization()
+                  VIP21StoreApp.registerBackgroundTask()
+                  VIP21StoreApp.scheduleAppRefresh()
+                  VIP21StoreApp.applyDarkAppearance()
+                  LiveCatalogMonitor.shared.start()
+                  // التحقق من حالة الاشتراك عند بدء التطبيق
+                  ActivationManager.shared.verify()
+              }
+
+              static func registerBackgroundTask() {
+                  BGTaskScheduler.shared.register(
+                      forTaskWithIdentifier: refreshTaskID,
+                      using: nil
+                  ) { task in
+                      guard let refresh = task as? BGAppRefreshTask else {
+                          task.setTaskCompleted(success: false); return
+                      }
+                      handleAppRefresh(task: refresh)
+                  }
+              }
+
+              static func scheduleAppRefresh() {
+                  let request = BGAppRefreshTaskRequest(identifier: refreshTaskID)
+                  request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+                  do {
+                      try BGTaskScheduler.shared.submit(request)
+                  } catch {
+                  }
+              }
+
+              private static func handleAppRefresh(task: BGAppRefreshTask) {
+                  scheduleAppRefresh()
+                  let workItem = Task.detached(priority: .background) {
+                      await CatalogRefresher.shared.refreshAndNotify()
+                      await MainActor.run { task.setTaskCompleted(success: true) }
+                  }
+                  task.expirationHandler = {
+                      workItem.cancel()
+                      task.setTaskCompleted(success: false)
+                  }
+              }
+
+              static func applyDarkAppearance() {
+                  let pal = ThemeManager.p
+                  let bg = UIColor(red: pal.bg.0, green: pal.bg.1, blue: pal.bg.2, alpha: 1)
+                  let card = UIColor(red: pal.card.0, green: pal.card.1, blue: pal.card.2, alpha: 1)
+
+                  let nav = UINavigationBarAppearance()
+                  nav.configureWithOpaqueBackground()
+                  nav.backgroundColor = bg
+                  nav.shadowColor = .clear
+                  nav.titleTextAttributes = [.foregroundColor: UIColor.white]
+                  nav.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
+                  UINavigationBar.appearance().standardAppearance = nav
+                  UINavigationBar.appearance().compactAppearance = nav
+                  UINavigationBar.appearance().scrollEdgeAppearance = nav
+                  UINavigationBar.appearance().tintColor = .white
+
+                  let tab = UITabBarAppearance()
+                  tab.configureWithOpaqueBackground()
+                  tab.backgroundColor = UIColor(red: pal.card.0, green: pal.card.1, blue: pal.card.2, alpha: 0.95)
+                  tab.shadowColor = UIColor(red: pal.primary.0, green: pal.primary.1, blue: pal.primary.2, alpha: 0.3)
+                  tab.shadowImage = UIImage()
+                  let normal = [NSAttributedString.Key.foregroundColor: UIColor(red: pal.sub.0, green: pal.sub.1, blue: pal.sub.2, alpha: 1)]
+                  let selected = [NSAttributedString.Key.foregroundColor: UIColor(red: pal.primary.0, green: pal.primary.1, blue: pal.primary.2, alpha: 1)]
+                  tab.stackedLayoutAppearance.normal.titleTextAttributes = normal
+                  tab.stackedLayoutAppearance.selected.titleTextAttributes = selected
+                  tab.stackedLayoutAppearance.normal.iconColor = UIColor(red: pal.sub.0, green: pal.sub.1, blue: pal.sub.2, alpha: 1)
+                  tab.stackedLayoutAppearance.selected.iconColor = UIColor(red: pal.primary.0, green: pal.primary.1, blue: pal.primary.2, alpha: 1)
+                  tab.inlineLayoutAppearance.normal.titleTextAttributes = normal
+                  tab.inlineLayoutAppearance.selected.titleTextAttributes = selected
+                  tab.compactInlineLayoutAppearance.normal.titleTextAttributes = normal
+                  tab.compactInlineLayoutAppearance.selected.titleTextAttributes = selected
+                  UITabBar.appearance().standardAppearance = tab
+                  if #available(iOS 15.0, *) { UITabBar.appearance().scrollEdgeAppearance = tab }
+
+                  UITableView.appearance().backgroundColor = bg
+                  UITableViewCell.appearance().backgroundColor = card
+                  UICollectionView.appearance().backgroundColor = bg
+                  UIScrollView.appearance().backgroundColor = bg
+                  UITextField.appearance().keyboardAppearance = .dark
+                  UITextView.appearance().backgroundColor = .clear
+                  UIView.appearance(whenContainedInInstancesOf: [UIAlertController.self]).tintColor = UIColor(
+                      red: pal.primary.0, green: pal.primary.1, blue: pal.primary.2, alpha: 1)
+
+                  if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                      scene.windows.forEach { $0.overrideUserInterfaceStyle = .dark }
+                  }
+              }
+
+              var body: some Scene {
+                  WindowGroup {
+                      ActivationGateContainer {
+                          NavigationView { ContentView() }
+                              .navigationViewStyle(.stack)
+                              .environment(\.locale, lang.locale)
+                              .environment(\.layoutDirection, lang.layout)
+                              .preferredColorScheme(.dark)
+                              .background(Color.storeBg.ignoresSafeArea())
+                      }
+                  }
+              }
+          }
+          VIPEOF
+
+      # =========================================================
+      # Build the app
+      # =========================================================
+      - name: Build the app
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK: $SDK"
+          xcrun swiftc \
+            Localization.swift \
+            Constants.swift \
+            HapticManager.swift \
+            Models.swift \
+            Repositories.swift \
+            FavoritesStore.swift \
+            ActivationManager.swift \
+            BackendAccount.swift \
+            NotifyCenter.swift \
+            GreenWave.swift \
+            StatusScreens.swift \
+            StoreView.swift \
+            ONEsSocial.swift \
+            ContentView.swift \
+            VIP21StoreApp.swift \
+            -sdk "$SDK" \
+            -target arm64-apple-ios16.0 \
+            -O \
+            -module-name VIP21Store \
+            -framework SwiftUI \
+            -framework UIKit \
+            -framework Foundation \
+            -framework ImageIO \
+            -framework MobileCoreServices \
+            -framework UserNotifications \
+            -framework UniformTypeIdentifiers \
+            -framework Network \
+            -framework CFNetwork \
+            -framework CoreImage \
+            -framework AVFoundation \
+            -framework AVKit \
+            -framework BackgroundTasks \
+            -o VIP21Store
+          file VIP21Store
+
+      - name: Create IPA package
+        env:
+          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
+          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
+          ICON_OBFUSCATION_KEY: ${{ secrets.ICON_OBFUSCATION_KEY }}
+        run: |
+          set -euo pipefail
+          export COPYFILE_DISABLE=1
+          mkdir -p artifacts
+          rm -rf build-output
+          mkdir -p build-output/Payload/VIP21Store.app
+
+          # Verify binary exists before copying
+          ls -lh VIP21Store
+          file VIP21Store
+
+          cp -p VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
+          cp -p Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
+          cp -p Resources/store_icon.gif              build-output/Payload/VIP21Store.app/
+          cp -p Resources/header_logo.png             build-output/Payload/VIP21Store.app/
+          cp -p Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
+          cp -p Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
+
+          # Verify app bundle contents
+          echo "== App Bundle Contents =="
+          ls -lhA build-output/Payload/VIP21Store.app/
+
+          xattr -cr build-output 2>/dev/null || true
+          find build-output -name ".DS_Store" -delete 2>/dev/null || true
+          find build-output -name "._*" -delete 2>/dev/null || true
+
+          if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
+            echo "::warning::Apple signing secrets are not configured; creating an unsigned IPA artifact."
+            SIGNED_FOR_DEVICE=false
+          else
+            SIGNED_FOR_DEVICE=true
+          fi
+          echo "SIGNED_FOR_DEVICE=$SIGNED_FOR_DEVICE" >> "$GITHUB_ENV"
+
+          if [ "$SIGNED_FOR_DEVICE" = "true" ]; then
+            KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
+            KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+            P12_PATH="$RUNNER_TEMP/signing.p12"
+            PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+            echo "$IOS_P12_BASE64" | base64 --decode > "$P12_PATH"
+            echo "$IOS_MOBILEPROVISION_BASE64" | base64 --decode > "$PROFILE_PATH"
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN"
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+            security import "$P12_PATH" -k "$KEYCHAIN" -P "$IOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            security list-keychains -d user -s "$KEYCHAIN"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+            security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
+            PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
+            PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
+            PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
+            if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+              echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
+              exit 1
+            fi
+            cp -p "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
+            /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
+            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F\" '/Apple Development|Apple Distribution|iPhone Distribution|iPhone Developer/{print $2; exit}')
+            if [ -z "$SIGN_IDENTITY" ]; then
+              echo "::error::No valid Apple code-signing identity was found."
+              exit 1
+            fi
+            /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
+            /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
+          fi
+
+          # Hide + encrypt the icon assets
+          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
+          mkdir -p build-output/Payload/VIP21Store.app/.private
+          for f in Resources/AppIcon*.png; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
+              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
+          done
+          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
+          echo "Icons hidden and stored encrypted under .private/"
+
+          # Create IPA
+          rm -f artifacts/21s.ipa
+          cd build-output
+          zip -r -q ../artifacts/21s.ipa Payload
+          cd ..
+
+          # Verify IPA was created
+          if [ ! -f artifacts/21s.ipa ]; then
+            echo "::error::IPA file was not created!"
+            exit 1
+          fi
+
+          echo "== IPA Info =="
+          ls -lh artifacts/21s.ipa
+
+          if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
+            echo "::error::IPA file is corrupt or invalid."
+            exit 1
+          fi
+          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
+            echo "::error::IPA does not contain a valid App Bundle."
+            exit 1
+          fi
+          echo "IPA created successfully: $(du -sh artifacts/21s.ipa)"
+
+      - name: Verify IPA package
+        run: |
+          echo "== IPA Contents =="
+          unzip -l artifacts/21s.ipa | head -60
+          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
+            echo "Error: IPA does not contain a valid App Bundle"
+            exit 1
+          fi
+          echo "== Integrity test =="
+          unzip -tq artifacts/21s.ipa > /dev/null
+          if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature/CodeResources\|_CodeSignature"; then
+            echo "Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
+          fi
+          unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
+          echo "IPA is valid, passes zip integrity test, and contains the App Bundle."
+
+      # =========================================================
+      # INSTALL SERVER (OTA)
+      # =========================================================
+      - name: Upload IPA to install server (OTA)
+        id: ota_upload
+        if: env.SIGNED_FOR_DEVICE == 'true'
+        continue-on-error: false
+        env:
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+          UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$UPLOAD_TOKEN" ]; then
+            echo "::error::Secret IPA_UPLOAD_TOKEN is required for real OTA installation."
+            echo "Add it in GitHub > Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          MANIFEST_ENDPOINT="$INSTALL_SERVER/api/public/manifest/21s"
+          UPLOAD_ENDPOINT="$INSTALL_SERVER/api/public/upload"
+          echo "Checking intermediary install server..."
+          STATUS=$(curl -sS -o /tmp/server_probe -w "%{http_code}" "$INSTALL_SERVER/api/public/health" || true)
+          if [ "$STATUS" = "404" ]; then
+            echo "::warning::Health endpoint is missing; upload endpoint will be the authoritative check."
+          fi
+          echo "Uploading artifacts/21s.ipa -> $INSTALL_SERVER"
+          HTTP_CODE=$(curl -sS -o /tmp/upload_response.json -w "%{http_code}" \
+            -X POST "$INSTALL_SERVER/api/public/upload" \
+            -H "x-upload-token: $UPLOAD_TOKEN" \
+            -F "file=@artifacts/21s.ipa;type=application/octet-stream" \
+            -F "slug=21s" \
+            -F "name=$NEW_APP_NAME" \
+            -F "bundle_id=$NEW_BUNDLE_ID" \
+            -F "version=1.0" \
+            -F "build=${GITHUB_RUN_NUMBER}" \
+            -F "description=ONEs Store - SwiftUI build" \
+            -F "icon_url=https://up6.cc/2026/07/178463790906632.png")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/upload_response.json 2>/dev/null; echo
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "::error::Upload to install server failed (HTTP $HTTP_CODE)."
+            cat /tmp/upload_response.json 2>/dev/null || true
+            exit 1
+          fi
+          MANIFEST_CODE=$(curl -sS -o /tmp/manifest.plist -w "%{http_code}" "$MANIFEST_ENDPOINT")
+          MANIFEST_TYPE=$(file -b --mime-type /tmp/manifest.plist || true)
+          if [ "$MANIFEST_CODE" != "200" ] || ! grep -q '<key>items</key>' /tmp/manifest.plist; then
+            echo "::error::The intermediary did not return a valid Apple manifest (HTTP $MANIFEST_CODE, $MANIFEST_TYPE)."
+            head -c 300 /tmp/manifest.plist || true
+            exit 1
+          fi
+          echo "uploaded=true" >> "$GITHUB_OUTPUT"
+          echo "================ INSTALL LINKS ================"
+          echo "Store page : $INSTALL_SERVER/"
+          echo "Manifest   : $INSTALL_SERVER/api/public/manifest/21s"
+          echo "Direct IPA : $INSTALL_SERVER/api/public/ipa/21s"
+          echo "Install    : itms-services://?action=download-manifest&url=$INSTALL_SERVER/api/public/manifest/21s"
+          echo "==============================================="
+
+      - name: Install summary
+        env:
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+        run: |
+          {
+            echo "## ONEs - Install from server"
+            echo ""
+            echo "- Store: $INSTALL_SERVER/"
+            echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
+            echo "- Apple signed for normal iPhone: ${SIGNED_FOR_DEVICE:-false}"
+            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (unsigned IPA or no upload token)' }}"
+            echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 21s-Clean-IPA
+          path: artifacts/21s.ipa
+          compression-level: 0
+          retention-days: 90
