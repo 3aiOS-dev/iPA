@@ -55,6 +55,8 @@ jobs:
           curl -L -o Resources/appstore_glyph.png  "https://up6.cc/2026/08/178602172173251.png"
           # Subscription screen mascot character
           curl -L -o Resources/sub_mascot.png      "https://up6.cc/2026/08/178648656495841.png"
+          # Home / featured banner artwork
+          curl -L -o Resources/home_banner.png     "https://up6.cc/2026/08/178648777615571.png"
           # App details icon background animation (GIF behind the app icon) - we'll keep but not use heavy effects
           curl -L -o Resources/detail_icon_bg.gif      "https://up6.cc/2026/08/178602194400281.png"
           file Resources/*.png Resources/*.gif 2>/dev/null || true
@@ -1116,6 +1118,7 @@ jobs:
           struct SubscriptionGateView: View {
               @ObservedObject private var activation = ActivationManager.shared
               @State private var input: String = ""
+              @State private var agreed: Bool = false
               @State private var shake: Bool = false
               @FocusState private var focused: Bool
 
@@ -1123,6 +1126,12 @@ jobs:
               private let blueColor   = Color(red: 0.22, green: 0.45, blue: 0.95)
               private let fieldColor  = Color(red: 0.957, green: 0.961, blue: 0.969)
               private let cardColor   = Color(red: 0.976, green: 0.980, blue: 0.988)
+
+              private var canActivate: Bool {
+                  !activation.isWorking
+                      && agreed
+                      && !input.trimmingCharacters(in: .whitespaces).isEmpty
+              }
 
               var body: some View {
                   ZStack(alignment: .top) {
@@ -1140,20 +1149,8 @@ jobs:
                       ScrollView(showsIndicators: false) {
                           VStack(spacing: 0) {
 
-                              // ---- Top bar: close + restore ----
+                              // ---- Top bar: restore only (close icon removed) ----
                               HStack {
-                                  Button {
-                                      focused = false
-                                      input = ""
-                                      activation.udid = ""
-                                  } label: {
-                                      Image(systemName: "xmark")
-                                          .font(.system(size: 17, weight: .bold))
-                                          .foregroundColor(inkColor)
-                                          .frame(width: 44, height: 44)
-                                          .background(Circle().fill(Color.white))
-                                  }
-
                                   Spacer()
 
                                   Button {
@@ -1178,8 +1175,9 @@ jobs:
                                       .resizable()
                                       .scaledToFit()
                                       .frame(height: 230)
-                                      .padding(.top, 10)
-                                      .padding(.bottom, -46)
+                                      .padding(.top, 34)
+                                      .padding(.bottom, -30)
+                                      .zIndex(2)
                               } else {
                                   Spacer().frame(height: 40)
                               }
@@ -1274,6 +1272,11 @@ jobs:
                                   // Verify button
                                   Button {
                                       focused = false
+                                      guard agreed else {
+                                          withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
+                                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
+                                          return
+                                      }
                                       HapticManager.shared.impact(.medium)
                                       activation.activate(code: input) { ok in
                                           if ok {
@@ -1299,8 +1302,8 @@ jobs:
                                               .fill(blueColor)
                                       )
                                   }
-                                  .disabled(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty)
-                                  .opacity(activation.isWorking || input.trimmingCharacters(in: .whitespaces).isEmpty ? 0.6 : 1)
+                                  .disabled(!canActivate)
+                                  .opacity(canActivate ? 1 : 0.6)
                                   .padding(.horizontal, 22)
                                   .padding(.top, 26)
                                   .padding(.bottom, 30)
@@ -1313,14 +1316,35 @@ jobs:
                               )
                               .padding(.horizontal, 14)
 
-                              // ---- Terms ----
-                              HStack(spacing: 4) {
-                                  Text(LS("بإكمال العملية، أنت توافق على"))
-                                      .foregroundColor(Color(white: 0.45))
-                                  Text(LS("الشروط والأحكام"))
-                                      .foregroundColor(Color(red: 0.22, green: 0.45, blue: 0.95))
+                              // ---- Terms + agreement checkbox (required) ----
+                              Button {
+                                  HapticManager.shared.selection()
+                                  withAnimation(.easeOut(duration: 0.15)) { agreed.toggle() }
+                              } label: {
+                                  HStack(spacing: 8) {
+                                      ZStack {
+                                          RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                              .fill(agreed ? blueColor : Color.white.opacity(0.85))
+                                          RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                              .stroke(agreed ? blueColor : Color.white, lineWidth: 1.4)
+                                          if agreed {
+                                              Image(systemName: "checkmark")
+                                                  .font(.system(size: 13, weight: .heavy))
+                                                  .foregroundColor(.white)
+                                          }
+                                      }
+                                      .frame(width: 24, height: 24)
+
+                                      HStack(spacing: 4) {
+                                          Text(LS("بإكمال العملية، أنت توافق على"))
+                                              .foregroundColor(Color(white: 0.35))
+                                          Text(LS("الشروط والأحكام"))
+                                              .foregroundColor(Color(red: 0.22, green: 0.45, blue: 0.95))
+                                      }
+                                      .font(.system(size: 13, weight: .semibold))
+                                  }
                               }
-                              .font(.system(size: 13, weight: .semibold))
+                              .buttonStyle(.plain)
                               .padding(.top, 18)
 
                               Spacer(minLength: 30)
@@ -1522,7 +1546,7 @@ jobs:
 
               var body: some View {
                   ZStack {
-                      Color.storeBg.ignoresSafeArea()
+                      ONEsStoreBackground()
                       VStack(spacing: 0) {
                           HStack {
                               Button(action: { isPresented = false }) {
@@ -1616,7 +1640,7 @@ jobs:
           struct AnimatedWaveBackground: View {
               var height: CGFloat = 260
               var body: some View {
-                  Color.storeBg.ignoresSafeArea()
+                  ONEsStoreBackground()
               }
           }
 
@@ -1993,7 +2017,7 @@ jobs:
                       }
                   }
                   .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
               }
           }
 
@@ -2078,6 +2102,56 @@ jobs:
               static var walletDark: Color     { rgb(ThemeManager.p.primaryDk) }
               static var walletDeep: Color     { rgb(ThemeManager.p.primaryDk) }
               static var creamBg: Color        { rgb(ThemeManager.p.blush) }
+          }
+
+          // ================= SHARED STORE BACKGROUND (same as activation screen) =================
+          struct ONEsStoreBackground: View {
+              var body: some View {
+                  LinearGradient(
+                      colors: [
+                          Color(red: 0.25, green: 0.50, blue: 0.97),
+                          Color(red: 0.62, green: 0.77, blue: 0.99),
+                          Color(red: 0.96, green: 0.97, blue: 1.0)
+                      ],
+                      startPoint: .top,
+                      endPoint: .bottom
+                  )
+                  .ignoresSafeArea()
+              }
+          }
+
+          // Mascot character, reused across the store
+          struct ONEsMascot: View {
+              var height: CGFloat = 120
+              var body: some View {
+                  Group {
+                      if let m = UIImage.bundled("sub_mascot.png") {
+                          Image(uiImage: m)
+                              .resizable()
+                              .scaledToFit()
+                      } else {
+                          Color.clear
+                      }
+                  }
+                  .frame(height: height)
+              }
+          }
+
+          // Full-width artwork banner shown at the natural size of the image
+          struct ONEsArtBanner: View {
+              var body: some View {
+                  Group {
+                      if let img = UIImage.bundled("home_banner.png") {
+                          Image(uiImage: img)
+                              .resizable()
+                              .aspectRatio(img.size.width / max(img.size.height, 1), contentMode: .fit)
+                      } else {
+                          Color.clear.frame(height: 0)
+                      }
+                  }
+                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                  .padding(.horizontal, 18)
+              }
           }
 
           struct PinkTheme {
@@ -2592,6 +2666,8 @@ jobs:
 
               var body: some View {
                   ZStack {
+                      ONEsStoreBackground()
+
                       TabView(selection: $tab) {
                           StoreHomeView(feed: feed,
                                        onMenu: {  },
@@ -2718,7 +2794,7 @@ jobs:
                   .padding(.top, 12)
                   .padding(.bottom, 12)
                   .background(
-                      Color.storeBg
+                      Color.clear
                           .overlay(
                               VStack {
                                   Spacer()
@@ -2815,15 +2891,22 @@ jobs:
 
               var body: some View {
                   ZStack(alignment: .topTrailing) {
-                      RoundedRectangle(cornerRadius: 22, style: .continuous)
-                          .fill(LinearGradient(colors: [Color.storePrimaryDk, Color(red: 0.09, green: 0.11, blue: 0.24), Color.black],
-                                               startPoint: .topTrailing, endPoint: .bottomLeading))
-
-                      Circle()
-                          .fill(Color.storePrimary.opacity(0.35))
-                          .frame(width: 160, height: 160)
-                          .blur(radius: 50)
-                          .offset(x: -70, y: -40)
+                      // Artwork banner replaces the old gradient background
+                      Group {
+                          if let img = UIImage.bundled("home_banner.png") {
+                              Image(uiImage: img)
+                                  .resizable()
+                                  .aspectRatio(contentMode: .fill)
+                          } else {
+                              LinearGradient(colors: [Color.storePrimaryDk, Color(red: 0.09, green: 0.11, blue: 0.24)],
+                                             startPoint: .topTrailing, endPoint: .bottomLeading)
+                          }
+                      }
+                      .overlay(
+                          LinearGradient(colors: [Color.black.opacity(0.55), Color.black.opacity(0.15)],
+                                         startPoint: .bottom, endPoint: .top)
+                      )
+                      .clipped()
 
                       VStack(alignment: .trailing, spacing: 8) {
                           HStack {
@@ -2872,9 +2955,18 @@ jobs:
                       }
                       .padding(16)
                   }
-                  .frame(height: 176)
+                  .frame(height: bannerHeight)
+                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                   .padding(.horizontal, 18)
               }
+
+              // Height follows the artwork aspect ratio so the banner shows at image size
+              private var bannerHeight: CGFloat {
+                  guard let img = UIImage.bundled("home_banner.png"), img.size.width > 0 else { return 176 }
+                  let width = UIScreen.main.bounds.width - 36
+                  return width * (img.size.height / img.size.width)
+              }
+
           }
 
           // ================= APPS TAB (no Telegram banner, install button instead of heart) =================
@@ -3005,7 +3097,7 @@ jobs:
                           }
                           .refreshable { await feed.refresh() }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsStoreBackground())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
@@ -3255,7 +3347,7 @@ jobs:
                               }
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsStoreBackground())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
@@ -3326,6 +3418,7 @@ jobs:
               let message: String
               var body: some View {
                   VStack(spacing: 10) {
+                      ONEsMascot(height: 110)
                       Image(systemName: "tray.fill")
                           .font(.system(size: 36))
                           .foregroundColor(Color.storeSub)
@@ -3570,7 +3663,7 @@ jobs:
                       }
                       .padding(.bottom, 40)
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .navigationBarHidden(true)
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
@@ -3720,7 +3813,7 @@ jobs:
                           .padding(.horizontal)
                           .padding(.vertical, 8)
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsStoreBackground())
                   }
                   .onAppear { store.load(appId: app.id) }
                   .preferredColorScheme(.dark)
@@ -4089,7 +4182,7 @@ jobs:
                       }
                       .refreshable { await updates.load() }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .task { await updates.load() }
               }
           }
@@ -4174,12 +4267,27 @@ jobs:
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
-                                  FeaturedBannerCard(apps: feed.apps)
+                                  // "App of the day" now lives only in the Apps tab
+                                  ONEsArtBanner()
 
                                   TelegramUpdatesBanner()
 
                                   // Promo banner + maintenance/update notices + smart suggestions
                                   ONEsAdsBanner()
+
+                                  HStack(alignment: .bottom, spacing: 12) {
+                                      ONEsMascot(height: 92)
+                                      VStack(alignment: .trailing, spacing: 4) {
+                                          Text("أهلاً بك في ONEs")
+                                              .font(.system(size: 16, weight: .heavy))
+                                              .foregroundColor(Color.storeText)
+                                          Text("تصفّح أحدث التطبيقات والتحديثات")
+                                              .font(.system(size: 12, weight: .semibold))
+                                              .foregroundColor(Color.storeSub)
+                                      }
+                                      Spacer(minLength: 0)
+                                  }
+                                  .padding(.horizontal, 20)
 
                                   ONEsNoticesView()
 
@@ -4237,7 +4345,7 @@ jobs:
                           }
                           .refreshable { await feed.refresh() }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsStoreBackground())
                       .navigationBarHidden(true)
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
@@ -4330,7 +4438,7 @@ jobs:
                               .padding(.horizontal, 16)
                           }
                       }
-                      .background(Color.storeBg.ignoresSafeArea())
+                      .background(ONEsStoreBackground())
                       .navigationBarTitleDisplayMode(.inline)
                       .toolbar {
                           ToolbarItem(placement: .principal) { Text("بحث").font(.system(size: 15, weight: .bold)) }
@@ -6165,7 +6273,7 @@ jobs:
                               .padding(14)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .onAppear { if extras.counts[post.id] == nil { extras.loadComments(for: post.id) } }
               }
           }
@@ -6324,7 +6432,7 @@ jobs:
 
                       Spacer()
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .sheet(isPresented: $showPicker) {
                       ONEsImagePicker(image: $attachedImage)
                   }
@@ -6956,7 +7064,7 @@ jobs:
                           }
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .sheet(isPresented: $showPicker) {
                       ONEsImagePicker(image: $picked)
                   }
@@ -7001,7 +7109,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       ZStack(alignment: .bottomTrailing) {
-                          Color.storeBg.ignoresSafeArea()
+                          ONEsStoreBackground()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 0) {
@@ -7351,7 +7459,7 @@ jobs:
                           .padding(.bottom, 40)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
               }
 
               @ViewBuilder
@@ -7401,7 +7509,7 @@ jobs:
                           .padding(.vertical, 14)
                       }
                   }
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
                   .onAppear {
                       content.loadNotifications()
                       content.markAllNotificationsRead()
@@ -7509,7 +7617,7 @@ jobs:
                   }
                   .padding(20)
                   .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  .background(Color.storeBg.ignoresSafeArea())
+                  .background(ONEsStoreBackground())
               }
           }
 
@@ -7697,7 +7805,7 @@ jobs:
                               .environment(\.locale, lang.locale)
                               .environment(\.layoutDirection, lang.layout)
                               .preferredColorScheme(.dark)
-                              .background(Color.storeBg.ignoresSafeArea())
+                              .background(ONEsStoreBackground())
                       }
                   }
               }
@@ -7765,6 +7873,7 @@ jobs:
           cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
           cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
           cp -X Resources/sub_mascot.png              build-output/Payload/VIP21Store.app/
+          cp -X Resources/home_banner.png             build-output/Payload/VIP21Store.app/
           cp -X Resources/detail_icon_bg.gif          build-output/Payload/VIP21Store.app/
           # No need for other images
 
