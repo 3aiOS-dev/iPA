@@ -740,8 +740,8 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "ONEs",
-                              feedURL: "https://ones9vip.lovable.app/api/public/store/apps",
-                              homepage: "https://ones9vip.lovable.app",
+                              feedURL: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app/api/public/store/apps",
+                              homepage: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app",
                               enabled: true,
                               maxGB: 500
                           ),
@@ -907,7 +907,7 @@ jobs:
               @Published public private(set) var daysLeft: Int = 0
               @Published public private(set) var expiryText: String = "غير مفعّل"
 
-              public static let codesSiteBase = "https://ones9vip.lovable.app"
+              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
               public static let activationNameLink = "https://t.me/deviosx"
 
               private let kCode = "activation_code_v1"
@@ -1734,7 +1734,7 @@ jobs:
           final class BackendAccount: ObservableObject {
               static let shared = BackendAccount()
 
-              static let siteBase = "https://ones9vip.lovable.app"
+              static let siteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
               static let supabaseURL = "https://xpsqdzirevankrzrnxko.supabase.co"
               static let anonKey = "sb_publishable_-UfDzXdzukrKLoh6kp8Gsg_ecMMt56Z"
 
@@ -3999,152 +3999,6 @@ jobs:
                           }
                       }
                   }.resume()
-              }
-          }
-
-
-
-          // ================= INSTALL ACTION SHEET (Primary / Super) =================
-          struct InstallServerChoice: Codable, Identifiable, Hashable {
-              let id: String
-              let name: String
-              let kind: String   // "primary" | "super"
-              let base_url: String
-          }
-          struct InstallServersResponse: Codable { let servers: [InstallServerChoice] }
-
-          @MainActor
-          final class InstallServersStore: ObservableObject {
-              static let shared = MainActor.assumeIsolated { InstallServersStore() }
-              @Published var servers: [InstallServerChoice] = []
-              private init() {}
-              func load() {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/servers") else { return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      guard let data = data,
-                            let resp = try? JSONDecoder().decode(InstallServersResponse.self, from: data) else { return }
-                      DispatchQueue.main.async { self.servers = resp.servers }
-                  }.resume()
-              }
-              var primary: InstallServerChoice? { servers.first { $0.kind == "primary" } }
-              var superSrv: InstallServerChoice? { servers.first { $0.kind == "super" } }
-          }
-
-          extension StoreInstaller {
-              func requestInstall(bundleId: String?, name: String, kind: String) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install") else { return }
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التحقق من الشهادة...")
-                  var req = URLRequest(url: url, timeoutInterval: 45)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": ActivationManager.shared.deviceID,
-                      "bundle_id": bundleId ?? "",
-                      "server": kind
-                  ])
-                  StatusCenter.shared.show(text: "جارٍ التوقيع...")
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          self.isWorking = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر التوقيع")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              StatusCenter.shared.show(text: "جارٍ إرسال أمر التثبيت للنظام...")
-                              UIApplication.shared.open(u)
-                              ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
-                          } else {
-                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
-                              StatusCenter.shared.show(text: msg)
-                          }
-                      }
-                  }.resume()
-              }
-          }
-
-          struct InstallActionSheetModifier: ViewModifier {
-              @Binding var isPresented: Bool
-              let bundleId: String?
-              let name: String
-              @ObservedObject private var servers = InstallServersStore.shared
-              func body(content: Content) -> some View {
-                  content.confirmationDialog("اختر طريقة التثبيت", isPresented: $isPresented, titleVisibility: .visible) {
-                      Button("تثبيت عادي") { StoreInstaller.shared.requestInstall(bundleId: bundleId, name: name, kind: "primary") }
-                      Button("install-super ⚡️") { StoreInstaller.shared.requestInstall(bundleId: bundleId, name: name, kind: "super") }
-                      Button("إلغاء", role: .cancel) { }
-                  }
-                  .onAppear { InstallServersStore.shared.load() }
-              }
-          }
-          extension View {
-              func installActionSheet(isPresented: Binding<Bool>, bundleId: String?, name: String) -> some View {
-                  modifier(InstallActionSheetModifier(isPresented: isPresented, bundleId: bundleId, name: name))
-              }
-          }
-
-          // ================= INJECTIONS (Dylibs / Debs / Plugins) =================
-          struct InjectionItem: Codable, Identifiable, Hashable {
-              let id: String
-              let name: String
-              let kind: String
-              let file_url: String
-              let description: String
-              let remove_tracking: Bool
-          }
-          struct InjectionsResponse: Codable { let injections: [InjectionItem] }
-
-          @MainActor
-          final class InjectionsStore: ObservableObject {
-              static let shared = MainActor.assumeIsolated { InjectionsStore() }
-              @Published var items: [String: [InjectionItem]] = [:]
-              private init() {}
-              func load(bundleID: String) {
-                  guard let esc = bundleID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                        let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/injections?bundle_id=" + esc) else { return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      guard let data = data,
-                            let resp = try? JSONDecoder().decode(InjectionsResponse.self, from: data) else { return }
-                      DispatchQueue.main.async { self.items[bundleID] = resp.injections }
-                  }.resume()
-              }
-          }
-
-          struct InjectionsSection: View {
-              let bundleID: String
-              @ObservedObject private var store = InjectionsStore.shared
-              var body: some View {
-                  let list = store.items[bundleID] ?? []
-                  if list.isEmpty { EmptyView() } else {
-                      VStack(alignment: .leading, spacing: 10) {
-                          HStack(spacing: 8) {
-                              Image(systemName: "wrench.and.screwdriver.fill")
-                                  .foregroundColor(Color.storePrimary)
-                              Text("إضافات وإزالة تتبع")
-                                  .font(.system(size: 15, weight: .black))
-                                  .foregroundColor(Color.storeText)
-                          }
-                          ForEach(list) { item in
-                              HStack(spacing: 10) {
-                                  Image(systemName: item.remove_tracking ? "shield.checkerboard" : "puzzlepiece.extension.fill")
-                                      .foregroundColor(Color.storePrimary)
-                                  VStack(alignment: .leading, spacing: 2) {
-                                      Text(item.name).font(.system(size: 13, weight: .bold)).foregroundColor(Color.storeText)
-                                      Text("\(item.kind) • \(item.description)")
-                                          .font(.system(size: 11)).foregroundColor(Color.storeSub).lineLimit(2)
-                                  }
-                                  Spacer()
-                              }
-                              .padding(10)
-                              .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          }
-                      }
-                      .padding(.horizontal, 16)
-                      .onAppear { InjectionsStore.shared.load(bundleID: bundleID) }
-                  }
               }
           }
 
@@ -7588,7 +7442,7 @@ jobs:
                               .font(.system(size: 14, weight: .semibold))
                               .foregroundColor(.white.opacity(0.7))
                           Spacer()
-                          Text("لا توجد رسائل داخلية")
+                          Text("إشعارات المتجر")
                               .font(.system(size: 15, weight: .black))
                               .foregroundColor(.white)
                           Spacer()
@@ -8081,7 +7935,7 @@ jobs:
         if: env.SIGNED_FOR_DEVICE == 'true'
         continue-on-error: false
         env:
-          INSTALL_SERVER: "https://ones9vip.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
@@ -8133,7 +7987,7 @@ jobs:
 
       - name: Install summary
         env:
-          INSTALL_SERVER: "https://ones9vip.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
         run: |
           {
             echo "## ONEs - Install from server"
