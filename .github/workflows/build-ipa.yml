@@ -891,7 +891,12 @@ jobs:
                         let decoded = try? JSONDecoder().decode([StoreAPIApp].self, from: data) else {
                       return
                   }
-                  items = decoded
+                  items = decoded.filter { app in
+                      guard let raw = app.downloadURL ?? app.ipaUrl ?? app.down,
+                            let url = URL(string: raw), url.isFileURL else { return false }
+                      return FileManager.default.fileExists(atPath: url.path)
+                  }
+                  save()
               }
 
               private func save() {
@@ -2234,9 +2239,25 @@ jobs:
                       self.importProgress = "تم جلب بيانات التطبيق. جارٍ فك تشفير الـ IPA..."
 
                       // Step 2: Request IPA from backend (decryption happens on server)
-                      let ipaResult = await self.fetchDecryptedIPA(appID: appID, bundleId: bundleId)
+                      guard let ipaResult = await self.fetchDecryptedIPA(appID: appID, bundleId: bundleId) else {
+                          self.isImporting = false
+                          self.importProgress = ""
+                          completion(nil)
+                          return
+                      }
 
-                      self.importProgress = "جاري إضافة التطبيق إلى المتجر..."
+                      self.importProgress = "جارٍ تنزيل ملف IPA الحقيقي والتحقق منه..."
+                      guard let localFile = await self.downloadAndValidateIPA(
+                          from: ipaResult.remoteURL,
+                          appID: appID
+                      ) else {
+                          self.isImporting = false
+                          self.importProgress = ""
+                          completion(nil)
+                          return
+                      }
+                      let localURL = localFile.url.absoluteString
+                      self.importProgress = "جاري حفظ ملف IPA المفكوك التشفير..."
 
                       // Step 3: Create the app object
                       let newApp = StoreAPIApp(
@@ -2244,10 +2265,10 @@ jobs:
                           name: name,
                           bundleId: bundleId,
                           bundleVersion: version,
-                          ipaSize: ipaResult?.size ?? fileSizeBytes,
+                          ipaSize: localFile.size,
                           githubUrl: nil,
                           archiveUrl: nil,
-                          ipaUrl: ipaResult?.downloadURL ?? ipaResult?.ipaURL,
+                          ipaUrl: localURL,
                           host: "App Store",
                           icon: iconURL,
                           description: description,
@@ -2255,26 +2276,26 @@ jobs:
                           category: genre,
                           createdAt: ISO8601DateFormatter().string(from: Date()),
                           updatedAt: ISO8601DateFormatter().string(from: Date()),
-                          downloadURL: ipaResult?.downloadURL ?? ipaResult?.ipaURL,
-                          down: ipaResult?.downloadURL ?? ipaResult?.ipaURL,
+                          downloadURL: localURL,
+                          down: localURL,
                           iconURL: iconURL,
                           localizedDescription: description,
                           developerName: sellerName,
                           version: version,
                           versionDate: nil,
                           fullDate: nil,
-                          size: Double(ipaResult?.sizeBytes ?? 0),
+                          size: Double(localFile.sizeBytes),
                           type: 0
                       )
 
-                      // Step 4: Save into the Decrypted Files screen
+                      // لا يصل العنصر إلى شاشة الملفات إلا بعد وجود ملف IPA محلي صالح.
                       await MainActor.run {
                           AppStoreImporter.shared.importedApp = newApp
                           if DecryptedFilesStore.shared.contains(newApp) {
                               StatusCenter.shared.show(text: "\(name) موجود بالفعل في الملفات المفكوك تشفيرها")
                           } else {
-                              DecryptedFilesStore.shared.add(newApp)
-                              StatusCenter.shared.show(text: "تم إضافة \(name) إلى الملفات المفكوك تشفيرها!")
+                              DecryptedFilesStore.shared.upsert(newApp)
+                              StatusCenter.shared.show(text: "تم حفظ ملف \(name).ipa المفكوك تشفيره فعلياً!")
                           }
                           self.isImporting = false
                           self.importProgress = ""
@@ -2305,9 +2326,11 @@ jobs:
 
                   do {
                       req.httpBody = try JSONSerialization.data(withJSONObject: body)
-                      let (data, _) = try await URLSession.shared.data(for: req)
-                      guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                            let ok = json["ok"] as? Bool, ok else {
+                      let (data, response) = try await URLSession.shared.data(for: req)
+                      guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                            let ok = json["ok"] as? Bool, ok,
+                            json["decrypted"] as? Bool == true else {
                           let err = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
                           await MainActor.run {
                               self.importError = err ?? "تعذر فك تشفير الـ IPA"
@@ -2320,12 +2343,13 @@ jobs:
                       let size = json["size"] as? String
                       let sizeBytes = json["size_bytes"] as? Int64
 
-                      return IPAResult(
-                          downloadURL: downloadURL ?? ipaURL,
-                          ipaURL: ipaURL,
-                          size: size ?? "",
-                          sizeBytes: sizeBytes ?? 0
-                      )
+                      guard let raw = downloadURL ?? ipaURL,
+                            let remoteURL = URL(string: raw),
+                            remoteURL.scheme?.lowercased() == "https" else {
+                          self.importError = "لم يُرجع الخادم ملف IPA مفكوك التشفير عبر HTTPS"
+                          return nil
+                      }
+                      return IPAResult(remoteURL: remoteURL, size: size ?? "", sizeBytes: sizeBytes ?? 0)
                   } catch {
                       await MainActor.run {
                           self.importError = "خطأ في الاتصال: \(error.localizedDescription)"
@@ -2334,9 +2358,63 @@ jobs:
                   }
               }
 
+              private func downloadAndValidateIPA(from remoteURL: URL, appID: String) async -> LocalIPA? {
+                  do {
+                      var request = URLRequest(url: remoteURL)
+                      request.timeoutInterval = 900
+                      let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+                      guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                          throw URLError(.badServerResponse)
+                      }
+                      let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+                      let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                      guard bytes > 1024, isValidIPA(at: temporaryURL) else {
+                          importError = "الملف المستلم ليس IPA صالحاً ولا يحتوي Payload/*.app"
+                          return nil
+                      }
+                      let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                      let directory = documents.appendingPathComponent("DecryptedIPAs", isDirectory: true)
+                      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                      let destination = directory.appendingPathComponent("decrypted_\(appID).ipa")
+                      try? FileManager.default.removeItem(at: destination)
+                      try FileManager.default.moveItem(at: temporaryURL, to: destination)
+                      return LocalIPA(url: destination,
+                                      size: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file),
+                                      sizeBytes: bytes)
+                  } catch {
+                      importError = "تعذر تنزيل أو حفظ ملف IPA: \(error.localizedDescription)"
+                      return nil
+                  }
+              }
+
+              private func isValidIPA(at url: URL) -> Bool {
+                  guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+                  defer { try? handle.close() }
+                  guard let signature = try? handle.read(upToCount: 4),
+                        signature?.count == 4, signature?[0] == 0x50, signature?[1] == 0x4B else { return false }
+                  try? handle.seek(toOffset: 0)
+                  var tail = Data()
+                  var hasPayload = false
+                  var hasApp = false
+                  while true {
+                      guard let chunk = try? handle.read(upToCount: 1_048_576), let chunk, !chunk.isEmpty else { break }
+                      let data = tail + chunk
+                      hasPayload = hasPayload || data.range(of: Data("Payload/".utf8)) != nil
+                      hasApp = hasApp || data.range(of: Data(".app/".utf8)) != nil
+                      if hasPayload && hasApp { return true }
+                      tail = data.suffix(32)
+                  }
+                  return false
+              }
+
               struct IPAResult {
-                  let downloadURL: String?
-                  let ipaURL: String?
+                  let remoteURL: URL
+                  let size: String
+                  let sizeBytes: Int64
+              }
+
+              struct LocalIPA {
+                  let url: URL
                   let size: String
                   let sizeBytes: Int64
               }
@@ -2453,7 +2531,7 @@ jobs:
                                   importer.importFromAppStore(url: urlInput) { app in
                                       isImporting = false
                                       if app != nil {
-                                          importStatus = "✅ تم إضافة \(app!.name) بنجاح!"
+                                          if let app { importStatus = "✅ تم حفظ ملف \(app.name).ipa بنجاح!" }
                                           DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                                               dismiss()
                                           }
@@ -2751,8 +2829,10 @@ jobs:
 
               func contains(_ app: StoreAPIApp) -> Bool { items.contains(where: { $0.id == app.id }) }
 
-              func add(_ app: StoreAPIApp) {
-                  if contains(app) { return }
+              func add(_ app: StoreAPIApp) { upsert(app) }
+
+              func upsert(_ app: StoreAPIApp) {
+                  items.removeAll { $0.id == app.id || $0.bundleId == app.bundleId }
                   items.insert(app, at: 0)
                   save()
                   HapticManager.shared.success()
@@ -2853,27 +2933,30 @@ jobs:
                   Task { [weak self] in
                       guard let self else { return }
                       do {
-                          let (tempURL, response) = try await URLSession.shared.download(from: url)
-                          if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                              throw URLError(.badServerResponse)
+                          let sharedFile: URL
+                          if url.isFileURL {
+                              guard FileManager.default.fileExists(atPath: url.path) else { throw CocoaError(.fileNoSuchFile) }
+                              sharedFile = url
+                          } else {
+                              let (tempURL, response) = try await URLSession.shared.download(from: url)
+                              if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { throw URLError(.badServerResponse) }
+                              let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SharedIPA", isDirectory: true)
+                              try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                              let dest = dir.appendingPathComponent(self.safeFileName(for: app))
+                              try? FileManager.default.removeItem(at: dest)
+                              try FileManager.default.moveItem(at: tempURL, to: dest)
+                              sharedFile = dest
                           }
-                          let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SharedIPA", isDirectory: true)
-                          try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                          let dest = dir.appendingPathComponent(self.safeFileName(for: app))
-                          try? FileManager.default.removeItem(at: dest)
-                          try FileManager.default.moveItem(at: tempURL, to: dest)
-
                           await MainActor.run {
                               self.isPreparing = false
                               HapticManager.shared.success()
-                              StatusCenter.shared.show(text: "الملف جاهز — اختر صديقاً للمشاركة")
-                              self.present(items: [dest])
+                              StatusCenter.shared.show(text: "الملف جاهز — اختر جهة المشاركة")
+                              self.present(items: [sharedFile])
                           }
                       } catch {
                           await MainActor.run {
                               self.isPreparing = false
-                              StatusCenter.shared.show(text: "تعذر تجهيز الملف، تمت مشاركة الرابط بدلاً منه")
-                              self.shareLink(for: app)
+                              StatusCenter.shared.show(text: "تعذر مشاركة ملف IPA المحلي")
                           }
                       }
                   }
@@ -3067,8 +3150,8 @@ jobs:
                                   Text(s)
                               }
                               Text("•")
-                              Text(link == nil ? "بانتظار فك التشفير" : "جاهز")
-                                  .foregroundColor(link == nil ? Color.storeSub : Color.storePrimary)
+                              Text("ملف IPA محلي جاهز")
+                                  .foregroundColor(Color.storePrimary)
                           }
                           .font(.system(size: 11, weight: .semibold))
                           .foregroundColor(Color.storeSub)
