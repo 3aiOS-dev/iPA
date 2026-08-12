@@ -2267,26 +2267,14 @@ jobs:
                           type: 0
                       )
 
-                      // Step 4: Add to the store
+                      // Step 4: Save into the Decrypted Files screen
                       await MainActor.run {
-                          // Add to the feed's apps list
-                          if let feed = StoreFeed.shared {
-                              var currentApps = feed.apps
-                              // Check if already exists
-                              if !currentApps.contains(where: { $0.id == newApp.id }) {
-                                  currentApps.insert(newApp, at: 0)
-                                  // We need to update the feed - but StoreFeed doesn't have a public setter
-                                  // We'll use a notification or a stored property
-                                  // For now, we'll store it in UserDefaults and the feed will pick it up
-                                  // Actually, let's use the existing mechanism - add to a custom list
-                                  AppStoreImporter.shared.importedApp = newApp
-                                  // Also add to favorites so it appears in the list
-                                  FavoritesStore.shared.add(newApp)
-                                  // Notify the user
-                                  StatusCenter.shared.show(text: "تم إضافة \(name) بنجاح!")
-                              } else {
-                                  StatusCenter.shared.show(text: "\(name) موجود بالفعل في المتجر")
-                              }
+                          AppStoreImporter.shared.importedApp = newApp
+                          if DecryptedFilesStore.shared.contains(newApp) {
+                              StatusCenter.shared.show(text: "\(name) موجود بالفعل في الملفات المفكوك تشفيرها")
+                          } else {
+                              DecryptedFilesStore.shared.add(newApp)
+                              StatusCenter.shared.show(text: "تم إضافة \(name) إلى الملفات المفكوك تشفيرها!")
                           }
                           self.isImporting = false
                           self.importProgress = ""
@@ -2358,6 +2346,7 @@ jobs:
           struct ONEsThreeDotsMenu: View {
               @ObservedObject private var importer = AppStoreImporter.shared
               @State private var showImportSheet = false
+              @State private var showDecryptedFiles = false
 
               var body: some View {
                   Menu {
@@ -2366,6 +2355,13 @@ jobs:
                           showImportSheet = true
                       } label: {
                           Label("إضافة من آب ستور", systemImage: "square.and.arrow.down")
+                      }
+
+                      Button {
+                          HapticManager.shared.selection()
+                          showDecryptedFiles = true
+                      } label: {
+                          Label("الملفات المفكوك تشفيرها", systemImage: "folder.badge.gearshape")
                       }
 
                       Button {
@@ -2409,6 +2405,9 @@ jobs:
                   }
                   .sheet(isPresented: $showImportSheet) {
                       AppStoreImportSheet()
+                  }
+                  .sheet(isPresented: $showDecryptedFiles) {
+                      DecryptedFilesView()
                   }
               }
           }
@@ -2661,7 +2660,7 @@ jobs:
                   // This is a workaround - we'll use the importedApp property
                   // and the FavoritesStore to display the app
                   AppStoreImporter.shared.importedApp = app
-                  FavoritesStore.shared.add(app)
+                  DecryptedFilesStore.shared.add(app)
               }
           }
 
@@ -2725,6 +2724,247 @@ jobs:
                           )
                   )
                   .environment(\.layoutDirection, .leftToRight)
+              }
+          }
+
+          // MARK: - Decrypted Files Store (الملفات المفكوك تشفيرها)
+          @MainActor
+          final class DecryptedFilesStore: ObservableObject {
+              static let shared = DecryptedFilesStore()
+
+              @Published private(set) var items: [StoreAPIApp] = []
+
+              private let key = "decrypted.files.v1"
+              private let d = UserDefaults.standard
+
+              private init() { load() }
+
+              private func load() {
+                  guard let data = d.data(forKey: key),
+                        let decoded = try? JSONDecoder().decode([StoreAPIApp].self, from: data) else { return }
+                  items = decoded
+              }
+
+              private func save() {
+                  if let data = try? JSONEncoder().encode(items) { d.set(data, forKey: key) }
+              }
+
+              func contains(_ app: StoreAPIApp) -> Bool { items.contains(where: { $0.id == app.id }) }
+
+              func add(_ app: StoreAPIApp) {
+                  if contains(app) { return }
+                  items.insert(app, at: 0)
+                  save()
+                  HapticManager.shared.success()
+              }
+
+              func remove(_ app: StoreAPIApp) {
+                  items.removeAll { $0.id == app.id }
+                  save()
+                  HapticManager.shared.impact(.light)
+              }
+
+              func clearAll() {
+                  items.removeAll()
+                  save()
+              }
+          }
+
+          // MARK: - Decrypted Files Screen
+          struct DecryptedFilesView: View {
+              @ObservedObject private var store = DecryptedFilesStore.shared
+              @ObservedObject private var importer = AppStoreImporter.shared
+              @Environment(\.dismiss) private var dismiss
+              @State private var showImportSheet = false
+              @State private var confirmClear = false
+
+              var body: some View {
+                  NavigationStack {
+                      ZStack {
+                          ONEsStoreBackground()
+
+                          VStack(spacing: 0) {
+                              header
+
+                              if store.items.isEmpty {
+                                  emptyState
+                              } else {
+                                  ScrollView {
+                                      LazyVStack(spacing: 12) {
+                                          ForEach(store.items, id: \.id) { app in
+                                              NavigationLink(destination: AppDetailView(app: app)) {
+                                                  DecryptedFileRow(app: app)
+                                              }
+                                              .buttonStyle(.plain)
+                                              .contextMenu {
+                                                  Button(role: .destructive) {
+                                                      store.remove(app)
+                                                  } label: {
+                                                      Label("حذف الملف", systemImage: "trash")
+                                                  }
+                                              }
+                                          }
+                                      }
+                                      .padding(.horizontal, 16)
+                                      .padding(.top, 14)
+                                      .padding(.bottom, 40)
+                                  }
+                              }
+                          }
+                      }
+                      .navigationBarHidden(true)
+                  }
+                  .environment(\.layoutDirection, .rightToLeft)
+                  .preferredColorScheme(.dark)
+                  .sheet(isPresented: $showImportSheet) { AppStoreImportSheet() }
+                  .alert("حذف كل الملفات؟", isPresented: $confirmClear) {
+                      Button("إلغاء", role: .cancel) { }
+                      Button("حذف", role: .destructive) { store.clearAll() }
+                  }
+              }
+
+              private var header: some View {
+                  VStack(spacing: 10) {
+                      HStack {
+                          Button {
+                              HapticManager.shared.selection()
+                              dismiss()
+                          } label: {
+                              Image(systemName: "xmark")
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(Color.storeText)
+                                  .frame(width: 38, height: 38)
+                                  .background(Circle().fill(Color.storeCard))
+                                  .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
+                          }
+                          .buttonStyle(.plain)
+
+                          Spacer()
+
+                          VStack(spacing: 2) {
+                              Text("الملفات المفكوك تشفيرها")
+                                  .font(.system(size: 18, weight: .heavy))
+                                  .foregroundColor(Color.storeText)
+                              Text("\(store.items.count) ملف")
+                                  .font(.system(size: 12, weight: .semibold))
+                                  .foregroundColor(Color.storeSub)
+                          }
+
+                          Spacer()
+
+                          Menu {
+                              Button {
+                                  HapticManager.shared.selection()
+                                  showImportSheet = true
+                              } label: {
+                                  Label("إضافة من آب ستور", systemImage: "square.and.arrow.down")
+                              }
+                              if !store.items.isEmpty {
+                                  Button(role: .destructive) {
+                                      confirmClear = true
+                                  } label: {
+                                      Label("حذف الكل", systemImage: "trash")
+                                  }
+                              }
+                          } label: {
+                              Image(systemName: "ellipsis")
+                                  .font(.system(size: 16, weight: .bold))
+                                  .foregroundColor(Color.storeText)
+                                  .frame(width: 38, height: 38)
+                                  .background(Circle().fill(Color.storeCard))
+                                  .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
+                          }
+                      }
+                      .padding(.horizontal, 16)
+                      .padding(.top, 14)
+
+                      Divider().overlay(Color.storeDivider)
+                  }
+              }
+
+              private var emptyState: some View {
+                  VStack(spacing: 14) {
+                      Spacer()
+                      Image(systemName: "lock.open.doc")
+                          .font(.system(size: 46, weight: .semibold))
+                          .foregroundColor(Color.storeSub)
+                      Text("لا توجد ملفات مفكوك تشفيرها")
+                          .font(.system(size: 16, weight: .bold))
+                          .foregroundColor(Color.storeText)
+                      Text("أضف تطبيقاً من آب ستور وسيظهر ملفه هنا جاهزاً للتحميل.")
+                          .font(.system(size: 13, weight: .medium))
+                          .foregroundColor(Color.storeSub)
+                          .multilineTextAlignment(.center)
+                          .padding(.horizontal, 40)
+                      Button {
+                          HapticManager.shared.selection()
+                          showImportSheet = true
+                      } label: {
+                          Text("إضافة من آب ستور")
+                              .font(.system(size: 14, weight: .heavy))
+                              .foregroundColor(Color.storeText)
+                              .padding(.horizontal, 22)
+                              .padding(.vertical, 12)
+                              .background(Capsule().fill(Color.storePrimary))
+                      }
+                      .buttonStyle(.plain)
+                      Spacer()
+                      Spacer()
+                  }
+              }
+          }
+
+          // MARK: - Decrypted File Row
+          struct DecryptedFileRow: View {
+              let app: StoreAPIApp
+              @ObservedObject private var store = DecryptedFilesStore.shared
+
+              private var link: String? { app.downloadURL ?? app.ipaUrl ?? app.down }
+
+              var body: some View {
+                  HStack(spacing: 12) {
+                      RemoteIcon(url: app.icon ?? app.iconURL, size: 56, cornerRadius: 14)
+
+                      VStack(alignment: .leading, spacing: 4) {
+                          Text(app.name)
+                              .font(.system(size: 15, weight: .bold))
+                              .foregroundColor(Color.storeText)
+                              .lineLimit(1)
+                          Text(app.bundleId ?? "")
+                              .font(.system(size: 11, weight: .medium))
+                              .foregroundColor(Color.storeSub)
+                              .lineLimit(1)
+                          HStack(spacing: 6) {
+                              Text("v\(app.version ?? app.bundleVersion ?? "1.0")")
+                              if let s = app.ipaSize, !s.isEmpty {
+                                  Text("•")
+                                  Text(s)
+                              }
+                              Text("•")
+                              Text(link == nil ? "بانتظار فك التشفير" : "جاهز")
+                                  .foregroundColor(link == nil ? Color.storeSub : Color.storePrimary)
+                          }
+                          .font(.system(size: 11, weight: .semibold))
+                          .foregroundColor(Color.storeSub)
+                      }
+
+                      Spacer(minLength: 6)
+
+                      if let link, let url = URL(string: link) {
+                          Button {
+                              HapticManager.shared.impact(.light)
+                              UIApplication.shared.open(url)
+                          } label: {
+                              Image(systemName: "arrow.down.circle.fill")
+                                  .font(.system(size: 26, weight: .bold))
+                                  .foregroundColor(Color.storePrimary)
+                          }
+                          .buttonStyle(.plain)
+                      }
+                  }
+                  .padding(12)
+                  .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard))
+                  .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.storeDivider, lineWidth: 0.8))
               }
           }
           IMPEOF
