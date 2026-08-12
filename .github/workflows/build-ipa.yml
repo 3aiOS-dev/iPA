@@ -2088,482 +2088,6 @@ jobs:
       # =========================================================
       # SOURCE CODE - StoreView.swift (complete store)
       # =========================================================
-      # =========================================================
-      # SOURCE CODE - CertificateVault.swift
-      # Local (device-owned) certificate panel + real install pipeline
-      # (check -> package -> sign -> install). No server files are modified.
-      # =========================================================
-      - name: Generate code - CertificateVault.swift
-        run: |
-          cat > CertificateVault.swift << 'CERTEOF'
-          import SwiftUI
-          import Foundation
-          import UIKit
-          import UniformTypeIdentifiers
-
-          // ================= STORED CERTIFICATE =================
-          struct StoredCertificate: Codable, Equatable {
-              var displayName: String
-              var ownerName: String
-              var p12Base64: String
-              var provisionBase64: String
-              var password: String
-              var teamName: String?
-              var expiresAt: String?
-              var verifiedAt: String?
-              var certID: String?
-
-              var isVerified: Bool { verifiedAt != nil }
-          }
-
-          @MainActor
-          final class CertificateVault: ObservableObject {
-              static let shared = MainActor.assumeIsolated { CertificateVault() }
-
-              private let storeKey = "ones.owner.certificate.v1"
-
-              @Published var certificate: StoredCertificate? = nil
-              @Published var isVerifying: Bool = false
-              @Published var lastMessage: String = ""
-
-              private init() { load() }
-
-              var hasVerifiedCertificate: Bool { certificate?.isVerified == true }
-
-              func load() {
-                  guard let data = UserDefaults.standard.data(forKey: storeKey),
-                        let cert = try? JSONDecoder().decode(StoredCertificate.self, from: data) else { return }
-                  certificate = cert
-              }
-
-              func persist(_ cert: StoredCertificate?) {
-                  certificate = cert
-                  if let cert = cert, let data = try? JSONEncoder().encode(cert) {
-                      UserDefaults.standard.set(data, forKey: storeKey)
-                  } else {
-                      UserDefaults.standard.removeObject(forKey: storeKey)
-                  }
-              }
-
-              func remove() {
-                  persist(nil)
-                  lastMessage = "تم حذف الشهادة من هذا الجهاز"
-              }
-
-              // Real verification against the signing server (p12 + provision + password)
-              func verifyAndSave(displayName: String,
-                                 ownerName: String,
-                                 p12Base64: String,
-                                 provisionBase64: String,
-                                 password: String,
-                                 done: @escaping (Bool) -> Void) {
-                  guard !p12Base64.isEmpty, !provisionBase64.isEmpty else {
-                      lastMessage = "الرجاء اختيار ملف p12 وملف mobileprovision"
-                      done(false); return
-                  }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate/verify") else {
-                      lastMessage = "رابط السيرفر غير صالح"
-                      done(false); return
-                  }
-
-                  isVerifying = true
-                  lastMessage = "جارٍ فحص الشهادة على السيرفر..."
-
-                  var req = URLRequest(url: url, timeoutInterval: 60)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "owner_name": ownerName,
-                      "display_name": displayName,
-                      "p12_base64": p12Base64,
-                      "provision_base64": provisionBase64,
-                      "p12_password": password,
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code
-                  ])
-
-                  URLSession.shared.dataTask(with: req) { data, _, err in
-                      DispatchQueue.main.async {
-                          self.isVerifying = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.lastMessage = err?.localizedDescription ?? "تعذّر الاتصال بسيرفر التوقيع"
-                              done(false); return
-                          }
-                          guard (obj["ok"] as? Bool) == true || (obj["valid"] as? Bool) == true else {
-                              self.lastMessage = (obj["message"] as? String) ?? "الشهادة غير صالحة أو كلمة السر خاطئة"
-                              done(false); return
-                          }
-                          let info = (obj["certificate"] as? [String: Any]) ?? obj
-                          let cert = StoredCertificate(
-                              displayName: (info["name"] as? String) ?? displayName,
-                              ownerName: (info["owner_name"] as? String) ?? ownerName,
-                              p12Base64: p12Base64,
-                              provisionBase64: provisionBase64,
-                              password: password,
-                              teamName: info["team_name"] as? String,
-                              expiresAt: info["expires_at"] as? String,
-                              verifiedAt: ISO8601DateFormatter().string(from: Date()),
-                              certID: info["id"] as? String
-                          )
-                          self.persist(cert)
-                          self.lastMessage = "تم التحقق من الشهادة وحفظها بنجاح"
-                          done(true)
-                      }
-                  }.resume()
-              }
-          }
-
-          // ================= INSTALLER (certificate-only pipeline) =================
-          enum InstallStage: Int {
-              case idle, checking, packaging, signing, installing, done, failed
-
-              var label: String {
-                  switch self {
-                  case .idle: return ""
-                  case .checking: return "فحص الملف..."
-                  case .packaging: return "تجميع الحزمة..."
-                  case .signing: return "توقيع بشهادتك..."
-                  case .installing: return "جارٍ التثبيت على جهازك..."
-                  case .done: return "تم التثبيت"
-                  case .failed: return "فشل التثبيت"
-                  }
-              }
-          }
-
-          @MainActor
-          final class StoreInstaller: ObservableObject {
-              static let shared = MainActor.assumeIsolated { StoreInstaller() }
-
-              @Published var isWorking: Bool = false
-              @Published var stage: InstallStage = .idle
-              @Published var needsCertificate: Bool = false
-
-              private init() {}
-
-              func install(app: StoreAPIApp) {
-                  install(bundleId: app.bundleId, name: app.name)
-              }
-
-              func install(bundleId: String?, name: String) {
-                  guard let cert = CertificateVault.shared.certificate, cert.isVerified else {
-                      needsCertificate = true
-                      StatusCenter.shared.show(text: "أضف شهادتك الخاصة من قائمة النقاط الثلاث لبدء التثبيت")
-                      return
-                  }
-                  isWorking = true
-                  runStep(path: "/api/public/store/sign/check",
-                          stage: .checking,
-                          cert: cert,
-                          bundleId: bundleId,
-                          name: name,
-                          extra: [:]) { obj in
-                      let token = (obj["build_token"] as? String) ?? (obj["token"] as? String) ?? ""
-                      self.runStep(path: "/api/public/store/sign/package",
-                                   stage: .packaging,
-                                   cert: cert,
-                                   bundleId: bundleId,
-                                   name: name,
-                                   extra: ["build_token": token]) { pkg in
-                          let pkgToken = (pkg["build_token"] as? String) ?? token
-                          self.runStep(path: "/api/public/store/sign/sign",
-                                       stage: .signing,
-                                       cert: cert,
-                                       bundleId: bundleId,
-                                       name: name,
-                                       extra: ["build_token": pkgToken]) { signed in
-                              self.finish(signed, bundleId: bundleId, name: name)
-                          }
-                      }
-                  }
-              }
-
-              private func runStep(path: String,
-                                   stage: InstallStage,
-                                   cert: StoredCertificate,
-                                   bundleId: String?,
-                                   name: String,
-                                   extra: [String: Any],
-                                   next: @escaping ([String: Any]) -> Void) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + path) else {
-                      fail("رابط السيرفر غير صالح"); return
-                  }
-                  self.stage = stage
-                  StatusCenter.shared.show(text: stage.label)
-
-                  var body: [String: Any] = [
-                      "bundle_id": bundleId ?? "",
-                      "name": name,
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code,
-                      "certificate": [
-                          "id": cert.certID ?? "",
-                          "owner_name": cert.ownerName,
-                          "p12_base64": cert.p12Base64,
-                          "provision_base64": cert.provisionBase64,
-                          "p12_password": cert.password
-                      ]
-                  ]
-                  for (k, v) in extra { body[k] = v }
-
-                  var req = URLRequest(url: url, timeoutInterval: 120)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-                  URLSession.shared.dataTask(with: req) { data, _, err in
-                      DispatchQueue.main.async {
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.fail(err?.localizedDescription ?? "تعذّر الاتصال بسيرفر التوقيع")
-                              return
-                          }
-                          guard (obj["ok"] as? Bool) != false else {
-                              self.fail((obj["message"] as? String) ?? "فشلت العملية: \(stage.label)")
-                              return
-                          }
-                          next(obj)
-                      }
-                  }.resume()
-              }
-
-              private func finish(_ obj: [String: Any], bundleId: String?, name: String) {
-                  let manifest = (obj["install_url"] as? String)
-                      ?? (obj["manifest_url"] as? String)
-                      ?? (obj["itms_url"] as? String)
-                  guard let raw = manifest, let u = URL(string: raw) else {
-                      fail((obj["message"] as? String) ?? "لم يُرجع السيرفر رابط تثبيت")
-                      return
-                  }
-                  stage = .installing
-                  StatusCenter.shared.show(text: InstallStage.installing.label)
-                  UIApplication.shared.open(u) { _ in
-                      self.isWorking = false
-                      self.stage = .done
-                      ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
-                      StatusCenter.shared.show(text: "تم إرسال التثبيت إلى جهازك")
-                  }
-              }
-
-              private func fail(_ msg: String) {
-                  isWorking = false
-                  stage = .failed
-                  StatusCenter.shared.show(text: msg)
-              }
-          }
-
-          // ================= THREE-DOTS CERTIFICATE PANEL =================
-          struct CertificatePanelView: View {
-              @Environment(\.dismiss) private var dismiss
-              @ObservedObject private var vault = CertificateVault.shared
-
-              @State private var ownerName: String = ""
-              @State private var displayName: String = ""
-              @State private var password: String = ""
-              @State private var p12Base64: String = ""
-              @State private var p12FileName: String = ""
-              @State private var provisionBase64: String = ""
-              @State private var provisionFileName: String = ""
-              @State private var showP12Picker = false
-              @State private var showProvisionPicker = false
-
-              var body: some View {
-                  NavigationView {
-                      ScrollView {
-                          VStack(alignment: .trailing, spacing: 14) {
-
-                              if let cert = vault.certificate, cert.isVerified {
-                                  VStack(alignment: .trailing, spacing: 6) {
-                                      HStack {
-                                          Image(systemName: "checkmark.seal.fill")
-                                              .foregroundColor(Color.storePrimary)
-                                          Text("شهادة موثّقة")
-                                              .font(.system(size: 14, weight: .heavy))
-                                              .foregroundColor(Color.storeText)
-                                          Spacer()
-                                      }
-                                      Text("المالك: \(cert.ownerName)")
-                                          .font(.system(size: 12, weight: .semibold))
-                                          .foregroundColor(Color.storeSub)
-                                      if let team = cert.teamName {
-                                          Text("الفريق: \(team)")
-                                              .font(.system(size: 12))
-                                              .foregroundColor(Color.storeSub)
-                                      }
-                                      if let exp = cert.expiresAt {
-                                          Text("تنتهي: \(exp)")
-                                              .font(.system(size: 12))
-                                              .foregroundColor(Color.storeSub)
-                                      }
-                                      Button(role: .destructive) {
-                                          vault.remove()
-                                      } label: {
-                                          Text("حذف الشهادة")
-                                              .font(.system(size: 12, weight: .bold))
-                                      }
-                                      .padding(.top, 4)
-                                  }
-                                  .padding(14)
-                                  .frame(maxWidth: .infinity, alignment: .trailing)
-                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                              }
-
-                              Text("إضافة شهادة خاصة بك")
-                                  .font(.system(size: 15, weight: .heavy))
-                                  .foregroundColor(Color.storeText)
-
-                              Text("التثبيت يتم فقط عبر شهادتك الشخصية: فحص الملف ← تجميع ← توقيع ← تثبيت.")
-                                  .font(.system(size: 12))
-                                  .foregroundColor(Color.storeSub)
-                                  .multilineTextAlignment(.trailing)
-
-                              field(title: "اسم المالك", text: $ownerName)
-                              field(title: "اسم الشهادة (اختياري)", text: $displayName)
-
-                              filePickRow(title: "ملف الشهادة p12",
-                                          fileName: p12FileName,
-                                          action: { showP12Picker = true })
-
-                              filePickRow(title: "ملف mobileprovision",
-                                          fileName: provisionFileName,
-                                          action: { showProvisionPicker = true })
-
-                              VStack(alignment: .trailing, spacing: 6) {
-                                  Text("كلمة سر الشهادة")
-                                      .font(.system(size: 12, weight: .semibold))
-                                      .foregroundColor(Color.storeSub)
-                                  SecureField("••••••", text: $password)
-                                      .textInputAutocapitalization(.never)
-                                      .disableAutocorrection(true)
-                                      .padding(12)
-                                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                                      .foregroundColor(Color.storeText)
-                              }
-
-                              if !vault.lastMessage.isEmpty {
-                                  Text(vault.lastMessage)
-                                      .font(.system(size: 12, weight: .semibold))
-                                      .foregroundColor(Color.storeSub)
-                                      .multilineTextAlignment(.trailing)
-                              }
-
-                              Button {
-                                  HapticManager.shared.success()
-                                  vault.verifyAndSave(
-                                      displayName: displayName.isEmpty ? (p12FileName.isEmpty ? "شهادتي" : p12FileName) : displayName,
-                                      ownerName: ownerName.isEmpty ? "مالك الجهاز" : ownerName,
-                                      p12Base64: p12Base64,
-                                      provisionBase64: provisionBase64,
-                                      password: password
-                                  ) { ok in
-                                      if ok { dismiss() }
-                                  }
-                              } label: {
-                                  HStack {
-                                      if vault.isVerifying { ProgressView().tint(.white) }
-                                      Text(vault.isVerifying ? "جارٍ التحقق..." : "تحقق وحفظ الشهادة")
-                                          .font(.system(size: 14, weight: .heavy))
-                                          .foregroundColor(.white)
-                                  }
-                                  .frame(maxWidth: .infinity)
-                                  .padding(.vertical, 13)
-                                  .background(Capsule().fill(Color.storePrimary))
-                              }
-                              .buttonStyle(.plain)
-                              .disabled(vault.isVerifying)
-
-                              Spacer(minLength: 20)
-                          }
-                          .padding(18)
-                      }
-                      .background(ONEsStoreBackground())
-                      .navigationTitle("لوحة التحكم")
-                      .navigationBarTitleDisplayMode(.inline)
-                      .toolbar {
-                          ToolbarItem(placement: .cancellationAction) {
-                              Button("إغلاق") { dismiss() }
-                          }
-                      }
-                  }
-                  .environment(\.layoutDirection, .rightToLeft)
-                  .fileImporter(isPresented: $showP12Picker,
-                                allowedContentTypes: [UTType.data],
-                                allowsMultipleSelection: false) { result in
-                      handlePick(result) { name, b64 in
-                          p12FileName = name
-                          p12Base64 = b64
-                      }
-                  }
-                  .fileImporter(isPresented: $showProvisionPicker,
-                                allowedContentTypes: [UTType.data],
-                                allowsMultipleSelection: false) { result in
-                      handlePick(result) { name, b64 in
-                          provisionFileName = name
-                          provisionBase64 = b64
-                      }
-                  }
-                  .onAppear {
-                      if let cert = vault.certificate {
-                          ownerName = cert.ownerName
-                          displayName = cert.displayName
-                      }
-                  }
-              }
-
-              private func handlePick(_ result: Result<[URL], Error>, done: (String, String) -> Void) {
-                  switch result {
-                  case .success(let urls):
-                      guard let url = urls.first else { return }
-                      let accessed = url.startAccessingSecurityScopedResource()
-                      defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                      if let data = try? Data(contentsOf: url) {
-                          done(url.lastPathComponent, data.base64EncodedString())
-                          vault.lastMessage = "تم اختيار \(url.lastPathComponent)"
-                      } else {
-                          vault.lastMessage = "تعذّر قراءة الملف"
-                      }
-                  case .failure(let err):
-                      vault.lastMessage = err.localizedDescription
-                  }
-              }
-
-              private func field(title: String, text: Binding<String>) -> some View {
-                  VStack(alignment: .trailing, spacing: 6) {
-                      Text(title)
-                          .font(.system(size: 12, weight: .semibold))
-                          .foregroundColor(Color.storeSub)
-                      TextField("", text: text)
-                          .padding(12)
-                          .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                          .foregroundColor(Color.storeText)
-                  }
-              }
-
-              private func filePickRow(title: String, fileName: String, action: @escaping () -> Void) -> some View {
-                  Button(action: action) {
-                      HStack {
-                          Image(systemName: fileName.isEmpty ? "doc.badge.plus" : "checkmark.circle.fill")
-                              .foregroundColor(fileName.isEmpty ? Color.storeSub : Color.storePrimary)
-                          VStack(alignment: .trailing, spacing: 2) {
-                              Text(title)
-                                  .font(.system(size: 13, weight: .bold))
-                                  .foregroundColor(Color.storeText)
-                              Text(fileName.isEmpty ? "اضغط للاختيار" : fileName)
-                                  .font(.system(size: 11))
-                                  .foregroundColor(Color.storeSub)
-                                  .lineLimit(1)
-                          }
-                          Spacer()
-                      }
-                      .padding(12)
-                      .background(RoundedRectangle(cornerRadius: 12).fill(Color.storeCard))
-                  }
-                  .buttonStyle(.plain)
-              }
-          }
-          CERTEOF
-          echo "CertificateVault.swift generated"
-
       - name: Generate code - StoreView.swift
         run: |
           cat > StoreView.swift << 'VIPEOF'
@@ -3240,43 +2764,11 @@ jobs:
 
           struct ONEsTopBar: View {
               @ObservedObject private var content = ONEsContent.shared
-              @ObservedObject private var vault = CertificateVault.shared
               @State private var showInbox = false
-              @State private var showCertPanel = false
-              var showCertMenu: Bool = false
 
               var body: some View {
                   HStack(spacing: 0) {
-                      if showCertMenu {
-                          Menu {
-                              Button {
-                                  showCertPanel = true
-                              } label: {
-                                  Label(vault.hasVerifiedCertificate ? "إدارة شهادتي" : "إضافة شهادة (p12 + mobileprovision)",
-                                        systemImage: "lock.doc")
-                              }
-                              if vault.hasVerifiedCertificate {
-                                  Button(role: .destructive) {
-                                      vault.remove()
-                                  } label: {
-                                      Label("حذف الشهادة", systemImage: "trash")
-                                  }
-                              }
-                          } label: {
-                              Image(systemName: "ellipsis")
-                                  .font(.system(size: 18, weight: .heavy))
-                                  .foregroundColor(Color.storeText)
-                                  .frame(width: 42, height: 42)
-                                  .background(Circle().fill(Color.storeCard))
-                                  .overlay(
-                                      Circle()
-                                          .stroke(vault.hasVerifiedCertificate ? Color.storePrimary : Color.storeDivider,
-                                                  lineWidth: 1)
-                                  )
-                          }
-                      } else {
-                          Spacer().frame(width: 42, height: 42)
-                      }
+                      Spacer().frame(width: 42, height: 42)
                       Spacer()
                       HStack(spacing: 10) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -3301,10 +2793,8 @@ jobs:
                   )
                   .environment(\.layoutDirection, .leftToRight)
                   .sheet(isPresented: $showInbox) { ONEsInboxSheet() }
-                  .sheet(isPresented: $showCertPanel) { CertificatePanelView() }
                   .onAppear {
                       ONEsContent.shared.loadNotifications()
-                      CertificateVault.shared.load()
                   }
               }
           }
@@ -4352,6 +3842,86 @@ jobs:
               }
           }
 
+          // ================= INSTALLER =================
+          @MainActor
+          final class StoreInstaller: ObservableObject {
+              static let shared = MainActor.assumeIsolated { StoreInstaller() }
+              @Published var isWorking: Bool = false
+              private init() {}
+
+              func install(app: StoreAPIApp) {
+                  install(bundleId: app.bundleId, name: app.name)
+              }
+
+              func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
+                      done(nil); return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "udid": ActivationManager.shared.deviceID,
+                      "code": ActivationManager.shared.code
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      var result: [String: Any]? = nil
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                         (obj["ok"] as? Bool) == true {
+                          result = obj["certificate"] as? [String: Any]
+                      }
+                      DispatchQueue.main.async { done(result) }
+                  }.resume()
+              }
+
+              func install(bundleId: String?, name: String) {
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
+                  fetchCertificate { cert in
+                      guard cert != nil else {
+                          self.isWorking = false
+                          StatusCenter.shared.show(text: "لا توجد شهادة مرتبطة بجهازك، تواصل مع الدعم")
+                          return
+                      }
+                      self.performInstall(bundleId: bundleId, name: name)
+                  }
+              }
+
+              private func performInstall(bundleId: String?, name: String) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
+                  var req = URLRequest(url: url, timeoutInterval: 30)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "bundle_id": bundleId ?? "",
+                      "name": name,
+                      "udid": ActivationManager.shared.deviceID
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      DispatchQueue.main.async {
+                          self.isWorking = false
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
+                              StatusCenter.shared.show(text: msg)
+                          }
+                      }
+                  }.resume()
+              }
+          }
+
           // ================= UPDATES TAB =================
           struct StoreUpdateItem: Codable, Identifiable, Hashable {
               let id: String
@@ -4580,7 +4150,7 @@ jobs:
               var body: some View {
                   NavigationStack {
                       VStack(spacing: 0) {
-                          ONEsTopBar(showCertMenu: true)
+                          ONEsTopBar()
 
                           ScrollView(showsIndicators: false) {
                               VStack(spacing: 14) {
@@ -4651,10 +4221,6 @@ jobs:
                       .navigationDestination(for: StoreAPIApp.self) { app in
                           AppDetailView(app: app, feed: feed)
                       }
-                      .sheet(isPresented: Binding(
-                          get: { StoreInstaller.shared.needsCertificate },
-                          set: { StoreInstaller.shared.needsCertificate = $0 }
-                      )) { CertificatePanelView() }
                   }
               }
           }
@@ -8171,7 +7737,6 @@ jobs:
             Repositories.swift \
             FavoritesStore.swift \
             ActivationManager.swift \
-            CertificateVault.swift \
             BackendAccount.swift \
             NotifyCenter.swift \
             GreenWave.swift \
