@@ -2770,6 +2770,116 @@ jobs:
               }
           }
 
+          // MARK: - IPA Share Manager (مشاركة الملفات المفكوك تشفيرها مع الأصدقاء)
+          @MainActor
+          final class IPAShareManager: NSObject, ObservableObject {
+              static let shared = IPAShareManager()
+              private override init() { super.init() }
+
+              @Published private(set) var isPreparing = false
+
+              private func link(for app: StoreAPIApp) -> String? {
+                  app.downloadURL ?? app.ipaUrl ?? app.down
+              }
+
+              private func safeFileName(for app: StoreAPIApp) -> String {
+                  let version = app.version ?? app.bundleVersion ?? "1.0"
+                  let base = "\(app.name)_\(version)"
+                  let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_. "))
+                  let cleaned = String(base.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+                  return cleaned.trimmingCharacters(in: .whitespaces) + ".ipa"
+              }
+
+              private func topController() -> UIViewController? {
+                  let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                  let window = scenes.flatMap { $0.windows }.first(where: { $0.isKeyWindow }) ?? scenes.first?.windows.first
+                  var top = window?.rootViewController
+                  while let presented = top?.presentedViewController { top = presented }
+                  return top
+              }
+
+              private func present(items: [Any]) {
+                  guard let host = topController() else { return }
+                  let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+                  if let pop = vc.popoverPresentationController {
+                      pop.sourceView = host.view
+                      pop.sourceRect = CGRect(x: host.view.bounds.midX, y: host.view.bounds.midY, width: 1, height: 1)
+                      pop.permittedArrowDirections = []
+                  }
+                  host.present(vc, animated: true)
+              }
+
+              /// مشاركة رابط التطبيق فقط (سريعة)
+              func shareLink(for app: StoreAPIApp) {
+                  HapticManager.shared.selection()
+                  guard let raw = link(for: app), let url = URL(string: raw) else {
+                      StatusCenter.shared.show(text: "لا يوجد رابط جاهز لهذا الملف")
+                      return
+                  }
+                  let version = app.version ?? app.bundleVersion ?? "1.0"
+                  let text = "\(app.name) v\(version) - ملف IPA مفكوك التشفير من ONEs Store"
+                  present(items: [text, url])
+              }
+
+              /// مشاركة كل روابط الملفات المفكوك تشفيرها دفعة واحدة
+              func shareAllLinks(_ apps: [StoreAPIApp]) {
+                  let lines = apps.compactMap { app -> String? in
+                      guard let raw = link(for: app) else { return nil }
+                      let version = app.version ?? app.bundleVersion ?? "1.0"
+                      return "\(app.name) v\(version)\n\(raw)"
+                  }
+                  guard !lines.isEmpty else {
+                      StatusCenter.shared.show(text: "لا توجد ملفات جاهزة للمشاركة")
+                      return
+                  }
+                  let text = "ملفات IPA مفكوكة التشفير من ONEs Store:\n\n" + lines.joined(separator: "\n\n")
+                  present(items: [text])
+              }
+
+              /// تنزيل ملف الـ IPA ثم مشاركته كملف حقيقي مع الأصدقاء
+              func shareIPAFile(for app: StoreAPIApp) {
+                  HapticManager.shared.selection()
+                  guard let raw = link(for: app), let url = URL(string: raw) else {
+                      StatusCenter.shared.show(text: "لا يوجد ملف جاهز للمشاركة")
+                      return
+                  }
+                  if isPreparing {
+                      StatusCenter.shared.show(text: "جاري تجهيز ملف آخر للمشاركة...")
+                      return
+                  }
+                  isPreparing = true
+                  StatusCenter.shared.show(text: "جاري تجهيز \(app.name) للمشاركة...")
+
+                  Task { [weak self] in
+                      guard let self else { return }
+                      do {
+                          let (tempURL, response) = try await URLSession.shared.download(from: url)
+                          if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                              throw URLError(.badServerResponse)
+                          }
+                          let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SharedIPA", isDirectory: true)
+                          try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                          let dest = dir.appendingPathComponent(self.safeFileName(for: app))
+                          try? FileManager.default.removeItem(at: dest)
+                          try FileManager.default.moveItem(at: tempURL, to: dest)
+
+                          await MainActor.run {
+                              self.isPreparing = false
+                              HapticManager.shared.success()
+                              StatusCenter.shared.show(text: "الملف جاهز — اختر صديقاً للمشاركة")
+                              self.present(items: [dest])
+                          }
+                      } catch {
+                          await MainActor.run {
+                              self.isPreparing = false
+                              StatusCenter.shared.show(text: "تعذر تجهيز الملف، تمت مشاركة الرابط بدلاً منه")
+                              self.shareLink(for: app)
+                          }
+                      }
+                  }
+              }
+          }
+
           // MARK: - Decrypted Files Screen
           struct DecryptedFilesView: View {
               @ObservedObject private var store = DecryptedFilesStore.shared
@@ -2797,6 +2907,16 @@ jobs:
                                               }
                                               .buttonStyle(.plain)
                                               .contextMenu {
+                                                  Button {
+                                                      IPAShareManager.shared.shareIPAFile(for: app)
+                                                  } label: {
+                                                      Label("مشاركة ملف IPA مع الأصدقاء", systemImage: "doc.badge.arrow.up")
+                                                  }
+                                                  Button {
+                                                      IPAShareManager.shared.shareLink(for: app)
+                                                  } label: {
+                                                      Label("مشاركة الرابط", systemImage: "link")
+                                                  }
                                                   Button(role: .destructive) {
                                                       store.remove(app)
                                                   } label: {
@@ -2860,6 +2980,12 @@ jobs:
                                   Label("إضافة من آب ستور", systemImage: "square.and.arrow.down")
                               }
                               if !store.items.isEmpty {
+                                  Button {
+                                      HapticManager.shared.selection()
+                                      IPAShareManager.shared.shareAllLinks(store.items)
+                                  } label: {
+                                      Label("مشاركة كل الملفات", systemImage: "square.and.arrow.up.on.square")
+                                  }
                                   Button(role: .destructive) {
                                       confirmClear = true
                                   } label: {
@@ -2949,6 +3075,26 @@ jobs:
                       }
 
                       Spacer(minLength: 6)
+
+                      if link != nil {
+                          Menu {
+                              Button {
+                                  IPAShareManager.shared.shareIPAFile(for: app)
+                              } label: {
+                                  Label("مشاركة ملف IPA", systemImage: "doc.badge.arrow.up")
+                              }
+                              Button {
+                                  IPAShareManager.shared.shareLink(for: app)
+                              } label: {
+                                  Label("مشاركة الرابط", systemImage: "link")
+                              }
+                          } label: {
+                              Image(systemName: "square.and.arrow.up.circle.fill")
+                                  .font(.system(size: 26, weight: .bold))
+                                  .foregroundColor(Color.storePink)
+                          }
+                          .buttonStyle(.plain)
+                      }
 
                       if let link, let url = URL(string: link) {
                           Button {
