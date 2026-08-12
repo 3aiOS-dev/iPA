@@ -2765,10 +2765,30 @@ jobs:
           struct ONEsTopBar: View {
               @ObservedObject private var content = ONEsContent.shared
               @State private var showInbox = false
+              @State private var showDecrypt = false
 
               var body: some View {
                   HStack(spacing: 0) {
-                      Spacer().frame(width: 42, height: 42)
+                      Menu {
+                          Button {
+                              showDecrypt = true
+                          } label: {
+                              Label("إضافة تطبيق من App Store", systemImage: "arrow.down.app.fill")
+                          }
+                          Button {
+                              ONEsDecryptStore.shared.reset()
+                              showDecrypt = true
+                          } label: {
+                              Label("سحب IPA مفكوك التشفير", systemImage: "lock.open.fill")
+                          }
+                      } label: {
+                          Image(systemName: "ellipsis")
+                              .font(.system(size: 17, weight: .heavy))
+                              .foregroundColor(Color.storeText)
+                              .frame(width: 42, height: 42)
+                              .background(Circle().fill(Color.storeCard))
+                              .overlay(Circle().stroke(Color.storeDivider, lineWidth: 1))
+                      }
                       Spacer()
                       HStack(spacing: 10) {
                           RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
@@ -2793,9 +2813,261 @@ jobs:
                   )
                   .environment(\.layoutDirection, .leftToRight)
                   .sheet(isPresented: $showInbox) { ONEsInboxSheet() }
+                  .sheet(isPresented: $showDecrypt) { ONEsAppStoreDecryptSheet() }
                   .onAppear {
                       ONEsContent.shared.loadNotifications()
                   }
+              }
+          }
+
+          // ================= EXCLUSIVE: App Store link -> decrypted IPA =================
+          // Paste any App Store link, we resolve the app through Apple's public lookup API,
+          // then ask the ONEs backend for a decrypted (signed) IPA and fire the real OTA install.
+          enum ONEsDecryptAPI {
+              static let base = "https://ones9vipoh97.lovable.app"
+              static var endpoint: String { base + "/api/public/store/decrypt" }
+          }
+
+          struct ONEsDecryptApp: Codable, Equatable {
+              var name: String?
+              var icon_url: String?
+              var bundle_id: String?
+              var version: String?
+          }
+
+          struct ONEsDecryptResponse: Codable {
+              var ok: Bool?
+              var status: String?
+              var request_id: String?
+              var app: ONEsDecryptApp?
+              var ipa_url: String?
+              var manifest_url: String?
+              var install_url: String?
+              var message: String?
+          }
+
+          final class ONEsDecryptStore: ObservableObject {
+              static let shared = ONEsDecryptStore()
+
+              @Published var link: String = ""
+              @Published var busy: Bool = false
+              @Published var steps: [String] = []
+              @Published var status: String = ""
+              @Published var app: ONEsDecryptApp? = nil
+              @Published var installURL: String = ""
+              @Published var requestID: String = ""
+
+              private var pollTimer: Timer? = nil
+
+              func reset() {
+                  link = ""; busy = false; steps = []; status = ""
+                  app = nil; installURL = ""; requestID = ""
+                  pollTimer?.invalidate(); pollTimer = nil
+              }
+
+              private func step(_ text: String) {
+                  if steps.last != text { steps.append(text) }
+              }
+
+              func pasteFromClipboard() {
+                  if let s = UIPasteboard.general.string, !s.isEmpty { link = s }
+              }
+
+              func submit(udid: String) {
+                  let raw = link.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !raw.isEmpty, let url = URL(string: ONEsDecryptAPI.endpoint) else { return }
+                  busy = true; steps = []; installURL = ""; status = ""
+                  step("جارٍ قراءة رابط App Store…")
+
+                  var req = URLRequest(url: url)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.timeoutInterval = 45
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "url": raw,
+                      "udid": udid
+                  ])
+
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      DispatchQueue.main.async {
+                          self.busy = false
+                          guard let data = data, err == nil,
+                                let res = try? JSONDecoder().decode(ONEsDecryptResponse.self, from: data) else {
+                              self.status = "failed"
+                              self.step("تعذّر الاتصال بالسيرفر")
+                              return
+                          }
+                          self.step("تم التعرف على التطبيق")
+                          self.app = res.app
+                          self.requestID = res.request_id ?? ""
+                          self.status = res.status ?? ""
+                          if let m = res.message, !m.isEmpty { self.step(m) }
+                          if let install = res.install_url, !install.isEmpty {
+                              self.installURL = install
+                              self.step("جارٍ إرسال أمر التثبيت للنظام…")
+                              self.openInstall()
+                          } else if self.status == "processing" || self.status == "new" {
+                              self.step("جارٍ فك تشفير التطبيق…")
+                              self.startPolling()
+                          }
+                      }
+                  }.resume()
+              }
+
+              func openInstall() {
+                  guard let u = URL(string: installURL) else { return }
+                  UIApplication.shared.open(u, options: [:], completionHandler: nil)
+              }
+
+              private func startPolling() {
+                  pollTimer?.invalidate()
+                  guard !requestID.isEmpty else { return }
+                  pollTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+                      guard let self = self else { return }
+                      self.poll()
+                  }
+              }
+
+              private func poll() {
+                  guard !requestID.isEmpty,
+                        let url = URL(string: ONEsDecryptAPI.endpoint + "?id=" + requestID) else { return }
+                  URLSession.shared.dataTask(with: url) { data, _, _ in
+                      DispatchQueue.main.async {
+                          guard let data = data,
+                                let res = try? JSONDecoder().decode(ONEsDecryptResponse.self, from: data) else { return }
+                          self.status = res.status ?? self.status
+                          if let a = res.app, a != self.app { self.app = a }
+                          if let install = res.install_url, !install.isEmpty {
+                              self.installURL = install
+                              self.pollTimer?.invalidate(); self.pollTimer = nil
+                              self.step("تم فك التشفير — جارٍ إرسال أمر التثبيت للنظام…")
+                              self.openInstall()
+                          } else if self.status == "failed" {
+                              self.pollTimer?.invalidate(); self.pollTimer = nil
+                              self.step(res.message ?? "فشل فك التشفير")
+                          }
+                      }
+                  }.resume()
+              }
+          }
+
+          struct ONEsAppStoreDecryptSheet: View {
+              @Environment(\.dismiss) private var dismiss
+              @ObservedObject private var store = ONEsDecryptStore.shared
+
+              private var udid: String {
+                  ActivationManager.shared.deviceID
+              }
+
+              var body: some View {
+                  NavigationStack {
+                      ScrollView {
+                          VStack(alignment: .trailing, spacing: 14) {
+                              Text("الصق رابط أي تطبيق من App Store وسنسحب لك ملف IPA مفكوك التشفير وجاهز للتثبيت مباشرة.")
+                                  .font(.system(size: 13, weight: .semibold))
+                                  .foregroundColor(Color.storeSub)
+                                  .multilineTextAlignment(.trailing)
+
+                              HStack(spacing: 8) {
+                                  Button {
+                                      store.pasteFromClipboard()
+                                  } label: {
+                                      Image(systemName: "doc.on.clipboard")
+                                          .font(.system(size: 14, weight: .bold))
+                                          .foregroundColor(Color.storePrimary)
+                                  }
+                                  TextField("https://apps.apple.com/…/idXXXXXXXX", text: $store.link)
+                                      .font(.system(size: 13))
+                                      .foregroundColor(Color.storeText)
+                                      .autocorrectionDisabled(true)
+                                      .textInputAutocapitalization(.never)
+                                      .multilineTextAlignment(.leading)
+                                      .environment(\.layoutDirection, .leftToRight)
+                              }
+                              .padding(.horizontal, 14)
+                              .frame(height: 48)
+                              .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
+                              .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 1))
+
+                              Button {
+                                  store.submit(udid: udid)
+                              } label: {
+                                  HStack(spacing: 8) {
+                                      if store.busy { ProgressView().tint(.black) }
+                                      Text(store.busy ? "جارٍ العمل…" : "سحب التطبيق 🔥")
+                                          .font(.system(size: 14, weight: .heavy))
+                                          .foregroundColor(.black)
+                                  }
+                                  .frame(maxWidth: .infinity)
+                                  .frame(height: 48)
+                                  .background(RoundedRectangle(cornerRadius: 14).fill(Color.white))
+                              }
+                              .buttonStyle(.plain)
+                              .disabled(store.busy || store.link.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                              if let app = store.app, !(app.name ?? "").isEmpty {
+                                  HStack(spacing: 12) {
+                                      VStack(alignment: .trailing, spacing: 4) {
+                                          Text(app.name ?? "")
+                                              .font(.system(size: 15, weight: .black))
+                                              .foregroundColor(Color.storeText)
+                                          Text([app.bundle_id ?? "", app.version ?? ""]
+                                                  .filter { !$0.isEmpty }.joined(separator: " • "))
+                                              .font(.system(size: 11, weight: .semibold))
+                                              .foregroundColor(Color.storeSub)
+                                      }
+                                      Spacer()
+                                      RemoteIcon(url: app.icon_url, size: 52, cornerRadius: 13)
+                                  }
+                                  .padding(14)
+                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                                  .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
+                              }
+
+                              if !store.steps.isEmpty {
+                                  VStack(alignment: .trailing, spacing: 8) {
+                                      ForEach(Array(store.steps.enumerated()), id: \.offset) { item in
+                                          HStack(spacing: 8) {
+                                              Text(item.element)
+                                                  .font(.system(size: 12, weight: .semibold))
+                                                  .foregroundColor(Color.storeText)
+                                              Image(systemName: item.offset == store.steps.count - 1 && store.status != "ready"
+                                                    ? "circle.dashed" : "checkmark.circle.fill")
+                                                  .font(.system(size: 12, weight: .bold))
+                                                  .foregroundColor(Color.storePrimary)
+                                          }
+                                          .frame(maxWidth: .infinity, alignment: .trailing)
+                                      }
+                                  }
+                                  .padding(14)
+                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
+                              }
+
+                              if !store.installURL.isEmpty {
+                                  Button { store.openInstall() } label: {
+                                      Text("تثبيت الآن")
+                                          .font(.system(size: 14, weight: .heavy))
+                                          .foregroundColor(.white)
+                                          .frame(maxWidth: .infinity)
+                                          .frame(height: 46)
+                                          .background(RoundedRectangle(cornerRadius: 14).fill(Color.storePrimary))
+                                  }
+                                  .buttonStyle(.plain)
+                              }
+                          }
+                          .padding(18)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationTitle("سحب من App Store")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .topBarLeading) {
+                              Button("إغلاق") { dismiss() }
+                                  .foregroundColor(Color.storePrimary)
+                          }
+                      }
+                  }
+                  .environment(\.layoutDirection, .rightToLeft)
               }
           }
 
