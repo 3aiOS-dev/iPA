@@ -1658,15 +1658,55 @@ jobs:
           import AVKit
           import UIKit
 
-          // MARK: - Models
+          // MARK: - Models (تحليل مرن يقبل كل صيغ لوحة التحكم)
           struct StoryItem: Identifiable, Decodable, Equatable {
               let id: String
               let title: String
               let thumb_url: String?
               let video_url: String
               let position: Int?
+
+              private enum K: String, CodingKey {
+                  case id, uuid, title, name, caption
+                  case thumb_url, thumbnail_url, thumbnail, image_url, cover_url, poster_url
+                  case video_url, url, media_url, file_url, src
+                  case position, order, sort_order
+              }
+              init(from d: Decoder) throws {
+                  let c = try d.container(keyedBy: K.self)
+                  func str(_ keys: [K]) -> String? {
+                      for k in keys {
+                          if let v = try? c.decodeIfPresent(String.self, forKey: k), let v, !v.isEmpty { return v }
+                          if let n = try? c.decodeIfPresent(Int.self, forKey: k), let n { return String(n) }
+                      }
+                      return nil
+                  }
+                  func num(_ keys: [K]) -> Int? {
+                      for k in keys {
+                          if let n = try? c.decodeIfPresent(Int.self, forKey: k), let n { return n }
+                      }
+                      return nil
+                  }
+                  let v = str([.video_url, .url, .media_url, .file_url, .src]) ?? ""
+                  video_url = v
+                  id = str([.id, .uuid]) ?? v
+                  title = str([.title, .name, .caption]) ?? ""
+                  thumb_url = str([.thumb_url, .thumbnail_url, .thumbnail, .image_url, .cover_url, .poster_url])
+                  position = num([.position, .order, .sort_order])
+              }
           }
-          private struct StoriesEnvelope: Decodable { let stories: [StoryItem] }
+          private struct StoriesEnvelope: Decodable {
+              let stories: [StoryItem]
+              private enum K: String, CodingKey { case stories, items, data, results }
+              init(from d: Decoder) throws {
+                  if let arr = try? [StoryItem](from: d) { stories = arr; return }
+                  let c = try d.container(keyedBy: K.self)
+                  for k in [K.stories, .items, .data, .results] {
+                      if let a = try? c.decodeIfPresent([StoryItem].self, forKey: k), let a { stories = a; return }
+                  }
+                  stories = []
+              }
+          }
 
           struct TopDownloadItem: Identifiable, Decodable, Equatable {
               let id: String
@@ -1674,28 +1714,89 @@ jobs:
               let icon: String?
               let bundle_id: String?
               let downloads: Int
-          }
-          private struct TopEnvelope: Decodable { let apps: [TopDownloadItem] }
 
-          // MARK: - Store (لوحة التحكم هي المصدر)
+              private enum K: String, CodingKey {
+                  case id, uuid, app_id
+                  case name, app_name, title
+                  case icon, icon_url, image_url, iconURL
+                  case bundle_id, bundleIdentifier, bundleId
+                  case downloads, download_count, installs, count, total
+              }
+              init(from d: Decoder) throws {
+                  let c = try d.container(keyedBy: K.self)
+                  func str(_ keys: [K]) -> String? {
+                      for k in keys {
+                          if let v = try? c.decodeIfPresent(String.self, forKey: k), let v, !v.isEmpty { return v }
+                          if let n = try? c.decodeIfPresent(Int.self, forKey: k), let n { return String(n) }
+                      }
+                      return nil
+                  }
+                  func num(_ keys: [K]) -> Int {
+                      for k in keys {
+                          if let n = try? c.decodeIfPresent(Int.self, forKey: k), let n { return n }
+                          if let dbl = try? c.decodeIfPresent(Double.self, forKey: k), let dbl { return Int(dbl) }
+                          if let sv = try? c.decodeIfPresent(String.self, forKey: k), let sv, let n = Int(sv) { return n }
+                      }
+                      return 0
+                  }
+                  let b = str([.bundle_id, .bundleIdentifier, .bundleId])
+                  let n = str([.name, .app_name, .title]) ?? (b ?? "")
+                  bundle_id = b
+                  name = n
+                  icon = str([.icon, .icon_url, .image_url, .iconURL])
+                  downloads = num([.downloads, .download_count, .installs, .count, .total])
+                  id = str([.id, .uuid, .app_id]) ?? (b ?? n)
+              }
+          }
+          private struct TopEnvelope: Decodable {
+              let apps: [TopDownloadItem]
+              private enum K: String, CodingKey { case apps, items, data, results, top }
+              init(from d: Decoder) throws {
+                  if let arr = try? [TopDownloadItem](from: d) { apps = arr; return }
+                  let c = try d.container(keyedBy: K.self)
+                  for k in [K.apps, .items, .data, .results, .top] {
+                      if let a = try? c.decodeIfPresent([TopDownloadItem].self, forKey: k), let a { apps = a; return }
+                  }
+                  apps = []
+              }
+          }
+
+          // MARK: - Store (لوحة التحكم هي المصدر الوحيد)
           @MainActor
           final class StoriesStore: ObservableObject {
               static let shared = MainActor.assumeIsolated { StoriesStore() }
               @Published var stories: [StoryItem] = []
               @Published var top: [TopDownloadItem] = []
-              private init() {}
+              private var timer: Timer?
+              private init() { startAutoRefresh() }
+
+              func startAutoRefresh() {
+                  load()
+                  timer?.invalidate()
+                  let t = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+                      Task { @MainActor in StoriesStore.shared.load() }
+                  }
+                  RunLoop.main.add(t, forMode: .common)
+                  timer = t
+              }
 
               func load() {
                   if let url = PushAPI.storiesURL {
                       URLSession.shared.dataTask(with: URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)) { data, _, _ in
-                          guard let data = data, let env = try? JSONDecoder().decode(StoriesEnvelope.self, from: data) else { return }
-                          Task { @MainActor in self.stories = Array(env.stories.prefix(5)) }
+                          guard let data = data,
+                                let env = try? JSONDecoder().decode(StoriesEnvelope.self, from: data) else { return }
+                          let items = env.stories
+                              .filter { !$0.video_url.isEmpty }
+                              .sorted { ($0.position ?? 0) < ($1.position ?? 0) }
+                          Task { @MainActor in self.stories = Array(items.prefix(5)) }
                       }.resume()
                   }
                   if let url = PushAPI.topDownloadsURL {
                       URLSession.shared.dataTask(with: URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)) { data, _, _ in
-                          guard let data = data, let env = try? JSONDecoder().decode(TopEnvelope.self, from: data) else { return }
-                          Task { @MainActor in self.top = env.apps }
+                          guard let data = data,
+                                let env = try? JSONDecoder().decode(TopEnvelope.self, from: data) else { return }
+                          let items = env.apps.sorted { $0.downloads > $1.downloads }
+                          Task { @MainActor in self.top = items }
                       }.resume()
                   }
               }
