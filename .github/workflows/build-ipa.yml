@@ -2365,6 +2365,129 @@ jobs:
                   .animation(.easeInOut(duration: 0.25), value: center.toastText)
               }
           }
+
+          // MARK: - In-App Notification Banner Host
+
+          @MainActor
+          final class NotificationBannerManager: ObservableObject {
+              static let shared = NotificationBannerManager()
+
+              @Published var currentTitle: String = ""
+              @Published var currentBody: String = ""
+              @Published var isVisible: Bool = false
+
+              private var dismissTask: Task<Void, Never>?
+              private var lastSeenItemId: String = ""
+
+              private init() {
+                  // Observe new push items
+                  Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                      Task { @MainActor [weak self] in
+                          self?.checkForNewNotifications()
+                      }
+                  }
+              }
+
+              func show(title: String, body: String) {
+                  dismissTask?.cancel()
+                  currentTitle = title
+                  currentBody = body
+                  withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                      isVisible = true
+                  }
+                  HapticManager.shared.notification(.success)
+                  dismissTask = Task { @MainActor in
+                      try? await Task.sleep(nanoseconds: 4_000_000_000)
+                      if !Task.isCancelled {
+                          withAnimation(.easeOut(duration: 0.3)) {
+                              self.isVisible = false
+                          }
+                      }
+                  }
+              }
+
+              private func checkForNewNotifications() {
+                  let push = ONEsPushCenter.shared
+                  guard let latest = push.items.first, latest.id != lastSeenItemId else { return }
+                  lastSeenItemId = latest.id
+                  // Only show banner if there are unread items
+                  if push.unread > 0 {
+                      show(title: latest.title, body: latest.body)
+                  }
+              }
+
+              func dismiss() {
+                  dismissTask?.cancel()
+                  withAnimation(.easeOut(duration: 0.25)) {
+                      isVisible = false
+                  }
+              }
+          }
+
+          struct NotificationBannerHost: View {
+              @ObservedObject var manager = NotificationBannerManager.shared
+
+              var body: some View {
+                  VStack {
+                      if manager.isVisible {
+                          VStack(alignment: .leading, spacing: 4) {
+                              HStack {
+                                  Image(systemName: "bell.badge.fill")
+                                      .foregroundColor(.white)
+                                      .font(.system(size: 16))
+                                  if !manager.currentTitle.isEmpty {
+                                      Text(manager.currentTitle)
+                                          .font(.system(size: 15, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .lineLimit(1)
+                                  }
+                                  Spacer()
+                                  Button {
+                                      manager.dismiss()
+                                  } label: {
+                                      Image(systemName: "xmark")
+                                          .font(.system(size: 12, weight: .bold))
+                                          .foregroundColor(.white.opacity(0.7))
+                                          .frame(width: 28, height: 28)
+                                  }
+                              }
+                              if !manager.currentBody.isEmpty {
+                                  Text(manager.currentBody)
+                                      .font(.system(size: 13))
+                                      .foregroundColor(.white.opacity(0.9))
+                                      .lineLimit(2)
+                              }
+                          }
+                          .padding(.horizontal, 16)
+                          .padding(.vertical, 12)
+                          .background(
+                              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                  .fill(
+                                      LinearGradient(
+                                          colors: [
+                                              Color.storePrimary,
+                                              Color.storePrimaryDk
+                                          ],
+                                          startPoint: .topLeading,
+                                          endPoint: .bottomTrailing
+                                      )
+                                  )
+                                  .shadow(color: Color.storePrimary.opacity(0.4), radius: 12, x: 0, y: 6)
+                          )
+                          .padding(.horizontal, 16)
+                          .padding(.top, 8)
+                          .transition(.move(edge: .top).combined(with: .opacity))
+                      }
+                      Spacer()
+                  }
+                  .animation(.spring(response: 0.4, dampingFraction: 0.8), value: manager.isVisible)
+                  .onTapGesture {
+                      if manager.isVisible {
+                          manager.dismiss()
+                      }
+                  }
+              }
+          }
           STATUSEOF
 
       # =========================================================
