@@ -1390,245 +1390,542 @@ jobs:
           import SwiftUI
           import UserNotifications
           import UIKit
+          import AVKit
 
-          struct AppNotificationItem: Identifiable, Equatable {
-              let id: UUID = UUID()
-              let title: String
-              let body: String
-              let icon: String
-              var iconURL: String? = nil
-              var badgeText: String? = nil
-              let date: Date = Date()
+          // =========================================================
+          // ONEs Cloud Panel — external notifications + stories + top downloads
+          // The old in-app (internal) notification engine was removed.
+          // Everything here is driven ONLY by the control panel APIs.
+          // =========================================================
+
+          enum ONEsPanel {
+              static let base = "https://project--e7c5af1d-7b58-44af-97bf-7fc8dfecad2d.lovable.app"
+              static var notifications: String { base + "/api/public/store/notifications" }
+              static var stories: String { base + "/api/public/store/stories" }
+              static var topApps: String { base + "/api/public/store/top-apps" }
+
+              static func get(_ urlString: String, _ done: @escaping ([[String: Any]]) -> Void) {
+                  guard let url = URL(string: urlString) else { done([]); return }
+                  var req = URLRequest(url: url)
+                  req.timeoutInterval = 20
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      var rows: [[String: Any]] = []
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                          rows = (obj["data"] as? [[String: Any]]) ?? []
+                      }
+                      DispatchQueue.main.async { done(rows) }
+                  }.resume()
+              }
+
+              static func post(_ urlString: String, body: [String: Any], _ done: ((Bool) -> Void)? = nil) {
+                  guard let url = URL(string: urlString) else { done?(false); return }
+                  var req = URLRequest(url: url)
+                  req.httpMethod = "POST"
+                  req.timeoutInterval = 20
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                  URLSession.shared.dataTask(with: req) { _, resp, _ in
+                      let ok = ((resp as? HTTPURLResponse)?.statusCode ?? 500) < 400
+                      DispatchQueue.main.async { done?(ok) }
+                  }.resume()
+              }
+
+              static func str(_ v: Any?) -> String {
+                  if let s = v as? String { return s }
+                  if let i = v as? Int { return String(i) }
+                  if let d = v as? Double { return String(Int(d)) }
+                  return ""
+              }
+
+              static func int(_ v: Any?) -> Int {
+                  if let i = v as? Int { return i }
+                  if let d = v as? Double { return Int(d) }
+                  if let s = v as? String { return Int(s) ?? 0 }
+                  return 0
+              }
           }
 
-          @MainActor
-          final class NotificationsManager: ObservableObject {
-              static let shared = MainActor.assumeIsolated { NotificationsManager() }
+          struct ONEsPushItem: Identifiable, Equatable {
+              let id: String
+              let title: String
+              let body: String
+              var kind: String = "general"
+              var imageURL: String = ""
+              var createdAt: String = ""
 
+              var iconName: String {
+                  switch kind {
+                  case "update": return "arrow.down.circle.fill"
+                  case "offer": return "tag.fill"
+                  case "news": return "newspaper.fill"
+                  case "alert": return "exclamationmark.triangle.fill"
+                  default: return "bell.badge.fill"
+                  }
+              }
+          }
+
+          // ---- Push center: polls the panel API and raises real device notifications ----
+          @MainActor
+          final class ONEsPushCenter: ObservableObject {
+              static let shared = MainActor.assumeIsolated { ONEsPushCenter() }
+
+              @Published var items: [ONEsPushItem] = []
+              @Published var unread: Int = 0
               @Published var authorized: Bool = false
-              @Published var enabled: Bool = UserDefaults.standard.object(forKey: "notif_enabled_21s") as? Bool ?? true
-              @Published var history: [AppNotificationItem] = []
-              @Published var banner: AppNotificationItem? = nil
+
+              private var timer: Timer? = nil
+              private let kDelivered = "ones_push_delivered_v1"
+              private let kLastSeen = "ones_push_last_seen_v1"
 
               private init() {}
 
+              func start() {
+                  requestAuthorization()
+                  refresh()
+                  timer?.invalidate()
+                  let t = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+                      Task { @MainActor in self.refresh() }
+                  }
+                  RunLoop.main.add(t, forMode: .common)
+                  timer = t
+              }
+
               func requestAuthorization() {
-                  UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                      DispatchQueue.main.async { self.authorized = granted }
-                  }
-              }
-
-              func setEnabled(_ value: Bool) {
-                  enabled = value
-                  UserDefaults.standard.set(value, forKey: "notif_enabled_21s")
-                  if value { requestAuthorization() }
-              }
-
-              func push(title: String,
-                        body: String,
-                        icon: String = "bell.fill",
-                        iconURL: String? = nil,
-                        badgeText: String? = nil,
-                        delay: TimeInterval = 0.4) {
-                  let item = AppNotificationItem(title: title, body: body, icon: icon,
-                                                 iconURL: iconURL, badgeText: badgeText)
-                  history.insert(item, at: 0)
-                  if history.count > 60 { history.removeLast(history.count - 60) }
-
-                  withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { banner = item }
-                  HapticManager.shared.notification(.success)
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                      if self.banner?.id == item.id {
-                          withAnimation(.easeOut(duration: 0.25)) { self.banner = nil }
+                  UNUserNotificationCenter.current()
+                      .requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                          DispatchQueue.main.async { self.authorized = granted }
                       }
-                  }
+              }
 
-                  guard enabled else { return }
-                  let content = UNMutableNotificationContent()
-                  content.title = title
-                  content.body = body
-                  content.sound = .default
-                  let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 0.2), repeats: false)
-                  let identifier = item.id.uuidString
-
-                  if let iconURL, let url = URL(string: iconURL) {
-                      Task { @MainActor in
-                          var attachment: UNNotificationAttachment? = nil
-                          if let (data, _) = try? await URLSession.shared.data(from: url) {
-                              let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
-                              let tmp = FileManager.default.temporaryDirectory
-                                  .appendingPathComponent("notif-\(identifier).\(ext)")
-                              if (try? data.write(to: tmp)) != nil {
-                                  attachment = try? UNNotificationAttachment(identifier: identifier, url: tmp, options: nil)
-                              }
-                          }
-                          if let attachment { content.attachments = [attachment] }
-                          let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-                          try? await UNUserNotificationCenter.current().add(request)
-                      }
-                  } else {
-                      let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-                      Task { try? await UNUserNotificationCenter.current().add(request) }
+              func refresh() {
+                  ONEsPanel.get(ONEsPanel.notifications + "?limit=60") { rows in
+                      let list: [ONEsPushItem] = rows.map {
+                          ONEsPushItem(id: ONEsPanel.str($0["id"]),
+                                       title: ONEsPanel.str($0["title"]),
+                                       body: ONEsPanel.str($0["body"]),
+                                       kind: ONEsPanel.str($0["kind"]).isEmpty ? "general" : ONEsPanel.str($0["kind"]),
+                                       imageURL: ONEsPanel.str($0["image_url"]),
+                                       createdAt: ONEsPanel.str($0["created_at"]))
+                      }.filter { !$0.id.isEmpty }
+                      self.items = list
+                      self.recomputeUnread()
+                      self.deliver(list)
                   }
               }
 
-              func pushAppEvent(name: String, iconURL: String?, version: String?, isUpdate: Bool) {
-                  let tag = isUpdate ? LS("محدث") : LS("جديد")
-                  let versionText = (version?.isEmpty == false) ? " • \(version!)" : ""
-                  push(title: "\(name) — \(tag)",
-                       body: isUpdate
-                           ? "\(LS("صدر تحديث جديد للتطبيق في المتجر"))\(versionText)"
-                           : "\(LS("تمت إضافة التطبيق إلى المتجر الآن"))\(versionText)",
-                       icon: isUpdate ? "arrow.triangle.2.circlepath" : "sparkles",
-                       iconURL: iconURL,
-                       badgeText: tag)
+              private func recomputeUnread() {
+                  let last = UserDefaults.standard.string(forKey: kLastSeen) ?? ""
+                  if last.isEmpty { unread = items.count; return }
+                  var n = 0
+                  for x in items { if x.id == last { break }; n += 1 }
+                  unread = n
               }
 
-              func dismissBanner() {
-                  withAnimation(.easeOut(duration: 0.2)) { banner = nil }
+              func markAllRead() {
+                  if let first = items.first {
+                      UserDefaults.standard.set(first.id, forKey: kLastSeen)
+                  }
+                  unread = 0
               }
 
-              func clearHistory() { history.removeAll() }
+              // Fires a real iOS notification for every item that was never delivered
+              private func deliver(_ list: [ONEsPushItem]) {
+                  var delivered = Set(UserDefaults.standard.stringArray(forKey: kDelivered) ?? [])
+                  let isFirstRun = delivered.isEmpty
+                  let center = UNUserNotificationCenter.current()
+                  for n in list.reversed() {
+                      if delivered.contains(n.id) { continue }
+                      delivered.insert(n.id)
+                      if isFirstRun { continue }   // don't spam on first install
+                      let content = UNMutableNotificationContent()
+                      content.title = n.title.isEmpty ? "ONEs" : n.title
+                      content.body = n.body
+                      content.sound = .default
+                      center.add(UNNotificationRequest(identifier: n.id, content: content, trigger: nil),
+                                 withCompletionHandler: nil)
+                  }
+                  if delivered.count > 400 { delivered = Set(list.map { $0.id }) }
+                  UserDefaults.standard.set(Array(delivered), forKey: kDelivered)
+              }
           }
 
-          struct NotificationBannerHost: View {
-              @ObservedObject private var notifier = NotificationsManager.shared
+          // ---- Inbox (read-only mirror of the panel notifications) ----
+          struct ONEsPushInboxView: View {
+              @Binding var isPresented: Bool
+              @ObservedObject private var push = ONEsPushCenter.shared
 
               var body: some View {
-                  VStack {
-                      if let item = notifier.banner {
-                          HStack(spacing: 12) {
-                              ZStack {
-                                  RoundedRectangle(cornerRadius: 12).fill(PinkTheme.gradient).frame(width: 38, height: 38)
-                                  if let iconURL = item.iconURL, let url = URL(string: iconURL) {
-                                      AsyncImage(url: url) { image in
-                                          image.resizable().aspectRatio(contentMode: .fill)
-                                      } placeholder: {
-                                          Image(systemName: item.icon).font(.system(size: 16, weight: .bold)).foregroundColor(.white)
-                                      }
-                                      .frame(width: 38, height: 38)
-                                      .clipShape(RoundedRectangle(cornerRadius: 12))
-                                  } else {
-                                      Image(systemName: item.icon).font(.system(size: 16, weight: .bold)).foregroundColor(.white)
-                                  }
-                              }
-                              VStack(alignment: .leading, spacing: 2) {
-                                  HStack(spacing: 6) {
-                                      Text(item.title).font(.system(size: 13, weight: .heavy)).foregroundColor(.storeText).lineLimit(1)
-                                      if let badgeText = item.badgeText {
-                                          Text(badgeText)
-                                              .font(.system(size: 9, weight: .heavy))
-                                              .foregroundColor(.white)
-                                              .padding(.horizontal, 7).padding(.vertical, 2)
-                                              .background(Capsule().fill(Color.storePrimary))
-                                      }
-                                  }
-                                  Text(item.body).font(.system(size: 12)).foregroundColor(.storeSub).lineLimit(2)
-                              }
-                              Spacer(minLength: 0)
-                              Button(action: { notifier.dismissBanner() }) {
-                                  Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundColor(.storeSub)
-                              }
+                  VStack(spacing: 0) {
+                      HStack {
+                          Button {
+                              isPresented = false
+                          } label: {
+                              Image(systemName: "xmark")
+                                  .font(.system(size: 15, weight: .bold))
+                                  .foregroundColor(Color.storeText)
+                                  .frame(width: 38, height: 38)
+                                  .background(Circle().fill(Color.storeCard))
                           }
-                          .padding(12)
-                          .background(
-                              RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                  .fill(Color.storeCard)
-                                  .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
-                          )
-                          .padding(.horizontal, 14)
-                          .padding(.top, 8)
-                          .transition(.move(edge: .top).combined(with: .opacity))
+                          Spacer()
+                          Text("الإشعارات")
+                              .font(.system(size: 17, weight: .bold))
+                              .foregroundColor(Color.storeText)
+                          Spacer()
+                          Color.clear.frame(width: 38, height: 38)
                       }
-                      Spacer()
+                      .padding(.horizontal, 18)
+                      .padding(.top, 14)
+
+                      ScrollView {
+                          if push.items.isEmpty {
+                              VStack(spacing: 10) {
+                                  Image(systemName: "bell.slash")
+                                      .font(.system(size: 34))
+                                      .foregroundColor(Color.storeSub.opacity(0.5))
+                                  Text("لا توجد إشعارات بعد")
+                                      .font(.system(size: 13))
+                                      .foregroundColor(Color.storeSub)
+                              }
+                              .padding(.vertical, 60)
+                          } else {
+                              LazyVStack(spacing: 10) {
+                                  ForEach(push.items) { n in
+                                      HStack(alignment: .top, spacing: 12) {
+                                          Image(systemName: n.iconName)
+                                              .font(.system(size: 16, weight: .bold))
+                                              .foregroundColor(Color.storePrimary)
+                                              .frame(width: 42, height: 42)
+                                              .background(Circle().fill(Color.storePrimary.opacity(0.12)))
+                                          VStack(alignment: .leading, spacing: 4) {
+                                              Text(n.title)
+                                                  .font(.system(size: 14, weight: .bold))
+                                                  .foregroundColor(Color.storeText)
+                                              Text(n.body)
+                                                  .font(.system(size: 12))
+                                                  .foregroundColor(Color.storeSub)
+                                          }
+                                          Spacer()
+                                      }
+                                      .padding(12)
+                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeCard))
+                                      .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.storeDivider, lineWidth: 0.6))
+                                  }
+                              }
+                              .padding(.horizontal, 16)
+                              .padding(.top, 12)
+                          }
+                      }
+                      .refreshable { push.refresh() }
                   }
-                  .animation(.spring(response: 0.4, dampingFraction: 0.82), value: notifier.banner)
+                  .background(ONEsStoreBackground())
+                  .onAppear {
+                      push.refresh()
+                      push.markAllRead()
+                  }
               }
           }
 
-          struct NotificationCenterView: View {
-              @Binding var isPresented: Bool
-              @ObservedObject private var notifier = NotificationsManager.shared
+          // =========================================================
+          // STORIES + TOP DOWNLOADS (managed from the control panel)
+          // =========================================================
+
+          struct ONEsStoryItem: Identifiable, Equatable {
+              let id: String
+              let title: String
+              let videoURL: String
+              var thumbURL: String = ""
+          }
+
+          struct ONEsTopAppItem: Identifiable, Equatable {
+              let id: String
+              let name: String
+              var bundleID: String = ""
+              var iconURL: String = ""
+              var downloads: Int = 0
+          }
+
+          @MainActor
+          final class ONEsPanelStore: ObservableObject {
+              static let shared = MainActor.assumeIsolated { ONEsPanelStore() }
+
+              @Published var stories: [ONEsStoryItem] = []
+              @Published var topApps: [ONEsTopAppItem] = []
+
+              private init() {}
+
+              func loadAll() {
+                  ONEsPanel.get(ONEsPanel.stories) { rows in
+                      self.stories = rows.map {
+                          ONEsStoryItem(id: ONEsPanel.str($0["id"]),
+                                        title: ONEsPanel.str($0["title"]),
+                                        videoURL: ONEsPanel.str($0["video_url"]),
+                                        thumbURL: ONEsPanel.str($0["thumb_url"]))
+                      }.filter { !$0.videoURL.isEmpty }
+                  }
+                  ONEsPanel.get(ONEsPanel.topApps) { rows in
+                      self.topApps = rows.map {
+                          ONEsTopAppItem(id: ONEsPanel.str($0["id"]),
+                                         name: ONEsPanel.str($0["name"]),
+                                         bundleID: ONEsPanel.str($0["bundle_id"]),
+                                         iconURL: ONEsPanel.str($0["icon_url"]),
+                                         downloads: ONEsPanel.int($0["downloads"]))
+                      }.filter { !$0.name.isEmpty }
+                  }
+              }
+
+              func reportDownload(name: String, bundleID: String, iconURL: String) {
+                  ONEsPanel.post(ONEsPanel.topApps,
+                                 body: ["name": name, "bundle_id": bundleID, "icon_url": iconURL])
+              }
+          }
+
+          // ---- 5 story icons directly under the banner ----
+          struct ONEsBannerStoriesRow: View {
+              @ObservedObject private var panel = ONEsPanelStore.shared
+              @State private var openIndex: Int? = nil
+
+              var body: some View {
+                  Group {
+                      if !panel.stories.isEmpty {
+                          ScrollView(.horizontal, showsIndicators: false) {
+                              HStack(spacing: 14) {
+                                  ForEach(Array(panel.stories.prefix(5).enumerated()), id: \.element.id) { idx, story in
+                                      Button {
+                                          HapticManager.shared.selection()
+                                          openIndex = idx
+                                      } label: {
+                                          VStack(spacing: 6) {
+                                              ZStack {
+                                                  Circle()
+                                                      .strokeBorder(
+                                                          AngularGradient(colors: [Color.storePrimary,
+                                                                                   Color.storePrimary.opacity(0.25),
+                                                                                   Color.storePrimary],
+                                                                          center: .center),
+                                                          lineWidth: 2.5)
+                                                      .frame(width: 68, height: 68)
+                                                  ONEsStoryThumb(story: story)
+                                                      .frame(width: 58, height: 58)
+                                                      .clipShape(Circle())
+                                              }
+                                              Text(story.title)
+                                                  .font(.system(size: 11, weight: .semibold))
+                                                  .foregroundColor(Color.storeText)
+                                                  .lineLimit(1)
+                                                  .frame(width: 70)
+                                          }
+                                      }
+                                      .buttonStyle(.plain)
+                                  }
+                              }
+                              .padding(.horizontal, 20)
+                              .padding(.vertical, 4)
+                          }
+                      }
+                  }
+                  .onAppear { panel.loadAll() }
+                  .fullScreenCover(item: Binding(
+                      get: { openIndex.map { ONEsStoryStart(index: $0) } },
+                      set: { openIndex = $0?.index }
+                  )) { start in
+                      ONEsStoryPlayerView(stories: Array(panel.stories.prefix(5)), startIndex: start.index)
+                  }
+              }
+          }
+
+          struct ONEsStoryStart: Identifiable {
+              let index: Int
+              var id: Int { index }
+          }
+
+          struct ONEsStoryThumb: View {
+              let story: ONEsStoryItem
+
+              var body: some View {
+                  Group {
+                      if let u = URL(string: story.thumbURL.isEmpty ? story.videoURL : story.thumbURL),
+                         !story.thumbURL.isEmpty {
+                          AsyncImage(url: u) { phase in
+                              switch phase {
+                              case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
+                              default: placeholder
+                              }
+                          }
+                      } else {
+                          placeholder
+                      }
+                  }
+              }
+
+              private var placeholder: some View {
+                  ZStack {
+                      Circle().fill(Color.storeCard)
+                      Image(systemName: "play.circle.fill")
+                          .font(.system(size: 20, weight: .bold))
+                          .foregroundColor(Color.storePrimary)
+                  }
+              }
+          }
+
+          // ---- Instagram-style full screen player: keeps the original video ratio, no cropping ----
+          struct ONEsStoryPlayerView: View {
+              let stories: [ONEsStoryItem]
+              let startIndex: Int
+
+              @Environment(\.dismiss) private var dismiss
+              @State private var index: Int = 0
 
               var body: some View {
                   ZStack {
-                      ONEsStoreBackground()
-                      VStack(spacing: 0) {
-                          HStack {
-                              Button(action: { isPresented = false }) {
-                                  Image(systemName: "chevron.left").font(.system(size: 16, weight: .bold)).foregroundColor(.storePrimary)
-                              }
-                              Spacer()
-                              Text("الإشعارات").font(.system(size: 17, weight: .heavy)).foregroundColor(.storeText)
-                              Spacer()
-                              Button(action: { notifier.clearHistory() }) {
-                                  Image(systemName: "trash").font(.system(size: 14, weight: .bold)).foregroundColor(.storeSub)
+                      Color.black.ignoresSafeArea()
+
+                      TabView(selection: $index) {
+                          ForEach(Array(stories.enumerated()), id: \.element.id) { i, story in
+                              ONEsStorySlide(story: story, isActive: index == i)
+                                  .tag(i)
+                          }
+                      }
+                      .tabViewStyle(.page(indexDisplayMode: .never))
+                      .ignoresSafeArea()
+
+                      VStack {
+                          HStack(spacing: 6) {
+                              ForEach(stories.indices, id: \.self) { i in
+                                  Capsule()
+                                      .fill(Color.white.opacity(i == index ? 0.95 : 0.28))
+                                      .frame(height: 3)
                               }
                           }
-                          .padding(.horizontal, 18).padding(.vertical, 14)
+                          .padding(.horizontal, 14)
+                          .padding(.top, 10)
 
-                          ScrollView {
-                              VStack(spacing: 12) {
-                                  Toggle(isOn: Binding(get: { notifier.enabled }, set: { notifier.setEnabled($0) })) {
-                                      VStack(alignment: .leading, spacing: 2) {
-                                          Text("الإشعارات الفورية").font(.system(size: 14, weight: .bold)).foregroundColor(.storeText)
-                                          Text(notifier.authorized ? "مسموح" : "مطلوب إذن من الجهاز")
-                                              .font(.system(size: 11)).foregroundColor(.storeSub)
-                                      }
-                                  }
-                                  .tint(.storePrimary)
-                                  .padding(14)
-                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-
-                                  if notifier.history.isEmpty {
-                                      VStack(spacing: 8) {
-                                          Image(systemName: "bell.slash").font(.system(size: 26)).foregroundColor(.storeSub)
-                                          Text("لا توجد إشعارات بعد").font(.system(size: 13)).foregroundColor(.storeSub)
-                                      }
-                                      .padding(.top, 60)
-                                  }
-
-                                  ForEach(notifier.history) { item in
-                                      HStack(spacing: 12) {
-                                          ZStack {
-                                              Circle().fill(PinkTheme.gradient).frame(width: 36, height: 36)
-                                              if let iconURL = item.iconURL, let url = URL(string: iconURL) {
-                                                  AsyncImage(url: url) { image in
-                                                      image.resizable().aspectRatio(contentMode: .fill)
-                                                  } placeholder: {
-                                                      Image(systemName: item.icon).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
-                                                  }
-                                                  .frame(width: 36, height: 36)
-                                                  .clipShape(Circle())
-                                              } else {
-                                                  Image(systemName: item.icon).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
-                                              }
-                                          }
-                                          VStack(alignment: .leading, spacing: 3) {
-                                              HStack(spacing: 6) {
-                                                  Text(item.title).font(.system(size: 13, weight: .bold)).foregroundColor(.storeText)
-                                                  if let badgeText = item.badgeText {
-                                                      Text(badgeText)
-                                                          .font(.system(size: 9, weight: .heavy))
-                                                          .foregroundColor(.white)
-                                                          .padding(.horizontal, 7).padding(.vertical, 2)
-                                                          .background(Capsule().fill(Color.storePrimary))
-                                                  }
-                                              }
-                                              Text(item.body).font(.system(size: 12)).foregroundColor(.storeSub)
-                                          }
-                                          Spacer(minLength: 0)
-                                      }
-                                      .padding(14)
-                                      .frame(maxWidth: .infinity, alignment: .leading)
-                                      .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                                  }
+                          HStack {
+                              Text(stories.indices.contains(index) ? stories[index].title : "")
+                                  .font(.system(size: 14, weight: .bold))
+                                  .foregroundColor(.white)
+                              Spacer()
+                              Button {
+                                  dismiss()
+                              } label: {
+                                  Image(systemName: "xmark")
+                                      .font(.system(size: 15, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .frame(width: 36, height: 36)
+                                      .background(Circle().fill(Color.white.opacity(0.16)))
                               }
-                              .padding(16)
+                          }
+                          .padding(.horizontal, 16)
+                          .padding(.top, 8)
+
+                          Spacer()
+                      }
+                  }
+                  .onAppear { index = min(max(startIndex, 0), max(stories.count - 1, 0)) }
+                  .statusBarHidden(true)
+              }
+          }
+
+          struct ONEsStorySlide: View {
+              let story: ONEsStoryItem
+              let isActive: Bool
+
+              @State private var player: AVPlayer? = nil
+
+              var body: some View {
+                  ZStack {
+                      Color.black
+                      if let player = player {
+                          // .fit keeps the FULL video, whatever its length/ratio — never cropped
+                          VideoPlayer(player: player)
+                              .aspectRatio(contentMode: .fit)
+                              .allowsHitTesting(false)
+                      } else {
+                          ProgressView().tint(.white)
+                      }
+                  }
+                  .onAppear { setup() }
+                  .onDisappear { player?.pause() }
+                  .onChange(of: isActive) { active in
+                      if active { player?.seek(to: .zero); player?.play() } else { player?.pause() }
+                  }
+              }
+
+              private func setup() {
+                  guard player == nil, let url = URL(string: story.videoURL) else { return }
+                  let p = AVPlayer(url: url)
+                  p.actionAtItemEnd = .none
+                  NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                                         object: p.currentItem, queue: .main) { _ in
+                      p.seek(to: .zero)
+                      p.play()
+                  }
+                  player = p
+                  if isActive { p.play() }
+              }
+          }
+
+          // ---- "الأكثر تحميلاً" section, right under the stories ----
+          struct ONEsTopDownloadsSection: View {
+              @ObservedObject private var panel = ONEsPanelStore.shared
+
+              var body: some View {
+                  Group {
+                      if !panel.topApps.isEmpty {
+                          VStack(alignment: .leading, spacing: 10) {
+                              HStack {
+                                  Label("الأكثر تحميلاً", systemImage: "flame.fill")
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(Color.storeText)
+                                  Spacer()
+                              }
+                              .padding(.horizontal, 20)
+
+                              ScrollView(.horizontal, showsIndicators: false) {
+                                  HStack(spacing: 12) {
+                                      ForEach(Array(panel.topApps.prefix(12).enumerated()), id: \.element.id) { i, app in
+                                          VStack(spacing: 8) {
+                                              ZStack(alignment: .topLeading) {
+                                                  Group {
+                                                      if let u = URL(string: app.iconURL), !app.iconURL.isEmpty {
+                                                          AsyncImage(url: u) { phase in
+                                                              switch phase {
+                                                              case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
+                                                              default: Color.storeCard
+                                                              }
+                                                          }
+                                                      } else {
+                                                          Color.storeCard
+                                                      }
+                                                  }
+                                                  .frame(width: 62, height: 62)
+                                                  .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+
+                                                  Text("\(i + 1)")
+                                                      .font(.system(size: 10, weight: .black))
+                                                      .foregroundColor(Color.storeText)
+                                                      .padding(4)
+                                                      .background(Capsule().fill(Color.storeCard))
+                                                      .offset(x: -4, y: -4)
+                                              }
+                                              Text(app.name)
+                                                  .font(.system(size: 11, weight: .semibold))
+                                                  .foregroundColor(Color.storeText)
+                                                  .lineLimit(1)
+                                              Text("\(app.downloads) تحميل")
+                                                  .font(.system(size: 9, weight: .medium))
+                                                  .foregroundColor(Color.storeSub)
+                                          }
+                                          .frame(width: 76)
+                                      }
+                                  }
+                                  .padding(.horizontal, 20)
+                              }
                           }
                       }
                   }
-                  .onAppear { notifier.requestAuthorization() }
+                  .onAppear { panel.loadAll() }
               }
           }
           VIPEOF
@@ -2423,28 +2720,11 @@ jobs:
                           }
                           if previous != next[key] { events.append((app, true)) }
                       }
-                      for (app, isUpdate) in events.prefix(8) {
-                          NotificationsManager.shared.pushAppEvent(
-                              name: app.name,
-                              iconURL: app.iconURL ?? app.icon,
-                              version: snapshotVersion(app),
-                              isUpdate: isUpdate
-                          )
-                      }
+                      _ = events.count
                   } else {
                       let now = Date()
                       let cutoff = now.addingTimeInterval(-24 * 60 * 60)
-                      for app in incoming.prefix(8) {
-                          if let raw = app.createdAt ?? app.updatedAt ?? app.versionDate ?? app.fullDate,
-                             let d = ActivationManager.parseDate(raw), d >= cutoff {
-                              NotificationsManager.shared.pushAppEvent(
-                                  name: app.name,
-                                  iconURL: app.iconURL ?? app.icon,
-                                  version: snapshotVersion(app),
-                                  isUpdate: false
-                              )
-                          }
-                      }
+                      _ = cutoff
                   }
 
                   catalogSnapshot = next
@@ -2624,14 +2904,8 @@ jobs:
                           let cur = next[key] ?? ""
                           let old = prev[key] ?? ""
                           if old.isEmpty {
-                              NotificationsManager.shared.pushAppEvent(
-                                  name: app.name, iconURL: app.iconURL ?? app.icon,
-                                  version: cur, isUpdate: false)
                               count += 1
                           } else if cur != old {
-                              NotificationsManager.shared.pushAppEvent(
-                                  name: app.name, iconURL: app.iconURL ?? app.icon,
-                                  version: cur, isUpdate: true)
                               count += 1
                           }
                           if count >= 8 { break }
@@ -2718,7 +2992,7 @@ jobs:
                   }
                   .onAppear {
                       StatusCenter.shared.start()
-                      NotificationsManager.shared.requestAuthorization()
+                      ONEsPushCenter.shared.start()
                       ONEsContent.shared.loadStoreContent()
                       ONEsContent.shared.loadSources()
                       ONEsContent.shared.loadInstalls()
@@ -3004,7 +3278,7 @@ jobs:
                           AppDetailView(app: app, feed: feed)
                       }
                   }
-                  .sheet(isPresented: $showNotifications) { NotificationCenterView(isPresented: $showNotifications) }
+                  .sheet(isPresented: $showNotifications) { ONEsPushInboxView(isPresented: $showNotifications) }
               }
 
               private func pill(label: String, value: String?, color: Color) -> some View {
@@ -3327,7 +3601,7 @@ jobs:
               var showBell: Bool = false
               var showMenu: Bool = true
               @State private var showNotifications: Bool = false
-              @ObservedObject private var notifier = NotificationsManager.shared
+              @ObservedObject private var notifier = ONEsPushCenter.shared
 
               var body: some View {
                   HStack {
@@ -3352,7 +3626,7 @@ jobs:
                                   .frame(width: 42, height: 42)
                                   .background(Circle().fill(Color.storeCard))
                                   .overlay(Circle().stroke(Color.storeDivider, lineWidth: 0.8))
-                                  if !notifier.history.isEmpty {
+                                  if notifier.unread > 0 {
                                       Circle().fill(Color.storePrimary)
                                           .frame(width: 9, height: 9)
                                           .offset(x: -2, y: 2)
@@ -3395,7 +3669,7 @@ jobs:
                   .padding(.horizontal, 20)
                   .padding(.top, 8)
                   .fullScreenCover(isPresented: $showNotifications) {
-                      NotificationCenterView(isPresented: $showNotifications)
+                      ONEsPushInboxView(isPresented: $showNotifications)
                   }
               }
           }
@@ -3912,6 +4186,9 @@ jobs:
                              let u = URL(string: installURL) {
                               UIApplication.shared.open(u)
                               ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
+                              ONEsPanelStore.shared.reportDownload(name: name,
+                                                                   bundleID: bundleId ?? "",
+                                                                   iconURL: "")
                               StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
                           } else {
                               let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
@@ -4160,6 +4437,12 @@ jobs:
                                   // Promo banner + maintenance/update notices + smart suggestions
                                   ONEsAdsBanner()
 
+                                  // 5 story icons managed from the control panel
+                                  ONEsBannerStoriesRow()
+
+                                  // Most downloaded apps (control panel counters)
+                                  ONEsTopDownloadsSection()
+
                                   ONEsNoticesView()
 
                                   ONEsSuggestionsRow()
@@ -4366,13 +4649,6 @@ jobs:
                       for item in recent {
                           let key = "\(item.id):\(item.version)"
                           if prev.contains(key) { continue }
-                          let isNew = (item.is_new == true) || (item.released_at == nil)
-                          NotificationsManager.shared.pushAppEvent(
-                              name: item.app_name,
-                              iconURL: item.icon,
-                              version: item.version,
-                              isUpdate: !isNew
-                          )
                       }
                       lastFingerprint = fp
                       UserDefaults.standard.set(fp, forKey: "live_catalog_fp")
@@ -4864,18 +5140,22 @@ jobs:
               }
 
               // ---- Notifications ----
+              // Store notifications are delivered ONLY by the control-panel API
+              // (external systems can push them in). No internal engine anymore.
               func loadNotifications() {
-                  let token = ONEsSession.shared.token
-                  ONEsCloud.rows("/rest/v1/notifications?select=*&order=created_at.desc&limit=80", token: token) { rows in
+                  ONEsPanel.get(ONEsPanel.notifications + "?limit=80") { rows in
                       let list = rows.map {
-                          ONEsNotification(id: S($0["id"]), title: S($0["title"]), body: S($0["body"]),
-                                           kind: S($0["kind"]), actorID: S($0["actor_id"]),
-                                           postID: S($0["post_id"]), createdAt: S($0["created_at"]))
+                          ONEsNotification(id: ONEsPanel.str($0["id"]),
+                                           title: ONEsPanel.str($0["title"]),
+                                           body: ONEsPanel.str($0["body"]),
+                                           kind: ONEsPanel.str($0["kind"]),
+                                           actorID: "",
+                                           postID: "",
+                                           createdAt: ONEsPanel.str($0["created_at"]))
                       }
                       DispatchQueue.main.async {
                           self.notifications = list
                           self.recomputeUnread()
-                          self.fireLocalNotifications(for: list)
                       }
                   }
               }
@@ -4895,24 +5175,6 @@ jobs:
                   unreadNotifs = 0
               }
 
-              private func fireLocalNotifications(for list: [ONEsNotification]) {
-                  let lastSeen = UserDefaults.standard.string(forKey: kLastSeenNotif) ?? ""
-                  let myID = ONEsSession.shared.userID
-                  let center = UNUserNotificationCenter.current()
-                  for n in list where !forumKinds.contains(n.kind) {
-                      if n.id == lastSeen { break }
-                      if n.actorID == myID { continue }   // do not notify yourself
-                      let content = UNMutableNotificationContent()
-                      content.title = n.title.isEmpty ? "ONEs" : n.title
-                      content.body  = n.body
-                      content.sound = .default
-                      let req = UNNotificationRequest(identifier: n.id, content: content, trigger: nil)
-                      center.add(req, withCompletionHandler: nil)
-                  }
-                  if let first = list.first(where: { !forumKinds.contains($0.kind) }) {
-                      UserDefaults.standard.set(first.id, forKey: kLastSeenNotif)
-                  }
-              }
 
               // ---- BROADCAST: notify EVERY signed-in user ----
               // Inserts a row into the notifications table — the receiving
@@ -4920,15 +5182,9 @@ jobs:
               // and the iOS notification banner will fire too.
               func broadcast(title: String, body: String, kind: String,
                              postID: String = "", completion: ((Bool) -> Void)? = nil) {
-                  let s = ONEsSession.shared
-                  let payload: [String: Any] = [
-                      "title": title,
-                      "body": body,
-                      "kind": kind,
-                      "actor_id": s.userID,
-                      "post_id": postID
-                  ]
-                  ONEsCloud.send("/rest/v1/notifications", method: "POST", body: payload, token: s.token) { ok, _ in
+                  _ = postID
+                  ONEsPanel.post(ONEsPanel.notifications,
+                                 body: ["title": title, "body": body, "kind": kind]) { ok in
                       completion?(ok)
                   }
               }
@@ -7616,7 +7872,7 @@ jobs:
               init() {
                   ScreenCaptureService.shared.start()
                   UNUserNotificationCenter.current().delegate = ForegroundNotificationDelegate.shared
-                  NotificationsManager.shared.requestAuthorization()
+                  ONEsPushCenter.shared.start()
                   VIP21StoreApp.registerBackgroundTask()
                   VIP21StoreApp.scheduleAppRefresh()
                   VIP21StoreApp.applyDarkAppearance()
