@@ -572,6 +572,7 @@ jobs:
               let fullDate: String?
               let size: Double?
               let type: Int?
+              let installManifestURL: String?
 
               enum CodingKeys: String, CodingKey {
                   case id, name
@@ -586,6 +587,12 @@ jobs:
                   case host
                   case icon
                   case iconURL
+                  case iconURLSnake = "icon_url"
+                  case downloadURLSnake = "download_url"
+                  case sizeBytes = "size_bytes"
+                  case developer
+                  case installManifestURL = "install_manifest_url"
+                  case published
                   case description
                   case localizedDescription
                   case screenshots, category
@@ -611,9 +618,10 @@ jobs:
                       self.id = abs(bundle.hashValue)
                   }
                   self.name = (try? c.decode(String.self, forKey: .name)) ?? "Untitled"
-                  self.bundleId = (try? c.decode(String.self, forKey: .bundleId))
+                  let rawBundle = (try? c.decode(String.self, forKey: .bundleId))
                       ?? (try? c.decode(String.self, forKey: .bundleIdAlt))
                       ?? (try? c.decode(String.self, forKey: .bundleIdentifier))
+                  self.bundleId = (rawBundle?.isEmpty ?? true) ? nil : rawBundle
                   self.bundleVersion = (try? c.decode(String.self, forKey: .bundleVersion))
                       ?? (try? c.decode(String.self, forKey: .version))
                   self.ipaSize = (try? c.decode(String.self, forKey: .ipaSize))
@@ -621,10 +629,12 @@ jobs:
                   self.archiveUrl = (try? c.decode(String.self, forKey: .archiveUrl))
                   self.ipaUrl = (try? c.decode(String.self, forKey: .ipaUrl))
                       ?? (try? c.decode(String.self, forKey: .downloadURL))
+                      ?? (try? c.decode(String.self, forKey: .downloadURLSnake))
                       ?? (try? c.decode(String.self, forKey: .down))
                   self.host = (try? c.decode(String.self, forKey: .host))
                   self.icon = (try? c.decode(String.self, forKey: .icon))
                       ?? (try? c.decode(String.self, forKey: .iconURL))
+                      ?? (try? c.decode(String.self, forKey: .iconURLSnake))
                   self.description = (try? c.decode(String.self, forKey: .description))
                       ?? (try? c.decode(String.self, forKey: .localizedDescription))
                   self.screenshots = try? c.decode([String].self, forKey: .screenshots)
@@ -634,16 +644,21 @@ jobs:
                       ?? (try? c.decode(String.self, forKey: .versionDate))
                       ?? (try? c.decode(String.self, forKey: .fullDate))
                   self.downloadURL = (try? c.decode(String.self, forKey: .downloadURL))
+                      ?? (try? c.decode(String.self, forKey: .downloadURLSnake))
                       ?? (try? c.decode(String.self, forKey: .down))
                   self.down = (try? c.decode(String.self, forKey: .down))
                   self.iconURL = (try? c.decode(String.self, forKey: .iconURL))
+                      ?? (try? c.decode(String.self, forKey: .iconURLSnake))
                   self.localizedDescription = (try? c.decode(String.self, forKey: .localizedDescription))
                   self.developerName = (try? c.decode(String.self, forKey: .developerName))
+                      ?? (try? c.decode(String.self, forKey: .developer))
                   self.version = (try? c.decode(String.self, forKey: .version))
                   self.versionDate = (try? c.decode(String.self, forKey: .versionDate))
                   self.fullDate = (try? c.decode(String.self, forKey: .fullDate))
                   self.size = (try? c.decode(Double.self, forKey: .size))
+                      ?? (try? c.decode(Double.self, forKey: .sizeBytes))
                   self.type = (try? c.decode(Int.self, forKey: .type))
+                  self.installManifestURL = (try? c.decode(String.self, forKey: .installManifestURL))
               }
 
               func encode(to encoder: Encoder) throws {
@@ -686,7 +701,12 @@ jobs:
               }
 
               var resolvedDownloadURL: String? {
-                  return ipaUrl ?? downloadURL ?? down ?? githubUrl ?? archiveUrl
+                  let candidates = [ipaUrl, downloadURL, down, githubUrl, archiveUrl, installManifestURL]
+                  for c in candidates {
+                      guard let c = c?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty else { continue }
+                      if c.lowercased().hasPrefix("http") { return c }
+                  }
+                  return nil
               }
           }
 
@@ -734,7 +754,7 @@ jobs:
               @Published private(set) var quota: DownloadQuota
               @Published private(set) var totalAppsAvailable: Int = 0
 
-              private let keyRepos = "repositories.v1"
+              private let keyRepos = "repositories.v2"
               private let keyQuota = "quota.v1"
               private let d = UserDefaults.standard
 
@@ -758,7 +778,7 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "ONEs",
-                              feedURL: "https://delight-flow-syncogh.lovable.app/api/public/store/apps",
+                              feedURL: StoreFeedFetcher.primaryFeedURL,
                               homepage: "https://delight-flow-syncogh.lovable.app",
                               enabled: true,
                               maxGB: 500
@@ -768,7 +788,7 @@ jobs:
                               name: "ONEs Originals",
                               feedURL: "https://21s.app/repo/apps.json",
                               homepage: "https://21s.app",
-                              enabled: true,
+                              enabled: false,
                               maxGB: 500
                           )
                       ]
@@ -3068,14 +3088,7 @@ jobs:
                       for repo in enabled {
                           group.addTask { () -> (StoreAPIResponse?, Error?) in
                               do {
-                                  var req = URLRequest(url: URL(string: repo.feedURL)!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                                  let (data, response) = try await URLSession.shared.data(for: req)
-                                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                                      throw NSError(domain: "StoreFeed", code: http.statusCode,
-                                                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from \(repo.name)"])
-                                  }
-                                  let parsed = try JSONDecoder().decode(StoreAPIResponse.self, from: data)
+                                  let parsed = try await StoreFeedFetcher.load(repo)
                                   return (parsed, nil)
                               } catch {
                                   return (nil, error)
@@ -3149,6 +3162,62 @@ jobs:
               }
           }
 
+          // ================= STORE FEED FETCHER =================
+          // The admin panel does NOT expose /api/public/store/apps (returns 404),
+          // so the catalog is read straight from the panel database (read-only,
+          // published rows only). Any classic JSON feed still works unchanged.
+          enum StoreFeedFetcher {
+              static let supabaseHost = "https://xpsqdzirevankrzrnxko.supabase.co"
+              static let supabaseAnonKey = "sb_publishable_-UfDzXdzukrKLoh6kp8Gsg_ecMMt56Z"
+
+              static var primaryFeedURL: String {
+                  supabaseHost + "/rest/v1/store_apps?select=*&published=eq.true&order=created_at.desc&limit=500"
+              }
+
+              static func request(for feedURL: String) -> URLRequest? {
+                  guard let url = URL(string: feedURL) else { return nil }
+                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
+                  if feedURL.contains(".supabase.co/rest/v1/") {
+                      req.setValue(supabaseAnonKey, forHTTPHeaderField: "apikey")
+                      req.setValue("Bearer " + supabaseAnonKey, forHTTPHeaderField: "Authorization")
+                  }
+                  return req
+              }
+
+              static func decode(_ data: Data) -> StoreAPIResponse? {
+                  let dec = JSONDecoder()
+                  if let arr = try? dec.decode([StoreAPIApp].self, from: data), !arr.isEmpty {
+                      return StoreAPIResponse.__build(apps: arr, lastUpdated: nil)
+                  }
+                  if let obj = try? dec.decode(StoreAPIResponse.self, from: data), !obj.apps.isEmpty {
+                      return obj
+                  }
+                  if let arr = try? dec.decode([StoreAPIApp].self, from: data) {
+                      return StoreAPIResponse.__build(apps: arr, lastUpdated: nil)
+                  }
+                  return nil
+              }
+
+              static func load(_ repo: DownloadRepository) async throws -> StoreAPIResponse {
+                  guard let req = request(for: repo.feedURL) else {
+                      throw NSError(domain: "StoreFeed", code: -1,
+                                    userInfo: [NSLocalizedDescriptionKey: "Bad feed URL for \(repo.name)"])
+                  }
+                  let (data, response) = try await URLSession.shared.data(for: req)
+                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                      throw NSError(domain: "StoreFeed", code: http.statusCode,
+                                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from \(repo.name)"])
+                  }
+                  guard let parsed = decode(data) else {
+                      throw NSError(domain: "StoreFeed", code: -2,
+                                    userInfo: [NSLocalizedDescriptionKey: "Unreadable feed from \(repo.name)"])
+                  }
+                  return parsed
+              }
+          }
+
           // ================= CATALOG REFRESHER =================
           @MainActor
           final class CatalogRefresher: ObservableObject {
@@ -3165,16 +3234,7 @@ jobs:
                   await withTaskGroup(of: StoreAPIResponse?.self) { group in
                       for repo in repos {
                           group.addTask { () -> StoreAPIResponse? in
-                              guard let url = URL(string: repo.feedURL) else { return nil }
-                              do {
-                                  var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-                                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                                  let (data, response) = try await URLSession.shared.data(for: req)
-                                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
-                                  return try? JSONDecoder().decode(StoreAPIResponse.self, from: data)
-                              } catch {
-                                  return nil
-                              }
+                              return try? await StoreFeedFetcher.load(repo)
                           }
                       }
                       for await resp in group {
