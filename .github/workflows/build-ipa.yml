@@ -1508,7 +1508,7 @@ jobs:
 
           // MARK: - Panel / API base (لوحة التحكم)
           enum PushAPI {
-              static let base = "https://project--a5514298-96c6-4a62-a9ed-182d062f1cb7.lovable.app"
+              static let base = ActivationManager.codesSiteBase
               static var notificationsURL: URL? { URL(string: base + "/api/public/notifications") }
               static var storiesURL: URL? { URL(string: base + "/api/public/store/stories") }
               static var topDownloadsURL: URL? { URL(string: base + "/api/public/store/top-downloads") }
@@ -4478,31 +4478,62 @@ jobs:
           }
 
           // ================= INSTALLER =================
+          // ملاحظة: سيرفر المتجر لا يوفر /api/public/store/install-by-bundle (يرجع 404)
+          // ولا /api/public/store/certificate بصيغة JSON، لذلك التثبيت صار مباشرًا من
+          // رابط التطبيق نفسه (install_manifest_url أو download_url) مع تسجيل عداد
+          // التحميل على سيرفر المتجر عبر /api/public/store/download (يعمل فعليًا).
           @MainActor
           final class StoreInstaller: ObservableObject {
               static let shared = MainActor.assumeIsolated { StoreInstaller() }
               @Published var isWorking: Bool = false
               private init() {}
 
+              static let serverBase = "https://delight-flow-syncogh.lovable.app"
+
+              private static let urlAllowed: CharacterSet = {
+                  CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+              }()
+
               func install(app: StoreAPIApp) {
                   DownloadCounter.report(bundleId: app.bundleId, name: app.name, icon: app.iconURL ?? app.icon)
-                  install(bundleId: app.bundleId, name: app.name)
+                  start(bundleId: app.bundleId,
+                        name: app.name,
+                        manifest: Self.clean(app.installManifestURL),
+                        direct: Self.clean(app.resolvedDownloadURL))
               }
 
+              func install(bundleId: String?, name: String) {
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت...")
+                  Self.lookup(bundleId: bundleId, name: name) { app in
+                      Task { @MainActor in
+                          self.isWorking = false
+                          guard let app = app else {
+                              StatusCenter.shared.show(text: "لم يتم العثور على رابط التطبيق في المتجر")
+                              return
+                          }
+                          self.install(app: app)
+                      }
+                  }
+              }
+
+              // اختيارية: تُستخدم للعرض فقط ولا تمنع التثبيت إذا لم تتوفر
               func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
                   guard let url = URL(string: ActivationManager.panelBase + "/api/public/store/certificate") else {
                       done(nil); return
                   }
-                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  var req = URLRequest(url: url, timeoutInterval: 20)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "udid": ActivationManager.shared.deviceID,
                       "code": ActivationManager.shared.code
                   ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                  URLSession.shared.dataTask(with: req) { data, resp, _ in
                       var result: [String: Any]? = nil
-                      if let data = data,
+                      let type = ((resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                      if type.contains("json"), let data = data,
                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                          (obj["ok"] as? Bool) == true {
                           result = obj["certificate"] as? [String: Any]
@@ -4514,50 +4545,66 @@ jobs:
                   }.resume()
               }
 
-              func install(bundleId: String?, name: String) {
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
-                  fetchCertificate { cert in
-                      guard cert != nil else {
-                          self.isWorking = false
-                          StatusCenter.shared.show(text: "لا توجد شهادة مرتبطة بجهازك، تواصل مع الدعم")
-                          return
-                      }
-                      self.performInstall(bundleId: bundleId, name: name)
-                  }
+              private static func clean(_ value: String?) -> String? {
+                  guard let v = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        !v.isEmpty, v.lowercased().hasPrefix("http") else { return nil }
+                  return v
               }
 
-              private func performInstall(bundleId: String?, name: String) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
-                  var req = URLRequest(url: url, timeoutInterval: 30)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "bundle_id": bundleId ?? "",
-                      "name": name,
-                      "udid": ActivationManager.shared.deviceID
-                  ])
+              private static func lookup(bundleId: String?, name: String, done: @escaping (StoreAPIApp?) -> Void) {
+                  guard let req = StoreFeedFetcher.request(for: StoreFeedFetcher.primaryFeedURL) else {
+                      done(nil); return
+                  }
                   URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          self.isWorking = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String,
-                             let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
+                      guard let data = data, let parsed = StoreFeedFetcher.decode(data) else { done(nil); return }
+                      let target = (bundleId ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+                      let byBundle = target.isEmpty ? nil : parsed.apps.first { ($0.bundleId ?? "").lowercased() == target }
+                      let match = byBundle ?? parsed.apps.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                      done(match)
+                  }.resume()
+              }
+
+              private func start(bundleId: String?, name: String, manifest: String?, direct: String?) {
+                  // 1) manifest جاهز (plist) => تثبيت مباشر عبر itms-services
+                  if let m = manifest ?? Self.plistCandidate(direct) {
+                      openManifest(m, bundleId: bundleId, name: name)
+                      return
+                  }
+                  // 2) رابط IPA مباشر => فتحه للتحميل/التوقيع
+                  if let d = direct, let u = URL(string: d) {
+                      isWorking = false
+                      UIApplication.shared.open(u)
+                      ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
+                      StatusCenter.shared.show(text: "جارٍ تحميل \(name)...")
+                      return
+                  }
+                  isWorking = false
+                  StatusCenter.shared.show(text: "لا يوجد رابط تثبيت لهذا التطبيق")
+              }
+
+              private static func plistCandidate(_ url: String?) -> String? {
+                  guard let u = url?.lowercased() else { return nil }
+                  return (u.hasSuffix(".plist") || u.contains("manifest")) ? url : nil
+              }
+
+              private func openManifest(_ manifest: String, bundleId: String?, name: String) {
+                  let encoded = manifest.addingPercentEncoding(withAllowedCharacters: Self.urlAllowed) ?? manifest
+                  guard let u = URL(string: "itms-services://?action=download-manifest&url=" + encoded) else {
+                      isWorking = false
+                      StatusCenter.shared.show(text: "رابط التثبيت غير صالح")
+                      return
+                  }
+                  isWorking = false
+                  UIApplication.shared.open(u) { ok in
+                      Task { @MainActor in
+                          if ok {
                               ONEsContent.shared.bumpInstall(bundleID: bundleId ?? "", name: name)
                               StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
                           } else {
-                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
-                              StatusCenter.shared.show(text: msg)
+                              StatusCenter.shared.show(text: "تعذّر بدء التثبيت، حاول مرة أخرى")
                           }
                       }
-                  }.resume()
+                  }
               }
           }
 
