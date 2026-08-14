@@ -12,7 +12,7 @@ env:
   # لوحة التحكم الوحيدة للمتجر (Lovable Cloud)
   # كل شيء يمر عبر هذا السيرفر: التطبيقات - الأكواد - الشهادات - UDID
   # ============================================================
-  PANEL_BASE_URL: "https://project--7ab9c6e8-0417-4f32-824f-3f170b191fc7.lovable.app"
+  PANEL_BASE_URL: "https://project--80786b90-e8c3-4128-87ef-83e6edc81014.lovable.app"
 
 jobs:
   build:
@@ -192,6 +192,7 @@ jobs:
               static var statusURL: URL    { URL(string: base + "/api/public/store/status")! }
               static var downloadURL: URL  { URL(string: base + "/api/public/store/download")! }
               static var udidProfileURL: URL { URL(string: base + "/api/public/udid/profile")! }
+              static var installStartURL: URL { URL(string: base + "/api/public/install/start")! }
           }
 
           struct StoreApp: Codable, Identifiable, Hashable {
@@ -249,13 +250,11 @@ jobs:
           struct DownloadResult: Codable {
               let success: Bool
               var error: String?
-              // رابط التثبيت الفعلي (itms-services) الصادر من لوحة التحكم
               var download_url: String?
               var install_url: String?
               var manifest_url: String?
-              var ipa_url: String?
+              var job_id: String?
               var requires_signing: Bool?
-              var token: String?
           }
 
           enum PanelError: LocalizedError {
@@ -295,6 +294,14 @@ jobs:
 
               func requestDownload(appId: String, udid: String) async throws -> DownloadResult {
                   let result: DownloadResult = try await post(Panel.downloadURL,
+                                                              ["app_id": appId, "udid": udid])
+                  if !result.success { throw PanelError.server(result.error ?? "UNKNOWN") }
+                  return result
+              }
+
+              /// يبدأ تثبيتاً فعلياً على الجهاز عبر itms-services القادم من لوحة التحكم.
+              func startInstall(appId: String, udid: String) async throws -> DownloadResult {
+                  let result: DownloadResult = try await post(Panel.installStartURL,
                                                               ["app_id": appId, "udid": udid])
                   if !result.success { throw PanelError.server(result.error ?? "UNKNOWN") }
                   return result
@@ -960,23 +967,17 @@ jobs:
                   working = true
                   note = nil
                   do {
-                      let result = try await PanelClient.shared.requestDownload(appId: app.id,
-                                                                                udid: manager.udid)
-                      // لوحة التحكم ترجع رابط itms-services الذي يبدأ التثبيت الفعلي على الجهاز
-                      let link = result.install_url ?? result.download_url
-                      if let link, let url = URL(string: link) {
-                          if UIApplication.shared.canOpenURL(url) {
-                              let opened = await UIApplication.shared.open(url)
-                              note = opened
-                                  ? "بدأ التثبيت الفعلي على جهازك — تابع الشاشة الرئيسية."
-                                  : "تعذر بدء التثبيت. تأكد من الاتصال بالإنترنت."
-                          } else if let manifest = result.manifest_url,
-                                    let fallback = URL(string: "itms-services://?action=download-manifest&url=" + (manifest.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? manifest)) {
-                              await UIApplication.shared.open(fallback)
-                              note = "بدأ التثبيت الفعلي على جهازك."
-                          } else {
-                              note = "رابط التثبيت غير مدعوم على هذا الجهاز."
-                          }
+                      // تثبيت فعلي على الجهاز: لوحة التحكم ترجع رابط itms-services
+                      let result = try await PanelClient.shared.startInstall(appId: app.id,
+                                                                             udid: manager.udid)
+                      if let link = result.install_url, let url = URL(string: link) {
+                          let opened = await UIApplication.shared.open(url)
+                          note = opened
+                              ? "بدأ التثبيت على جهازك — تابع أيقونة التطبيق في الشاشة الرئيسية."
+                              : "تعذّر فتح رابط التثبيت على هذا الجهاز."
+                      } else if let link = result.download_url, let url = URL(string: link) {
+                          await UIApplication.shared.open(url)
+                          note = "تم فتح رابط تنزيل الملف."
                       } else {
                           note = "رابط التثبيت غير متوفر."
                       }
