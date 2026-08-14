@@ -927,7 +927,7 @@ jobs:
 
               public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
               /// لوحة التحكم الجديدة (الأكواد + الشهادات + التحقق عبر UDID)
-              public static let panelBase = "https://delight-flow-sync.lovable.app"
+              public static let panelBase = codesSiteBase
               public static var udidEnrollURL: URL? { URL(string: panelBase + "/api/public/store/udid/enroll") }
               public static let activationNameLink = "https://t.me/deviosx"
 
@@ -1047,11 +1047,6 @@ jobs:
                       completion?(false)
                       return
                   }
-                  guard !udid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                      lastError = LS("ألصق UDID الرسمي للجهاز أولًا")
-                      completion?(false)
-                      return
-                  }
                   guard let url = URL(string: ActivationManager.panelBase + "/api/public/store/activate") else {
                       lastError = "رابط الموقع غير صحيح"; completion?(false); return
                   }
@@ -1059,19 +1054,27 @@ jobs:
                   lastError = ""
                   var req = URLRequest(url: url)
                   req.httpMethod = "POST"
+                  req.timeoutInterval = 30
+                  req.cachePolicy = .reloadIgnoringLocalCacheData
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "code": clean,
                       "udid": deviceID,
                       "device_id": deviceID,
                       "device_model": UIDevice.current.model
                   ])
-                  URLSession.shared.dataTask(with: req) { data, _, error in
+                  URLSession.shared.dataTask(with: req) { data, response, error in
                       Task { @MainActor in
                           self.isWorking = false
+                          if let error = error {
+                              self.lastError = "تعذر الاتصال بالخادم: " + error.localizedDescription
+                              completion?(false); return
+                          }
+                          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                           guard let data = data,
                                 let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
+                              self.lastError = "استجابة غير صالحة من الخادم (\(status))"
                               completion?(false); return
                           }
                           if let cert = json["certificate"] as? [String: Any] {
@@ -1098,7 +1101,11 @@ jobs:
                       URLQueryItem(name: "device_id", value: deviceID)
                   ]
                   guard let url = comps?.url else { completion?(false); return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
+                  var vreq = URLRequest(url: url)
+                  vreq.timeoutInterval = 30
+                  vreq.cachePolicy = .reloadIgnoringLocalCacheData
+                  vreq.setValue("application/json", forHTTPHeaderField: "Accept")
+                  URLSession.shared.dataTask(with: vreq) { data, _, _ in
                       Task { @MainActor in
                           guard let data = data,
                                 let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
