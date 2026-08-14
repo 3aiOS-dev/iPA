@@ -12,7 +12,7 @@ env:
   # لوحة التحكم الوحيدة للمتجر (Lovable Cloud)
   # كل شيء يمر عبر هذا السيرفر: التطبيقات - الأكواد - الشهادات - UDID
   # ============================================================
-  PANEL_BASE_URL: "https://project--d6a05110-85ff-4efe-a926-4256f7b82f5c.lovable.app"
+  PANEL_BASE_URL: "https://project--7ab9c6e8-0417-4f32-824f-3f170b191fc7.lovable.app"
 
 jobs:
   build:
@@ -249,8 +249,13 @@ jobs:
           struct DownloadResult: Codable {
               let success: Bool
               var error: String?
+              // رابط التثبيت الفعلي (itms-services) الصادر من لوحة التحكم
               var download_url: String?
+              var install_url: String?
+              var manifest_url: String?
+              var ipa_url: String?
               var requires_signing: Bool?
+              var token: String?
           }
 
           enum PanelError: LocalizedError {
@@ -957,9 +962,21 @@ jobs:
                   do {
                       let result = try await PanelClient.shared.requestDownload(appId: app.id,
                                                                                 udid: manager.udid)
-                      if let link = result.download_url, let url = URL(string: link) {
-                          await UIApplication.shared.open(url)
-                          note = "تم إرسال طلب التثبيت الموقّع من لوحة التحكم."
+                      // لوحة التحكم ترجع رابط itms-services الذي يبدأ التثبيت الفعلي على الجهاز
+                      let link = result.install_url ?? result.download_url
+                      if let link, let url = URL(string: link) {
+                          if UIApplication.shared.canOpenURL(url) {
+                              let opened = await UIApplication.shared.open(url)
+                              note = opened
+                                  ? "بدأ التثبيت الفعلي على جهازك — تابع الشاشة الرئيسية."
+                                  : "تعذر بدء التثبيت. تأكد من الاتصال بالإنترنت."
+                          } else if let manifest = result.manifest_url,
+                                    let fallback = URL(string: "itms-services://?action=download-manifest&url=" + (manifest.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? manifest)) {
+                              await UIApplication.shared.open(fallback)
+                              note = "بدأ التثبيت الفعلي على جهازك."
+                          } else {
+                              note = "رابط التثبيت غير مدعوم على هذا الجهاز."
+                          }
                       } else {
                           note = "رابط التثبيت غير متوفر."
                       }
