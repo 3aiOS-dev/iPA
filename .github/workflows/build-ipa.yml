@@ -129,6 +129,14 @@ jobs:
               </array>
               <key>NSUserNotificationsUsageDescription</key>
               <string>نُبلغك برموز التحقق وحالة التنزيل والتوقيع.</string>
+              <key>CFBundleURLTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleURLName</key><string>com.21s.store.udid</string>
+                      <key>CFBundleURLSchemes</key>
+                      <array><string>onesstore</string></array>
+                  </dict>
+              </array>
               <key>LSApplicationQueriesSchemes</key>
               <array>
                   <string>itms-services</string>
@@ -918,6 +926,9 @@ jobs:
               @Published public private(set) var expiryText: String = "غير مفعّل"
 
               public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+              /// لوحة التحكم الجديدة (الأكواد + الشهادات + التحقق عبر UDID)
+              public static let panelBase = "https://delight-flow-sync.lovable.app"
+              public static var udidEnrollURL: URL? { URL(string: panelBase + "/api/public/store/udid/enroll") }
               public static let activationNameLink = "https://t.me/deviosx"
 
               private let kCode = "activation_code_v1"
@@ -1041,7 +1052,7 @@ jobs:
                       completion?(false)
                       return
                   }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/activate") else {
+                  guard let url = URL(string: ActivationManager.panelBase + "/api/public/store/activate") else {
                       lastError = "رابط الموقع غير صحيح"; completion?(false); return
                   }
                   isWorking = true
@@ -1063,6 +1074,9 @@ jobs:
                               self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
                               completion?(false); return
                           }
+                          if let cert = json["certificate"] as? [String: Any] {
+                              self.storeCertificate(cert)
+                          }
                           if self.apply(json, fallbackCode: clean) {
                               HapticManager.shared.success()
                               completion?(true)
@@ -1077,7 +1091,7 @@ jobs:
               /// التحقق من صحة الاشتراك الحالي مع السيرفر
               public func verify(completion: ((Bool) -> Void)? = nil) {
                   guard !code.isEmpty else { completion?(false); return }
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
+                  var comps = URLComponents(string: ActivationManager.panelBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
                       URLQueryItem(name: "udid", value: deviceID),
@@ -1116,6 +1130,43 @@ jobs:
 
               public func fetchStatus(completion: ((Bool) -> Void)? = nil) {
                   verify(completion: completion)
+              }
+              /// فتح Safari لتثبيت ملف التعريف وجلب الـ UDID الرسمي للجهاز
+              public func startUDIDVerification() {
+                  guard let url = ActivationManager.udidEnrollURL else { return }
+                  lastError = ""
+                  UIApplication.shared.open(url)
+              }
+
+              /// استقبال الـ UDID الحقيقي العائد من الموقع عبر onesstore://udid?value=...
+              @discardableResult
+              public func handleIncoming(url: URL) -> Bool {
+                  guard url.scheme?.lowercased() == "onesstore" else { return false }
+                  guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+                  guard let value = comps.queryItems?.first(where: { $0.name == "value" || $0.name == "udid" })?.value,
+                        !value.isEmpty else { return false }
+                  udid = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                  HapticManager.shared.success()
+                  verify()
+                  return true
+              }
+
+              /// شهادة التوقيع المرتبطة بالكود (تصل من لوحة التحكم)
+              @Published public private(set) var certificateName: String = UserDefaults.standard.string(forKey: "cert_name_v1") ?? ""
+              public private(set) var certificateP12URL: String = UserDefaults.standard.string(forKey: "cert_p12_v1") ?? ""
+              public private(set) var certificateProfileURL: String = UserDefaults.standard.string(forKey: "cert_mp_v1") ?? ""
+              public private(set) var certificatePassword: String = UserDefaults.standard.string(forKey: "cert_pw_v1") ?? ""
+
+              public func storeCertificate(_ cert: [String: Any]) {
+                  certificateName = (cert["name"] as? String) ?? certificateName
+                  certificateP12URL = (cert["p12_url"] as? String) ?? ""
+                  certificateProfileURL = (cert["mobileprovision_url"] as? String) ?? ""
+                  certificatePassword = (cert["password"] as? String) ?? ""
+                  let d = UserDefaults.standard
+                  d.set(certificateName, forKey: "cert_name_v1")
+                  d.set(certificateP12URL, forKey: "cert_p12_v1")
+                  d.set(certificateProfileURL, forKey: "cert_mp_v1")
+                  d.set(certificatePassword, forKey: "cert_pw_v1")
               }
           }
 
@@ -1204,12 +1255,47 @@ jobs:
                                       .padding(.horizontal, 24)
                                       .padding(.top, 14)
 
+                                  // ---- التحقق عبر الـ UDID (ملف تعريف Safari الرسمي) ----
+                                  Text(LS("التحقق عبر الـ UDID"))
+                                      .font(.system(size: 18, weight: .heavy))
+                                      .foregroundColor(inkColor)
+                                      .frame(maxWidth: .infinity)
+                                      .padding(.top, 30)
+
+                                  Text(LS("اضغط الزر ليفتح Safari، ثبّت ملف التعريف، ثم ارجع للمتجر ليُجلب UDID جهازك الرسمي تلقائيًا."))
+                                      .font(.system(size: 13, weight: .medium))
+                                      .foregroundColor(Color(white: 0.62))
+                                      .multilineTextAlignment(.center)
+                                      .lineSpacing(5)
+                                      .padding(.horizontal, 26)
+                                      .padding(.top, 8)
+
+                                  Button {
+                                      HapticManager.shared.impact(.medium)
+                                      activation.startUDIDVerification()
+                                  } label: {
+                                      HStack(spacing: 8) {
+                                          Image(systemName: "checkmark.seal.fill")
+                                          Text(LS("تحقق عبر الـ UDID"))
+                                              .font(.system(size: 17, weight: .bold))
+                                      }
+                                      .foregroundColor(.white)
+                                      .frame(maxWidth: .infinity)
+                                      .frame(height: 58)
+                                      .background(
+                                          RoundedRectangle(cornerRadius: 18)
+                                              .fill(inkColor)
+                                      )
+                                  }
+                                  .padding(.horizontal, 22)
+                                  .padding(.top, 14)
+
                                   // UDID
-                                  Text(LS("لصق UDID هنا"))
+                                  Text(LS("UDID الرسمي لجهازك"))
                                       .font(.system(size: 16, weight: .bold))
                                       .foregroundColor(inkColor)
                                       .frame(maxWidth: .infinity)
-                                      .padding(.top, 34)
+                                      .padding(.top, 24)
 
                                   TextField("", text: $activation.udid,
                                             prompt: Text(LS("ألصق UDID الخاص بجهازك"))
@@ -2007,58 +2093,107 @@ jobs:
               }
           }
 
-          // MARK: - Top downloads section
+          // MARK: - Top downloads (نص + شاشة كاملة)
           struct ONEsTopDownloadsSection: View {
               @ObservedObject private var store = StoriesStore.shared
+              @State private var showAll = false
 
               var body: some View {
                   Group {
                       if !store.top.isEmpty {
-                          VStack(alignment: .leading, spacing: 10) {
-                              HStack(spacing: 6) {
+                          Button {
+                              HapticManager.shared.selection()
+                              showAll = true
+                          } label: {
+                              HStack(spacing: 8) {
                                   Image(systemName: "flame.fill").foregroundColor(.storePink)
                                   Text("الأكثر تحميلاً")
-                                      .font(.system(size: 16, weight: .heavy))
+                                      .font(.system(size: 17, weight: .heavy))
                                       .foregroundColor(.storeText)
+                                  Text("عرض الكل")
+                                      .font(.system(size: 13, weight: .semibold))
+                                      .foregroundColor(.storeSub)
                                   Spacer()
+                                  Image(systemName: "chevron.left")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.storeSub)
                               }
                               .padding(.horizontal, 18)
+                              .padding(.vertical, 14)
+                          }
+                          .buttonStyle(.plain)
+                      }
+                  }
+                  .onAppear { StoriesStore.shared.load() }
+                  .fullScreenCover(isPresented: $showAll) {
+                      ONEsTopDownloadsScreen()
+                  }
+              }
+          }
 
-                              ScrollView(.horizontal, showsIndicators: false) {
+          struct ONEsTopDownloadsScreen: View {
+              @ObservedObject private var store = StoriesStore.shared
+              @Environment(\.dismiss) private var dismiss
+
+              var body: some View {
+                  NavigationStack {
+                      ScrollView(showsIndicators: false) {
+                          LazyVStack(spacing: 12) {
+                              ForEach(Array(store.top.enumerated()), id: \.element.id) { i, app in
                                   HStack(spacing: 12) {
-                                      ForEach(Array(store.top.prefix(12).enumerated()), id: \.element.id) { i, app in
-                                          VStack(spacing: 6) {
-                                              ZStack(alignment: .topLeading) {
-                                                  if let ic = app.icon, let u = URL(string: ic) {
-                                                      AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { Color.storeCardAlt }
-                                                          .frame(width: 68, height: 68)
-                                                          .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                                  } else {
-                                                      RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                          .fill(Color.storeCardAlt).frame(width: 68, height: 68)
-                                                  }
-                                                  Text("\(i + 1)")
-                                                      .font(.system(size: 10, weight: .black))
-                                                      .foregroundColor(.white)
-                                                      .padding(5)
-                                                      .background(Circle().fill(Color.storePrimary))
-                                                      .offset(x: -5, y: -5)
-                                              }
-                                              Text(app.name)
-                                                  .font(.system(size: 11, weight: .semibold))
-                                                  .foregroundColor(.storeText)
-                                                  .lineLimit(1).frame(width: 72)
-                                              Text("\(app.downloads)")
-                                                  .font(.system(size: 10, weight: .bold))
-                                                  .foregroundColor(.storeSub)
-                                          }
+                                      Text("\(i + 1)")
+                                          .font(.system(size: 15, weight: .black))
+                                          .foregroundColor(.storeSub)
+                                          .frame(width: 26)
+
+                                      if let ic = app.icon, let u = URL(string: ic) {
+                                          AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { Color.storeCardAlt }
+                                              .frame(width: 58, height: 58)
+                                              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                      } else {
+                                          RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                              .fill(Color.storeCardAlt).frame(width: 58, height: 58)
                                       }
+
+                                      VStack(alignment: .leading, spacing: 4) {
+                                          Text(app.name)
+                                              .font(.system(size: 15, weight: .bold))
+                                              .foregroundColor(.storeText)
+                                              .lineLimit(1)
+                                          Text("\(app.downloads) تحميل")
+                                              .font(.system(size: 12, weight: .semibold))
+                                              .foregroundColor(.storeSub)
+                                      }
+                                      Spacer()
+
+                                      Button {
+                                          StoreInstaller.shared.install(bundleId: app.bundle_id, name: app.name)
+                                      } label: {
+                                          Text("تثبيت")
+                                              .font(.system(size: 13, weight: .heavy))
+                                              .foregroundColor(.white)
+                                              .padding(.horizontal, 16)
+                                              .padding(.vertical, 8)
+                                              .background(Capsule().fill(Color.storePrimary))
+                                      }
+                                      .buttonStyle(.plain)
                                   }
-                                  .padding(.horizontal, 18)
+                                  .padding(12)
+                                  .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.storeCard))
                               }
+                          }
+                          .padding(16)
+                      }
+                      .background(Color.storeBg.ignoresSafeArea())
+                      .navigationTitle("الأكثر تحميلاً")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar {
+                          ToolbarItem(placement: .cancellationAction) {
+                              Button("إغلاق") { dismiss() }
                           }
                       }
                   }
+                  .environment(\.layoutDirection, .rightToLeft)
                   .onAppear { StoriesStore.shared.load() }
               }
           }
@@ -4282,11 +4417,11 @@ jobs:
 
               func install(app: StoreAPIApp) {
                   DownloadCounter.report(bundleId: app.bundleId, name: app.name, icon: app.iconURL ?? app.icon)
-                  install(bundleId: app.bundleId, name: app.name)
+                  install(bundleId: app.bundle_id, name: app.name)
               }
 
               func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
+                  guard let url = URL(string: ActivationManager.panelBase + "/api/public/store/certificate") else {
                       done(nil); return
                   }
                   var req = URLRequest(url: url, timeoutInterval: 25)
@@ -4302,6 +4437,9 @@ jobs:
                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                          (obj["ok"] as? Bool) == true {
                           result = obj["certificate"] as? [String: Any]
+                          if let c = result {
+                              Task { @MainActor in ActivationManager.shared.storeCertificate(c) }
+                          }
                       }
                       DispatchQueue.main.async { done(result) }
                   }.resume()
@@ -8149,6 +8287,9 @@ jobs:
                   WindowGroup {
                       ActivationGateContainer {
                           NavigationView { ContentView() }
+                              .onOpenURL { url in
+                                  ActivationManager.shared.handleIncoming(url: url)
+                              }
                               .navigationViewStyle(.stack)
                               .environment(\.locale, lang.locale)
                               .environment(\.layoutDirection, lang.layout)
