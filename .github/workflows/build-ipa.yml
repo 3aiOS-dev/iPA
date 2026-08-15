@@ -2900,14 +2900,28 @@ jobs:
     steps:
       - name: Build zsign (real code signer)
         run: |
-          brew install openssl@3 minizip pkg-config 2>/dev/null || true
+          set -e
+          brew install openssl@3 minizip pkg-config cmake 2>/dev/null || true
+          rm -rf /tmp/zsign
           git clone --depth 1 https://github.com/zhlynn/zsign.git /tmp/zsign
           cd /tmp/zsign
           OPENSSL_PREFIX="$(brew --prefix openssl@3)"
-          clang++ -std=c++14 -O2 -w -o zsign \
-            $(ls *.cpp common/*.cpp 2>/dev/null) \
+
+          # The zsign repo moved its sources into src/ (main.cpp lives there),
+          # so globbing *.cpp at the repo root links an executable with no _main.
+          # Collect every .cpp that actually exists, wherever it lives.
+          SRCS="$(find . -name '*.cpp' -not -path './build/*' -not -path './.git/*' | tr '\n' ' ')"
+          echo "Sources: $SRCS"
+          if ! grep -rl 'int main' $SRCS >/dev/null 2>&1; then
+            echo "::error::No main() found in zsign sources"; exit 1
+          fi
+
+          clang++ -std=c++14 -O2 -w -o zsign $SRCS \
+            -I. -Isrc -Isrc/common -Icommon \
             -I"$OPENSSL_PREFIX/include" -L"$OPENSSL_PREFIX/lib" \
             -lcrypto -lz
+
+          test -x zsign || { echo "::error::zsign build failed"; exit 1; }
           sudo cp zsign /usr/local/bin/zsign
           zsign -v || true
 
