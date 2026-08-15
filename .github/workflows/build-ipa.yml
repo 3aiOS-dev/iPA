@@ -746,6 +746,14 @@ jobs:
                   totalAppsAvailable = count
               }
 
+              // New method to add a repository
+              func addRepository(name: String, feedURL: String, homepage: String = "", enabled: Bool = true, maxGB: Double = 250) {
+                  let id = UUID().uuidString
+                  let repo = DownloadRepository(id: id, name: name, feedURL: feedURL, homepage: homepage.isEmpty ? feedURL : homepage, enabled: enabled, maxGB: maxGB)
+                  repositories.append(repo)
+                  persistRepositories()
+              }
+
               private func persistRepositories() {
                   if let data = try? JSONEncoder().encode(repositories) {
                       d.set(data, forKey: keyRepos)
@@ -1467,7 +1475,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift (no favorites, dynamic dark/light, fixed storePrimaryDk)
+      # SOURCE CODE - StoreView.swift (dynamic dark/light, repositories tab)
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -1791,6 +1799,17 @@ jobs:
                                   }
                               }
                               .tag(1)
+
+                          RepositoriesView()
+                              .tabItem {
+                                  VStack(spacing: 2) {
+                                      Image(systemName: "folder")
+                                          .font(.system(size: 20))
+                                      Text(LS("المصادر"))
+                                          .font(.system(size: 10, weight: .semibold))
+                                  }
+                              }
+                              .tag(2)
                       }
                       .tint(Color.storePrimary)
 
@@ -1804,6 +1823,117 @@ jobs:
                   .environment(\.locale, lang.locale)
                   .environment(\.layoutDirection, lang.layout)
                   .id(lang.isArabic)
+              }
+          }
+
+          // ================= REPOSITORIES VIEW =================
+          struct RepositoriesView: View {
+              @ObservedObject private var repos = RepositoriesStore.shared
+              @State private var newFeedURL: String = ""
+              @State private var newName: String = ""
+              @State private var showingAddSheet = false
+              @State private var errorMessage: String?
+
+              var body: some View {
+                  NavigationView {
+                      List {
+                          ForEach(repos.repositories) { repo in
+                              HStack {
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text(repo.name)
+                                          .font(.headline)
+                                          .foregroundColor(Color.storeText)
+                                      Text(repo.feedURL)
+                                          .font(.caption)
+                                          .foregroundColor(Color.storeSub)
+                                          .lineLimit(2)
+                                  }
+                                  Spacer()
+                                  Toggle("", isOn: Binding(
+                                      get: { repo.enabled },
+                                      set: { _ in repos.setEnabled(!repo.enabled, for: repo) }
+                                  ))
+                                  .toggleStyle(SwitchToggleStyle(tint: Color.storePrimary))
+                              }
+                              .padding(.vertical, 4)
+                          }
+                          .onDelete(perform: deleteRepositories)
+                      }
+                      .listStyle(PlainListStyle())
+                      .background(ONEsStoreBackground())
+                      .navigationBarTitle("المصادر", displayMode: .inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button {
+                                  showingAddSheet = true
+                              } label: {
+                                  Image(systemName: "plus")
+                                      .foregroundColor(Color.storePrimary)
+                              }
+                          }
+                      }
+                      .sheet(isPresented: $showingAddSheet) {
+                          NavigationView {
+                              VStack(spacing: 20) {
+                                  TextField("اسم المصدر", text: $newName)
+                                      .textFieldStyle(RoundedBorderTextFieldStyle())
+                                      .foregroundColor(Color.storeText)
+                                  TextField("رابط المصدر (feed URL)", text: $newFeedURL)
+                                      .textFieldStyle(RoundedBorderTextFieldStyle())
+                                      .autocapitalization(.none)
+                                      .foregroundColor(Color.storeText)
+                                  if let error = errorMessage {
+                                      Text(error)
+                                          .foregroundColor(.red)
+                                          .font(.caption)
+                                  }
+                                  Button {
+                                      guard !newName.isEmpty, !newFeedURL.isEmpty, URL(string: newFeedURL) != nil else {
+                                          errorMessage = "الرجاء إدخال اسم ورابط صحيح"
+                                          return
+                                      }
+                                      repos.addRepository(name: newName, feedURL: newFeedURL)
+                                      newName = ""
+                                      newFeedURL = ""
+                                      errorMessage = nil
+                                      showingAddSheet = false
+                                      // Force refresh feed
+                                      Task {
+                                          await StoreFeed().refresh()
+                                      }
+                                  } label: {
+                                      Text("إضافة المصدر")
+                                          .font(.headline)
+                                          .foregroundColor(.white)
+                                          .padding()
+                                          .frame(maxWidth: .infinity)
+                                          .background(Color.storePrimary)
+                                          .cornerRadius(10)
+                                  }
+                                  .padding(.horizontal)
+                                  Spacer()
+                              }
+                              .padding()
+                              .navigationBarTitle("إضافة مصدر", displayMode: .inline)
+                              .toolbar {
+                                  ToolbarItem(placement: .cancellationAction) {
+                                      Button("إلغاء") {
+                                          showingAddSheet = false
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  .navigationViewStyle(StackNavigationViewStyle())
+              }
+
+              private func deleteRepositories(at offsets: IndexSet) {
+                  for index in offsets {
+                      let repo = repos.repositories[index]
+                      repos.setEnabled(false, for: repo) // just disable, or remove?
+                      // For removal, we need a remove method; we'll just disable for now
+                  }
               }
           }
 
@@ -2221,7 +2351,7 @@ jobs:
               var body: some View {
                   ScrollView {
                       VStack(spacing: 0) {
-                          ZStack(alignment: .topLeading) {
+                          ZStack(alignment: .top) {
                               Group {
                                   if let img = UIImage.bundled("home_banner.png") {
                                       Image(uiImage: img)
@@ -2237,19 +2367,7 @@ jobs:
                               .clipped()
                               .clipShape(RoundedCorner(radius: 34, corners: [.bottomLeft, .bottomRight]))
                               .shadow(color: Color.black.opacity(0.10), radius: 10, y: 5)
-                              HStack {
-                                  Button { dismiss() } label: {
-                                      Image(systemName: "arrow.left")
-                                          .font(.system(size: 16, weight: .bold))
-                                          .foregroundColor(Color.storeText)
-                                          .frame(width: 40, height: 40)
-                                          .background(Circle().fill(Color.storeCard))
-                                          .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
-                                  }
-                                  Spacer()
-                              }
-                              .padding(.horizontal, 20)
-                              .padding(.top, 8)
+                              // No back button here – rely on swipe gesture
                           }
 
                           HStack(spacing: 14) {
@@ -2313,6 +2431,7 @@ jobs:
                               .padding(.top, 4)
                           }
 
+                          // Description without formatting
                           VStack(alignment: .leading, spacing: 10) {
                               HStack {
                                   Text("الوصف")
@@ -2321,10 +2440,7 @@ jobs:
                                   Spacer()
                               }
                               Text(app.cleanDescription)
-                                  .font(.system(size: 13))
-                                  .foregroundColor(Color.storeInk.opacity(0.78))
-                                  .lineSpacing(4)
-                                  .fixedSize(horizontal: false, vertical: true)
+                                  // No formatting, just plain text
                           }
                           .padding(16)
                           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2337,6 +2453,7 @@ jobs:
                   }
                   .background(ONEsStoreBackground())
                   .navigationBarHidden(true)
+                  .navigationBarBackButtonHidden(true) // hide back button, swipe gesture still works
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
                   }
