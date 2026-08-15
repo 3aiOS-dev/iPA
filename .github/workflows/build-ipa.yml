@@ -169,15 +169,6 @@ jobs:
                   <false/>
                   <key>NSExceptionDomains</key>
                   <dict>
-                      <key>lovable.app</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
                       <key>apptesters.org</key>
                       <dict>
                           <key>NSIncludesSubdomains</key>
@@ -649,8 +640,8 @@ jobs:
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "ONEs",
-                              feedURL: "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app/api/public/store/apps",
-                              homepage: "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app",
+                              feedURL: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app/api/public/store/apps",
+                              homepage: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app",
                               enabled: true,
                               maxGB: 500
                           ),
@@ -737,9 +728,7 @@ jobs:
               @Published public private(set) var daysLeft: Int = 0
               @Published public private(set) var expiryText: String = "غير مفعّل"
 
-              public static let codesSiteBase = "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app"
-              public static let profileURL = codesSiteBase + "/api/public/udid/profile"
-              public static let storeAPIBase = codesSiteBase + "/api/public"
+              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
               public static let activationNameLink = "https://t.me/deviosx"
 
               private let kCode = "activation_code_v1"
@@ -820,72 +809,29 @@ jobs:
                   return nil
               }
 
-              private func explicitlyRejected(_ json: [String: Any], status: Int) -> Bool {
-                  if status == 401 || status == 403 || status == 404 || status == 410 { return true }
-                  if let ok = json["ok"] as? Bool, ok == false { return true }
-                  if let s = json["success"] as? Bool, s == false { return true }
-                  if let a = json["active"] as? Bool, a == false { return true }
-                  if let v = json["valid"] as? Bool, v == false { return true }
-                  return false
-              }
-
               private func apply(_ json: [String: Any], fallbackCode: String? = nil) -> Bool {
+                  guard (json["ok"] as? Bool) == true else { return false }
                   var jsonData = json
                   if let acc = json["account"] as? [String: Any] {
                       for (k, v) in acc { jsonData[k] = v }
                   }
-                  if let inner = json["data"] as? [String: Any] {
-                      for (k, v) in inner { jsonData[k] = v }
-                  }
-                  if let sub = json["subscription"] as? [String: Any] {
-                      for (k, v) in sub { jsonData[k] = v }
-                  }
-
-                  // Only an explicit rejection from the server means failure.
-                  if let ok = json["ok"] as? Bool, ok == false { return false }
-                  if let s = json["success"] as? Bool, s == false { return false }
                   if let active = jsonData["active"] as? Bool, active == false { return false }
-                  if let valid = jsonData["valid"] as? Bool, valid == false { return false }
-
                   if let c = jsonData["code"] as? String, !c.isEmpty {
                       code = c
                   } else if let fb = fallbackCode, !fb.isEmpty {
                       code = fb
                   }
-                  if let u = jsonData["udid"] as? String, !u.isEmpty, u != udid {
+                  if let u = jsonData["udid"] as? String, !u.isEmpty {
                       udid = u
                   }
-                  if let days = jsonData["duration_days"] as? Int, days > 0 {
-                      durationDays = days
-                  } else if let ds = jsonData["duration_days"] as? String, let dd = Int(ds), dd > 0 {
-                      durationDays = dd
-                  }
+                  if let days = jsonData["duration_days"] as? Int { durationDays = days }
                   if let name = jsonData["full_name"] as? String, !name.isEmpty {
                       fullName = name
                   }
-
-                  var newExpiry: Date? = nil
-                  for key in ["expires_at", "expiry_date", "expires", "expire_at", "valid_until", "end_date"] {
-                      if let raw = jsonData[key] as? String, let d = ActivationManager.parseDate(raw) {
-                          newExpiry = d; break
-                      }
-                      if let ts = jsonData[key] as? Double, ts > 0 {
-                          newExpiry = Date(timeIntervalSince1970: ts > 100_000_000_000 ? ts / 1000.0 : ts); break
-                      }
+                  if let raw = jsonData["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
+                      expiresAt = d
+                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
                   }
-                  if newExpiry == nil, durationDays > 0 {
-                      newExpiry = Date().addingTimeInterval(Double(durationDays) * 86_400.0)
-                  }
-                  if newExpiry == nil, expiresAt == nil || expiresAt! <= Date() {
-                      // Server approved but sent no expiry: keep the session alive.
-                      newExpiry = Date().addingTimeInterval(30 * 86_400.0)
-                  }
-                  if let e = newExpiry { expiresAt = e }
-                  if durationDays <= 0, let e = expiresAt {
-                      durationDays = max(0, Int(ceil(e.timeIntervalSinceNow / 86_400.0)))
-                  }
-
-                  guard !code.isEmpty else { return false }
                   persist()
                   refreshLocalState()
                   return isActive
@@ -903,7 +849,7 @@ jobs:
                       completion?(false)
                       return
                   }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/activate") else {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/activate") else {
                       lastError = "رابط الموقع غير صحيح"; completion?(false); return
                   }
                   isWorking = true
@@ -917,29 +863,19 @@ jobs:
                       "device_id": deviceID,
                       "device_model": UIDevice.current.model
                   ])
-                  req.timeoutInterval = 30
-                  req.cachePolicy = .reloadIgnoringLocalCacheData
-                  URLSession.shared.dataTask(with: req) { data, response, error in
+                  URLSession.shared.dataTask(with: req) { data, _, error in
                       Task { @MainActor in
                           self.isWorking = false
-                          if let error = error {
-                              self.lastError = "تعذر الاتصال بالخادم: \(error.localizedDescription)"
-                              completion?(false); return
-                          }
-                          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                           guard let data = data,
                                 let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              self.lastError = "استجابة غير متوقعة من الخادم (HTTP \(status))"
+                              self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
                               completion?(false); return
                           }
                           if self.apply(json, fallbackCode: clean) {
-                              self.lastError = ""
                               HapticManager.shared.success()
                               completion?(true)
                           } else {
-                              self.lastError = (json["message"] as? String)
-                                  ?? (json["error"] as? String)
-                                  ?? LS("الكود غير صالح أو مستخدم على جهاز آخر")
+                              self.lastError = (json["message"] as? String) ?? LS("الاسم غير صالح")
                               completion?(false)
                           }
                       }
@@ -948,37 +884,26 @@ jobs:
 
               public func verify(completion: ((Bool) -> Void)? = nil) {
                   guard !code.isEmpty else { completion?(false); return }
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/activate")
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
                   comps?.queryItems = [
                       URLQueryItem(name: "code", value: code),
                       URLQueryItem(name: "udid", value: deviceID),
                       URLQueryItem(name: "device_id", value: deviceID)
                   ]
                   guard let url = comps?.url else { completion?(false); return }
-                  var vreq = URLRequest(url: url, timeoutInterval: 25)
-                  vreq.httpMethod = "GET"
-                  vreq.cachePolicy = .reloadIgnoringLocalCacheData
-                  URLSession.shared.dataTask(with: vreq) { data, response, _ in
+                  URLSession.shared.dataTask(with: url) { data, _, _ in
                       Task { @MainActor in
-                          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                           guard let data = data,
                                 let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              // Network/parse failure must never log the user out.
                               self.refreshLocalState()
                               completion?(self.isActive); return
                           }
                           if self.apply(json) {
-                              self.lastError = ""
-                              completion?(true); return
-                          }
-                          if self.explicitlyRejected(json, status: status) {
-                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك أو الكود غير صالح"
+                              completion?(true)
+                          } else {
+                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك"
                               self.deactivate(keepMessage: true)
                               completion?(false)
-                          } else {
-                              // Ambiguous answer: keep the current local subscription.
-                              self.refreshLocalState()
-                              completion?(self.isActive)
                           }
                       }
                   }.resume()
@@ -1079,33 +1004,6 @@ jobs:
                                       .padding(.horizontal, 24)
                                       .padding(.top, 14)
 
-                                  Button {
-                                      if let u = URL(string: ActivationManager.profileURL) {
-                                          UIApplication.shared.open(u)
-                                      }
-                                  } label: {
-                                      HStack(spacing: 8) {
-                                          Image(systemName: "arrow.down.doc.fill")
-                                          Text(LS("تحميل ملف التعريف Profile والحصول على UDID"))
-                                              .font(.system(size: 15, weight: .bold))
-                                      }
-                                      .foregroundColor(.white)
-                                      .frame(maxWidth: .infinity)
-                                      .frame(height: 56)
-                                      .background(
-                                          RoundedRectangle(cornerRadius: 18)
-                                              .fill(blueColor)
-                                      )
-                                  }
-                                  .padding(.horizontal, 22)
-                                  .padding(.top, 28)
-                                  
-                                  Text(LS("بعد تثبيت ملف التعريف من إعدادات iOS سيظهر UDID الحقيقي لجهازك تلقائيًا."))
-                                      .font(.system(size: 13, weight: .medium))
-                                      .foregroundColor(Color(white: 0.45))
-                                      .multilineTextAlignment(.center)
-                                      .padding(.horizontal, 26)
-                                      .padding(.top, 10)
                                   Text(LS("لصق UDID هنا"))
                                       .font(.system(size: 16, weight: .bold))
                                       .foregroundColor(inkColor)
@@ -1185,9 +1083,7 @@ jobs:
                                       HapticManager.shared.impact(.medium)
                                       activation.activate(code: input) { ok in
                                           if ok {
-                                              // Activation succeeded: open the store immediately.
-                                              // Do NOT re-verify here, it used to reset the gate.
-                                              input = ""
+                                              activation.verify()
                                           } else {
                                               withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
                                               DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
@@ -1258,7 +1154,7 @@ jobs:
                       }
                   }
                   .environment(\.layoutDirection, .rightToLeft)
-                  .onAppear { if !activation.isActive && !activation.code.isEmpty { activation.verify() } }
+                  .onAppear { activation.verify() }
               }
           }
 
@@ -2501,75 +2397,32 @@ jobs:
               }
 
               private func performInstall(bundleId: String?, name: String) {
-                  guard let url = URL(string: ActivationManager.storeAPIBase + "/store/install-by-bundle") else { return }
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else { return }
                   isWorking = true
-                  StatusCenter.shared.show(text: "بدء التوقيع...")
+                  StatusCenter.shared.show(text: "جارٍ التثبيت عبر شهادتك...")
                   var req = URLRequest(url: url, timeoutInterval: 30)
                   req.httpMethod = "POST"
                   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   req.httpBody = try? JSONSerialization.data(withJSONObject: [
                       "bundle_id": bundleId ?? "",
                       "name": name,
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code
+                      "udid": ActivationManager.shared.deviceID
                   ])
                   URLSession.shared.dataTask(with: req) { data, _, _ in
                       DispatchQueue.main.async {
+                          self.isWorking = false
                           guard let data = data,
                                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.isWorking = false
-                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر التوقيع")
+                              StatusCenter.shared.show(text: "تعذّر الاتصال بسيرفر المتجر")
                               return
                           }
-                          if let jobId = obj["job_id"] as? String {
-                              StatusCenter.shared.show(text: "بدء التوقيع → التحقق من الشهادة")
-                              self.pollJob(jobId: jobId, attempt: 0)
-                          } else {
-                              self.isWorking = false
-                              let msg = (obj["message"] as? String) ?? "التوقيع غير متاح حاليًا"
-                              StatusCenter.shared.show(text: msg)
-                          }
-                      }
-                  }.resume()
-              }
-              
-              /// Polls the REAL signing server: signing started -> certificate check -> signing app
-              /// -> manifest -> install. Every message comes from the server, nothing is faked.
-              private func pollJob(jobId: String, attempt: Int) {
-                  guard attempt < 150 else {
-                      self.isWorking = false
-                      StatusCenter.shared.show(text: "انتهت مدة انتظار سيرفر التوقيع")
-                      return
-                  }
-                  guard let url = URL(string: ActivationManager.storeAPIBase + "/sign/status?id=" + jobId) else { return }
-                  var req = URLRequest(url: url, timeoutInterval: 25)
-                  req.httpMethod = "GET"
-                  req.cachePolicy = .reloadIgnoringLocalCacheData
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          var status = ""
-                          var message = ""
-                          var installURL: String? = nil
-                          if let data = data,
-                             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                              status = (obj["status"] as? String) ?? ""
-                              message = (obj["message"] as? String) ?? ""
-                              installURL = obj["install_url"] as? String
-                          }
-                          if !message.isEmpty { StatusCenter.shared.show(text: message) }
-                          if status == "completed", let s = installURL, let u = URL(string: s) {
-                              self.isWorking = false
+                          if let installURL = obj["install_url"] as? String,
+                             let u = URL(string: installURL) {
                               UIApplication.shared.open(u)
-                              StatusCenter.shared.show(text: "اكتمل التوقيع → بدء التثبيت")
-                              return
-                          }
-                          if status == "failed" {
-                              self.isWorking = false
-                              StatusCenter.shared.show(text: message.isEmpty ? "فشل التوقيع على السيرفر" : message)
-                              return
-                          }
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                              self.pollJob(jobId: jobId, attempt: attempt + 1)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                          } else {
+                              let msg = (obj["message"] as? String) ?? "التثبيت غير متاح حاليًا"
+                              StatusCenter.shared.show(text: msg)
                           }
                       }
                   }.resume()
@@ -2891,7 +2744,7 @@ jobs:
         if: env.SIGNED_FOR_DEVICE == 'true'
         continue-on-error: false
         env:
-          INSTALL_SERVER: "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
           UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
@@ -2943,7 +2796,7 @@ jobs:
 
       - name: Install summary
         env:
-          INSTALL_SERVER: "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app"
+          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
         run: |
           {
             echo "## ONEs - Install from server"
@@ -2962,210 +2815,3 @@ jobs:
           path: artifacts/21s.ipa
           compression-level: 0
           retention-days: 90
-
-  # =========================================================
-  # REAL SIGNING SERVER (eSign-like): validates certificates and
-  # signs every requested IPA with the P12 + Provisioning Profile
-  # chosen in the dashboard. No pre-signed IPA, no mock, no demo.
-  # =========================================================
-  sign-server:
-    name: ONEs Real Signing Server (zsign)
-    runs-on: macos-latest
-    timeout-minutes: 350
-    steps:
-      - name: Build zsign (real code signer)
-        run: |
-          set -e
-          brew install openssl@3 minizip pkg-config cmake 2>/dev/null || true
-          rm -rf /tmp/zsign
-          git clone --depth 1 https://github.com/zhlynn/zsign.git /tmp/zsign
-          cd /tmp/zsign
-          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
-
-          # The zsign repo moved its sources into src/ (main.cpp lives there),
-          # so globbing *.cpp at the repo root links an executable with no _main.
-          # Collect every .cpp that actually exists, wherever it lives.
-          SRCS="$(find . -name '*.cpp' -not -path './build/*' -not -path './.git/*' | tr '\n' ' ')"
-          echo "Sources: $SRCS"
-          if ! grep -rl 'int main' $SRCS >/dev/null 2>&1; then
-            echo "::error::No main() found in zsign sources"; exit 1
-          fi
-
-          clang++ -std=c++14 -O2 -w -o zsign $SRCS \
-            -I. -Isrc -Isrc/common -Icommon \
-            -I"$OPENSSL_PREFIX/include" -L"$OPENSSL_PREFIX/lib" \
-            -lcrypto -lz
-
-          test -x zsign || { echo "::error::zsign build failed"; exit 1; }
-          sudo cp zsign /usr/local/bin/zsign
-          zsign -v || true
-
-      - name: Validate certificates and sign queued apps
-        env:
-          API_BASE: "https://project--e9eb251d-c223-426c-aa31-220c8cad6ec8.lovable.app"
-          SIGNER_TOKEN: ${{ secrets.SIGNER_TOKEN }}
-          POLL_MINUTES: "300"
-        run: |
-          if [ -z "$SIGNER_TOKEN" ]; then
-            echo "::error::SIGNER_TOKEN repository secret is missing"
-            exit 1
-          fi
-          python3 << 'PYEOF'
-          import json, os, subprocess, time, urllib.request, urllib.error, tempfile, re, plistlib, shutil
-
-          API = os.environ["API_BASE"].rstrip("/")
-          TOKEN = os.environ["SIGNER_TOKEN"]
-          DEADLINE = time.time() + int(os.environ.get("POLL_MINUTES", "300")) * 60
-          HEAD = {"x-signer-token": TOKEN, "content-type": "application/json"}
-
-          def api(path, payload=None, method=None):
-              url = API + path
-              body = None if payload is None else json.dumps(payload).encode()
-              req = urllib.request.Request(url, data=body, headers=HEAD,
-                                           method=method or ("POST" if body else "GET"))
-              try:
-                  with urllib.request.urlopen(req, timeout=60) as res:
-                      return json.loads(res.read().decode() or "{}")
-              except urllib.error.HTTPError as err:
-                  print("HTTP", err.code, err.read()[:400])
-                  return {}
-              except Exception as err:
-                  print("ERR", err)
-                  return {}
-
-          def download(url, dest):
-              with urllib.request.urlopen(url, timeout=900) as res, open(dest, "wb") as out:
-                  shutil.copyfileobj(res, out)
-              return dest
-
-          def progress(job_id, step, pct, message, log=None):
-              print("[%s] %s %s%% - %s" % (job_id, step, pct, message))
-              api("/api/public/signer/progress", {
-                  "job_id": job_id, "step": step, "progress": pct,
-                  "message": message, "log": log})
-
-          def read_profile(path):
-              raw = subprocess.run(["security", "cms", "-D", "-i", path],
-                                   capture_output=True).stdout
-              if not raw:
-                  raw = open(path, "rb").read()
-                  start, end = raw.find(b"<?xml"), raw.rfind(b"</plist>")
-                  raw = raw[start:end + 8] if start >= 0 and end > 0 else b""
-              try:
-                  return plistlib.loads(raw)
-              except Exception:
-                  return {}
-
-          def validate_cert(cert):
-              work = tempfile.mkdtemp()
-              p12 = download(cert["p12_url"], os.path.join(work, "cert.p12"))
-              prov = download(cert["profile_url"], os.path.join(work, "p.mobileprovision"))
-              pwd = cert.get("p12_password") or ""
-
-              check = subprocess.run(
-                  ["openssl", "pkcs12", "-in", p12, "-passin", "pass:" + pwd,
-                   "-nokeys", "-legacy", "-clcerts"],
-                  capture_output=True, text=True)
-              if check.returncode != 0:
-                  check = subprocess.run(
-                      ["openssl", "pkcs12", "-in", p12, "-passin", "pass:" + pwd,
-                       "-nokeys", "-clcerts"], capture_output=True, text=True)
-              if check.returncode != 0:
-                  return False, "كلمة مرور P12 غير صحيحة أو الملف تالف", None, None
-
-              info = read_profile(prov)
-              if not info:
-                  return False, "ملف Provisioning Profile غير صالح", None, None
-
-              expires = info.get("ExpirationDate")
-              if expires and expires.timestamp() < time.time():
-                  return False, "انتهت صلاحية Provisioning Profile", None, None
-
-              app_id = (info.get("Entitlements") or {}).get("application-identifier", "")
-              bundle = app_id.split(".", 1)[1] if "." in app_id else app_id
-              devices = info.get("ProvisionedDevices") or []
-              msg = "شهادة صالحة (%s) · أجهزة: %d" % (info.get("Name", "-"), len(devices))
-              iso = expires.strftime("%Y-%m-%dT%H:%M:%SZ") if expires else None
-              return True, msg, iso, bundle
-
-          def handle_certs():
-              data = api("/api/public/signer/certs")
-              for cert in data.get("certificates") or []:
-                  if not cert.get("p12_url") or not cert.get("profile_url"):
-                      continue
-                  try:
-                      ok, msg, expires, bundle = validate_cert(cert)
-                  except Exception as err:
-                      ok, msg, expires, bundle = False, "فشل التحقق: %s" % err, None, None
-                  api("/api/public/signer/certs", {
-                      "certificate_id": cert["id"],
-                      "status": "valid" if ok else "invalid",
-                      "status_message": msg,
-                      "expires_at": expires,
-                      "bundle_id": bundle})
-                  print("cert", cert["id"], ok, msg)
-
-          def sign_job(job):
-              jid = job["id"]
-              cert = job["certificate"]
-              work = tempfile.mkdtemp()
-              progress(jid, "certificate_check", 20, "التحقق من الشهادة")
-              p12 = download(cert["p12_url"], os.path.join(work, "cert.p12"))
-              prov = download(cert["profile_url"], os.path.join(work, "p.mobileprovision"))
-
-              ok, msg, expires, bundle = validate_cert(cert)
-              if not ok:
-                  api("/api/public/signer/complete", {"job_id": jid, "error": msg})
-                  return
-
-              progress(jid, "signing_app", 45, "توقيع التطبيق")
-              ipa = download(job["ipa_url"], os.path.join(work, "input.ipa"))
-              out = os.path.join(work, "signed.ipa")
-              cmd = ["zsign", "-k", p12, "-p", cert.get("p12_password") or "",
-                     "-m", prov, "-o", out, "-z", "9"]
-              if job.get("bundle_id"):
-                  cmd += ["-b", job["bundle_id"]]
-              cmd.append(ipa)
-              run = subprocess.run(cmd, capture_output=True, text=True)
-              log = (run.stdout or "") + (run.stderr or "")
-              print(log[-3000:])
-              if run.returncode != 0 or not os.path.exists(out):
-                  api("/api/public/signer/complete",
-                      {"job_id": jid, "error": "فشل توقيع التطبيق بالشهادة", "log": log[-4000:]})
-                  return
-
-              progress(jid, "manifest", 75, "إنشاء Manifest", log[-2000:])
-              slot = api("/api/public/signer/upload-url", {"job_id": jid})
-              if not slot.get("upload_url"):
-                  api("/api/public/signer/complete",
-                      {"job_id": jid, "error": "تعذّر تجهيز مساحة التحميل"})
-                  return
-
-              up = subprocess.run(["curl", "-sS", "-X", "PUT", slot["upload_url"],
-                                   "-H", "content-type: application/octet-stream",
-                                   "--data-binary", "@" + out], capture_output=True, text=True)
-              if up.returncode != 0:
-                  api("/api/public/signer/complete",
-                      {"job_id": jid, "error": "فشل رفع الملف الموقّع", "log": up.stderr[-2000:]})
-                  return
-
-              api("/api/public/signer/complete",
-                  {"job_id": jid, "signed_path": slot["path"], "log": log[-4000:]})
-              print("job completed", jid)
-              shutil.rmtree(work, ignore_errors=True)
-
-          print("Signing server online:", API)
-          while time.time() < DEADLINE:
-              handle_certs()
-              data = api("/api/public/signer/next")
-              job = data.get("job")
-              if job:
-                  try:
-                      sign_job(job)
-                  except Exception as err:
-                      api("/api/public/signer/complete",
-                          {"job_id": job["id"], "error": "خطأ في سيرفر التوقيع: %s" % err})
-              else:
-                  time.sleep(10)
-          print("Signing window finished")
-          PYEOF
