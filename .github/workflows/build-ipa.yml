@@ -820,29 +820,72 @@ jobs:
                   return nil
               }
 
+              private func explicitlyRejected(_ json: [String: Any], status: Int) -> Bool {
+                  if status == 401 || status == 403 || status == 404 || status == 410 { return true }
+                  if let ok = json["ok"] as? Bool, ok == false { return true }
+                  if let s = json["success"] as? Bool, s == false { return true }
+                  if let a = json["active"] as? Bool, a == false { return true }
+                  if let v = json["valid"] as? Bool, v == false { return true }
+                  return false
+              }
+
               private func apply(_ json: [String: Any], fallbackCode: String? = nil) -> Bool {
-                  guard (json["ok"] as? Bool) == true else { return false }
                   var jsonData = json
                   if let acc = json["account"] as? [String: Any] {
                       for (k, v) in acc { jsonData[k] = v }
                   }
+                  if let inner = json["data"] as? [String: Any] {
+                      for (k, v) in inner { jsonData[k] = v }
+                  }
+                  if let sub = json["subscription"] as? [String: Any] {
+                      for (k, v) in sub { jsonData[k] = v }
+                  }
+
+                  // Only an explicit rejection from the server means failure.
+                  if let ok = json["ok"] as? Bool, ok == false { return false }
+                  if let s = json["success"] as? Bool, s == false { return false }
                   if let active = jsonData["active"] as? Bool, active == false { return false }
+                  if let valid = jsonData["valid"] as? Bool, valid == false { return false }
+
                   if let c = jsonData["code"] as? String, !c.isEmpty {
                       code = c
                   } else if let fb = fallbackCode, !fb.isEmpty {
                       code = fb
                   }
-                  if let u = jsonData["udid"] as? String, !u.isEmpty {
+                  if let u = jsonData["udid"] as? String, !u.isEmpty, u != udid {
                       udid = u
                   }
-                  if let days = jsonData["duration_days"] as? Int { durationDays = days }
+                  if let days = jsonData["duration_days"] as? Int, days > 0 {
+                      durationDays = days
+                  } else if let ds = jsonData["duration_days"] as? String, let dd = Int(ds), dd > 0 {
+                      durationDays = dd
+                  }
                   if let name = jsonData["full_name"] as? String, !name.isEmpty {
                       fullName = name
                   }
-                  if let raw = jsonData["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
-                      expiresAt = d
-                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
+
+                  var newExpiry: Date? = nil
+                  for key in ["expires_at", "expiry_date", "expires", "expire_at", "valid_until", "end_date"] {
+                      if let raw = jsonData[key] as? String, let d = ActivationManager.parseDate(raw) {
+                          newExpiry = d; break
+                      }
+                      if let ts = jsonData[key] as? Double, ts > 0 {
+                          newExpiry = Date(timeIntervalSince1970: ts > 100_000_000_000 ? ts / 1000.0 : ts); break
+                      }
                   }
+                  if newExpiry == nil, durationDays > 0 {
+                      newExpiry = Date().addingTimeInterval(Double(durationDays) * 86_400.0)
+                  }
+                  if newExpiry == nil, expiresAt == nil || expiresAt! <= Date() {
+                      // Server approved but sent no expiry: keep the session alive.
+                      newExpiry = Date().addingTimeInterval(30 * 86_400.0)
+                  }
+                  if let e = newExpiry { expiresAt = e }
+                  if durationDays <= 0, let e = expiresAt {
+                      durationDays = max(0, Int(ceil(e.timeIntervalSinceNow / 86_400.0)))
+                  }
+
+                  guard !code.isEmpty else { return false }
                   persist()
                   refreshLocalState()
                   return isActive
@@ -890,10 +933,13 @@ jobs:
                               completion?(false); return
                           }
                           if self.apply(json, fallbackCode: clean) {
+                              self.lastError = ""
                               HapticManager.shared.success()
                               completion?(true)
                           } else {
-                              self.lastError = (json["message"] as? String) ?? LS("الاسم غير صالح")
+                              self.lastError = (json["message"] as? String)
+                                  ?? (json["error"] as? String)
+                                  ?? LS("الكود غير صالح أو مستخدم على جهاز آخر")
                               completion?(false)
                           }
                       }
@@ -912,19 +958,27 @@ jobs:
                   var vreq = URLRequest(url: url, timeoutInterval: 25)
                   vreq.httpMethod = "GET"
                   vreq.cachePolicy = .reloadIgnoringLocalCacheData
-                  URLSession.shared.dataTask(with: vreq) { data, _, _ in
+                  URLSession.shared.dataTask(with: vreq) { data, response, _ in
                       Task { @MainActor in
+                          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                           guard let data = data,
                                 let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                              // Network/parse failure must never log the user out.
                               self.refreshLocalState()
                               completion?(self.isActive); return
                           }
                           if self.apply(json) {
-                              completion?(true)
-                          } else {
-                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك"
+                              self.lastError = ""
+                              completion?(true); return
+                          }
+                          if self.explicitlyRejected(json, status: status) {
+                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك أو الكود غير صالح"
                               self.deactivate(keepMessage: true)
                               completion?(false)
+                          } else {
+                              // Ambiguous answer: keep the current local subscription.
+                              self.refreshLocalState()
+                              completion?(self.isActive)
                           }
                       }
                   }.resume()
@@ -1131,7 +1185,9 @@ jobs:
                                       HapticManager.shared.impact(.medium)
                                       activation.activate(code: input) { ok in
                                           if ok {
-                                              activation.verify()
+                                              // Activation succeeded: open the store immediately.
+                                              // Do NOT re-verify here, it used to reset the gate.
+                                              input = ""
                                           } else {
                                               withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
                                               DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
@@ -1202,7 +1258,7 @@ jobs:
                       }
                   }
                   .environment(\.layoutDirection, .rightToLeft)
-                  .onAppear { activation.verify() }
+                  .onAppear { if !activation.isActive && !activation.code.isEmpty { activation.verify() } }
               }
           }
 
