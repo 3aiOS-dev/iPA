@@ -442,77 +442,401 @@ jobs:
           cat > Models.swift << 'VIPEOF'
           import Foundation
 
-          struct StoreAPIResponse: Codable {
-              let lastUpdated: String?
-              let apps: [StoreAPIApp]
-              init(lastUpdated: String?, apps: [StoreAPIApp]) { self.lastUpdated = lastUpdated; self.apps = apps }
-              enum CodingKeys: String, CodingKey { case lastUpdated = "last_updated"; case apps; case data; case items; case results }
-              init(from decoder: Decoder) throws {
-                  if let single = try? decoder.singleValueContainer(), let arr = try? single.decode([StoreAPIApp].self) { self.lastUpdated=nil; self.apps=arr; return }
-                  let c=try decoder.container(keyedBy:CodingKeys.self)
-                  self.lastUpdated=try? c.decode(String.self,forKey:.lastUpdated)
-                  if let a=try? c.decode([StoreAPIApp].self,forKey:.apps) { self.apps=a; return }
-                  if let a=try? c.decode([StoreAPIApp].self,forKey:.items) { self.apps=a; return }
-                  if let a=try? c.decode([StoreAPIApp].self,forKey:.results) { self.apps=a; return }
-                  if let d=try? c.decode(StoreAPIResponse.self,forKey:.data) { self.apps=d.apps; return }
-                  if let d=try? c.decode(Envelope.self,forKey:.data) { self.apps=d.apps; return }
-                  self.apps=[]
+          // ============================================================
+          // Flexible JSON helpers - repositories differ a lot in shape
+          // ============================================================
+          public enum JX {
+              public static func str(_ any: Any?) -> String? {
+                  if let s = any as? String {
+                      let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                      return t.isEmpty ? nil : t
+                  }
+                  if let n = any as? NSNumber { return n.stringValue }
+                  return nil
               }
-              private struct Envelope: Codable { let apps:[StoreAPIApp] }
-              func encode(to encoder: Encoder) throws { var c=encoder.container(keyedBy:CodingKeys.self); try c.encodeIfPresent(lastUpdated,forKey:.lastUpdated); try c.encode(apps,forKey:.apps) }
+
+              public static func num(_ any: Any?) -> Double? {
+                  if let n = any as? NSNumber { return n.doubleValue }
+                  if let d = any as? Double { return d }
+                  if let i = any as? Int { return Double(i) }
+                  if let s = any as? String { return sizeFromString(s) }
+                  return nil
+              }
+
+              /// "13.4 MB" / "1,2 GB" / "532144" -> bytes
+              public static func sizeFromString(_ raw: String) -> Double? {
+                  let s = raw.replacingOccurrences(of: ",", with: ".")
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+                      .uppercased()
+                  if let plain = Double(s) { return plain }
+                  let numberPart = s.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
+                      .filter { !$0.isEmpty }.first
+                  guard let value = Double(numberPart ?? "") else { return nil }
+                  if s.contains("GB") || s.contains("GIB") { return value * 1_073_741_824 }
+                  if s.contains("MB") || s.contains("MIB") { return value * 1_048_576 }
+                  if s.contains("KB") || s.contains("KIB") { return value * 1024 }
+                  if s.contains("B") { return value }
+                  return value
+              }
+
+              public static func firstValue(_ dict: [String: Any], _ keys: [String]) -> Any? {
+                  let lower = Dictionary(uniqueKeysWithValues: dict.map { ($0.key.lowercased(), $0.value) })
+                  for k in keys {
+                      if let v = dict[k], !(v is NSNull) { return v }
+                      if let v = lower[k.lowercased()], !(v is NSNull) { return v }
+                  }
+                  return nil
+              }
+
+              public static func firstString(_ dict: [String: Any], _ keys: [String]) -> String? {
+                  return str(firstValue(dict, keys))
+              }
+
+              public static func firstNumber(_ dict: [String: Any], _ keys: [String]) -> Double? {
+                  return num(firstValue(dict, keys))
+              }
+
+              /// Accepts ["a","b"], [{"imageURL":..}], {"iphone":[...],"ipad":[...]}
+              public static func urlList(_ any: Any?) -> [String] {
+                  var out: [String] = []
+                  if let arr = any as? [Any] {
+                      for item in arr {
+                          if let s = str(item) { out.append(s) }
+                          else if let d = item as? [String: Any],
+                                  let s = firstString(d, ["imageURL", "url", "image", "src", "screenshot"]) {
+                              out.append(s)
+                          }
+                      }
+                  } else if let dict = any as? [String: Any] {
+                      for key in ["iphone", "ipad", "universal", "urls", "items"] {
+                          if let v = firstValue(dict, [key]) { out.append(contentsOf: urlList(v)) }
+                      }
+                  } else if let s = str(any) {
+                      out.append(s)
+                  }
+                  return out.filter { $0.hasPrefix("http") }
+              }
+
+              public static func dict(_ any: Any?) -> [String: Any]? { any as? [String: Any] }
+
+              /// Extract the apps array out of any repository payload shape.
+              public static func appsArray(from root: Any) -> [[String: Any]] {
+                  if let arr = root as? [[String: Any]] { return arr }
+                  guard let d = root as? [String: Any] else { return [] }
+                  let keys = ["apps", "data", "items", "results", "applications", "list", "packages", "entries"]
+                  for k in keys {
+                      if let v = firstValue(d, [k]) {
+                          if let arr = v as? [[String: Any]] { return arr }
+                          if let one = v as? [String: Any] {
+                              // nested envelope: { data: { apps: [...] } } or a single app
+                              let nested = appsArray(from: one)
+                              if !nested.isEmpty { return nested }
+                              if one["name"] != nil { return [one] }
+                          }
+                      }
+                  }
+                  return []
+              }
+
+              public static func sourceName(from root: Any) -> String? {
+                  guard let d = root as? [String: Any] else { return nil }
+                  return firstString(d, ["name", "title", "sourceName", "source_name", "repoName"])
+              }
           }
 
-          struct StoreAPIApp: Codable, Identifiable, Hashable {
-              let id:Int; let name:String; let bundleId:String?; let bundleVersion:String?; let ipaSize:String?
-              let githubUrl:String?; let archiveUrl:String?; let ipaUrl:String?; var host:String?; let icon:String?
-              let description:String?; let screenshots:[String]?; let category:String?; let createdAt:String?; let updatedAt:String?
-              let downloadURL:String?; let down:String?; let iconURL:String?; let localizedDescription:String?; let developerName:String?
-              let version:String?; let versionDate:String?; let fullDate:String?; let size:Double?; let type:Int?
-              let detailURL:String?; let sourceURL:String?
+          /// Minimal Codable box so StoreAPIApp keeps Codable conformance.
+          public struct JSONAny: Codable {
+              public let value: Any
+              public init(_ value: Any) { self.value = value }
 
-              init(id:Int,name:String,bundleId:String?,bundleVersion:String?,ipaSize:String?,githubUrl:String?,archiveUrl:String?,ipaUrl:String?,host:String?,icon:String?,description:String?,screenshots:[String]?,category:String?,createdAt:String?,updatedAt:String?,downloadURL:String?,down:String?,iconURL:String?,localizedDescription:String?,developerName:String?,version:String?,versionDate:String?,fullDate:String?,size:Double?,type:Int?,detailURL:String?,sourceURL:String?){
-                  self.id=id; self.name=name; self.bundleId=bundleId; self.bundleVersion=bundleVersion; self.ipaSize=ipaSize; self.githubUrl=githubUrl; self.archiveUrl=archiveUrl; self.ipaUrl=ipaUrl; self.host=host; self.icon=icon; self.description=description; self.screenshots=screenshots; self.category=category; self.createdAt=createdAt; self.updatedAt=updatedAt; self.downloadURL=downloadURL; self.down=down; self.iconURL=iconURL; self.localizedDescription=localizedDescription; self.developerName=developerName; self.version=version; self.versionDate=versionDate; self.fullDate=fullDate; self.size=size; self.type=type; self.detailURL=detailURL; self.sourceURL=sourceURL
+              public init(from decoder: Decoder) throws {
+                  if let c = try? decoder.singleValueContainer() {
+                      if c.decodeNil() { value = NSNull() ; return }
+                      if let v = try? c.decode(Bool.self) { value = v; return }
+                      if let v = try? c.decode(Double.self) { value = v; return }
+                      if let v = try? c.decode(String.self) { value = v; return }
+                      if let v = try? c.decode([JSONAny].self) { value = v.map { $0.value }; return }
+                      if let v = try? c.decode([String: JSONAny].self) { value = v.mapValues { $0.value }; return }
+                  }
+                  value = NSNull()
               }
-              enum CodingKeys:String,CodingKey {
-                  case id,name,bundleId,bundleID,bundleIdentifier,bundleVersion,bundle_version,ipaSize,ipa_size,size
-                  case githubUrl,github_url,archiveUrl,archive_url,ipaUrl,ipa_url,ipa,downloadURL,download_url,down
-                  case host,source,sourceName,repo,repository,icon,iconURL,icon_url,description,localizedDescription,localized_description
-                  case subtitle,summary,appDescription,app_description,screenshots,screenShots,screenshot,category,categories
-                  case createdAt,created_at,updatedAt,updated_at,developerName,developer_name,developer,author
-                  case version,versionNumber,version_number,versionDate,version_date,fullDate,full_date,type
-                  case detailURL,detail_url,appURL,app_url,url,website,homepage
+
+              public func encode(to encoder: Encoder) throws {
+                  var c = encoder.singleValueContainer()
+                  switch value {
+                  case let v as Bool: try c.encode(v)
+                  case let v as Int: try c.encode(v)
+                  case let v as Double: try c.encode(v)
+                  case let v as String: try c.encode(v)
+                  case let v as [Any]: try c.encode(v.map { JSONAny($0) })
+                  case let v as [String: Any]: try c.encode(v.mapValues { JSONAny($0) })
+                  default: try c.encodeNil()
+                  }
               }
-              init(from decoder:Decoder) throws {
-                  let c=try decoder.container(keyedBy:CodingKeys.self)
-                  func str(_ keys:CodingKeys...)->String? { for k in keys { if let v=try? c.decode(String.self,forKey:k),!v.isEmpty{return v} }; return nil }
-                  func num(_ keys:CodingKeys...)->Double? { for k in keys { if let v=try? c.decode(Double.self,forKey:k){return v}; if let v=try? c.decode(Int64.self,forKey:k){return Double(v)}; if let v=try? c.decode(String.self,forKey:k),let d=Double(v.replacingOccurrences(of:",",with:"")){return d} }; return nil }
-                  let bid=str(.bundleId,.bundleID,.bundleIdentifier)
-                  id=(try? c.decode(Int.self,forKey:.id)) ?? abs((bid ?? UUID().uuidString).hashValue)
-                  name=str(.name) ?? "Untitled"; bundleId=bid
-                  bundleVersion=str(.bundleVersion,.bundle_version,.version,.versionNumber,.version_number)
-                  size=num(.size,.ipaSize,.ipa_size); ipaSize=str(.ipaSize,.ipa_size)
-                  githubUrl=str(.githubUrl,.github_url); archiveUrl=str(.archiveUrl,.archive_url)
-                  ipaUrl=str(.ipaUrl,.ipa_url,.ipa,.downloadURL,.download_url,.down)
-                  host=str(.host,.source,.sourceName,.repo,.repository); icon=str(.icon,.iconURL,.icon_url)
-                  description=str(.description,.appDescription,.app_description,.localizedDescription,.localized_description,.subtitle,.summary)
-                  localizedDescription=str(.localizedDescription,.localized_description,.description,.appDescription,.app_description,.subtitle,.summary)
-                  screenshots=(try? c.decode([String].self,forKey:.screenshots)) ?? (try? c.decode([String].self,forKey:.screenShots)) ?? (try? c.decode([String].self,forKey:.screenshot))
-                  category=str(.category,.categories); createdAt=str(.createdAt,.created_at); updatedAt=str(.updatedAt,.updated_at)
-                  downloadURL=str(.downloadURL,.download_url,.ipaUrl,.ipa_url,.ipa); down=str(.down); iconURL=str(.iconURL,.icon_url,.icon)
-                  developerName=str(.developerName,.developer_name,.developer,.author); version=str(.version,.versionNumber,.version_number)
-                  versionDate=str(.versionDate,.version_date); fullDate=str(.fullDate,.full_date); type=try? c.decode(Int.self,forKey:.type)
-                  detailURL=str(.detailURL,.detail_url,.appURL,.app_url,.url,.website,.homepage)
-                  sourceURL=str(.source,.repo,.repository,.website,.homepage)
-              }
-              func encode(to e:Encoder)throws { var c=e.container(keyedBy:CodingKeys.self); try c.encode(id,forKey:.id); try c.encode(name,forKey:.name); try c.encodeIfPresent(bundleId,forKey:.bundleId); try c.encodeIfPresent(bundleVersion,forKey:.bundleVersion); try c.encodeIfPresent(ipaSize,forKey:.ipaSize); try c.encodeIfPresent(ipaUrl,forKey:.ipaUrl); try c.encodeIfPresent(host,forKey:.host); try c.encodeIfPresent(icon,forKey:.icon); try c.encodeIfPresent(description,forKey:.description); try c.encodeIfPresent(screenshots,forKey:.screenshots); try c.encodeIfPresent(category,forKey:.category); try c.encodeIfPresent(size,forKey:.size); try c.encodeIfPresent(detailURL,forKey:.detailURL); try c.encodeIfPresent(sourceURL,forKey:.sourceURL) }
-              var cleanSize:String { if let s = size, s > 0 { let f=ByteCountFormatter(); f.allowedUnits=[.useKB,.useMB,.useGB]; f.countStyle = .file; return f.string(fromByteCount:Int64(s)) }; if let s = ipaSize, !s.isEmpty{return s}; return "غير متوفر" }
-              var cleanDescription:String { let r=(description ?? localizedDescription ?? "").split(whereSeparator:{$0.isNewline || $0=="\r"}).joined(separator:" ").trimmingCharacters(in:.whitespacesAndNewlines); return r.isEmpty ? "جارٍ جلب الوصف الفعلي من المصدر…" : r }
-              var resolvedDownloadURL:String? { ipaUrl ?? downloadURL ?? down }
           }
 
-          struct DownloadRepository:Codable,Identifiable,Hashable { let id:String; let name:String; let feedURL:String; let homepage:String; let enabled:Bool; let maxGB:Double; init(id:String,name:String,feedURL:String,homepage:String,enabled:Bool=true,maxGB:Double=250){self.id=id;self.name=name;self.feedURL=feedURL;self.homepage=homepage;self.enabled=enabled;self.maxGB=maxGB} }
-          struct DownloadQuota:Codable,Identifiable,Hashable { let id:String; let totalBytes:Int64; let usedBytes:Int64; var freeBytes:Int64{max(0,totalBytes-usedBytes)}; var freeGB:Double{Double(freeBytes)/1_073_741_824}; var usedGB:Double{Double(usedBytes)/1_073_741_824}; var totalGB:Double{Double(totalBytes)/1_073_741_824} }
+          // ============================================================
+          // MODELS
+          // ============================================================
+          public struct StoreAPIResponse: Codable {
+              public let lastUpdated: String?
+              public let apps: [StoreAPIApp]
+
+              public init(lastUpdated: String?, apps: [StoreAPIApp]) {
+                  self.lastUpdated = lastUpdated
+                  self.apps = apps
+              }
+
+              enum CodingKeys: String, CodingKey {
+                  case lastUpdated = "last_updated"
+                  case apps
+              }
+
+              public init(from decoder: Decoder) throws {
+                  let c = try decoder.container(keyedBy: CodingKeys.self)
+                  self.lastUpdated = try? c.decode(String.self, forKey: .lastUpdated)
+                  self.apps = (try? c.decode([StoreAPIApp].self, forKey: .apps)) ?? []
+              }
+
+              public func encode(to encoder: Encoder) throws {
+                  var c = encoder.container(keyedBy: CodingKeys.self)
+                  try c.encodeIfPresent(lastUpdated, forKey: .lastUpdated)
+                  try c.encode(apps, forKey: .apps)
+              }
+          }
+
+          public struct StoreAPIApp: Codable, Identifiable, Hashable {
+              public var id: Int
+              public var name: String
+              public var bundleId: String?
+              public var bundleVersion: String?
+              public var ipaSize: String?
+              public var githubUrl: String?
+              public var archiveUrl: String?
+              public var ipaUrl: String?
+              public var host: String?
+              public var icon: String?
+              public var description: String?
+              public var screenshots: [String]?
+              public var category: String?
+              public var createdAt: String?
+              public var updatedAt: String?
+              public var downloadURL: String?
+              public var down: String?
+              public var iconURL: String?
+              public var localizedDescription: String?
+              public var developerName: String?
+              public var version: String?
+              public var versionDate: String?
+              public var fullDate: String?
+              public var size: Double?
+              public var type: Int?
+              public var subtitle: String?
+              public var minOSVersion: String?
+              public var sourceName: String?
+              public var sourceURL: String?
+
+              // ---------- universal dictionary init (used for every repo) ----------
+              public init(json raw: [String: Any], sourceName: String? = nil, sourceURL: String? = nil) {
+                  var dict = raw
+
+                  // AltStore / SideStore style: latest metadata lives inside versions[0]
+                  if let versions = JX.firstValue(raw, ["versions"]) as? [[String: Any]],
+                     let latest = versions.first {
+                      for (k, v) in latest where !(v is NSNull) {
+                          if dict[k] == nil || JX.str(dict[k]) == nil { dict[k] = v }
+                      }
+                      if dict["version"] == nil { dict["version"] = latest["version"] }
+                      if JX.firstValue(raw, ["size"]) == nil { dict["size"] = latest["size"] }
+                      if JX.firstValue(raw, ["downloadURL", "download_url"]) == nil {
+                          dict["downloadURL"] = JX.firstValue(latest, ["downloadURL", "download_url", "url"])
+                      }
+                  }
+
+                  self.name = JX.firstString(dict, ["name", "appName", "app_name", "title", "displayName"]) ?? "Untitled"
+                  self.bundleId = JX.firstString(dict, ["bundle_id", "bundleIdentifier", "bundleID", "bundleId", "identifier", "package"])
+                  self.version = JX.firstString(dict, ["version", "bundle_version", "bundleVersion", "latestVersion", "app_version"])
+                  self.bundleVersion = self.version
+                  self.developerName = JX.firstString(dict, ["developerName", "developer", "author", "seller", "publisher", "team"])
+                  self.subtitle = JX.firstString(dict, ["subtitle", "tagline", "shortDescription", "short_description"])
+
+                  let desc = JX.firstString(dict, [
+                      "localizedDescription", "description", "desc", "about",
+                      "details", "summary", "app_description", "long_description", "body"
+                  ])
+                  self.description = desc ?? self.subtitle
+                  self.localizedDescription = self.description
+
+                  self.icon = JX.firstString(dict, ["iconURL", "icon_url", "icon", "imageURL", "image_url", "image", "thumbnail", "logo"])
+                  self.iconURL = self.icon
+
+                  let shots = JX.urlList(JX.firstValue(dict, ["screenshotURLs", "screenshots", "screenshot_urls", "images", "previews", "screenshotUrls"]))
+                  self.screenshots = shots.isEmpty ? nil : shots
+
+                  // category may be a string, an array, or a number
+                  if let cat = JX.firstString(dict, ["category", "genre", "section", "kind"]) {
+                      self.category = cat
+                  } else if let arr = JX.firstValue(dict, ["categories", "genres", "tags"]) as? [Any] {
+                      self.category = JX.str(arr.first)
+                  } else {
+                      self.category = nil
+                  }
+
+                  // size: bytes number, or "12.4 MB", or ipa_size string
+                  let bytes = JX.firstNumber(dict, ["size", "sizeBytes", "size_bytes", "fileSize", "file_size", "ipa_size", "ipaSize", "filesize"])
+                  self.size = (bytes ?? 0) > 0 ? bytes : nil
+                  self.ipaSize = JX.firstString(dict, ["ipa_size", "ipaSize", "sizeText", "size_label"])
+
+                  self.ipaUrl = JX.firstString(dict, [
+                      "ipa_url", "ipaUrl", "downloadURL", "download_url", "download",
+                      "url", "down", "install_url", "installURL", "link", "file_url", "fileURL"
+                  ])
+                  self.downloadURL = self.ipaUrl
+                  self.down = self.ipaUrl
+                  self.githubUrl = JX.firstString(dict, ["github_url", "githubUrl", "repo_url", "source_url"])
+                  self.archiveUrl = JX.firstString(dict, ["archive_url", "archiveUrl"])
+                  self.host = JX.firstString(dict, ["host", "server", "provider"]) ?? sourceName
+
+                  self.createdAt = JX.firstString(dict, ["created_at", "createdAt", "added", "addedDate"])
+                  self.updatedAt = JX.firstString(dict, ["updated_at", "updatedAt", "versionDate", "date", "fullDate", "lastUpdated"])
+                  self.versionDate = JX.firstString(dict, ["versionDate", "date", "version_date"])
+                  self.fullDate = JX.firstString(dict, ["fullDate", "full_date"])
+                  self.minOSVersion = JX.firstString(dict, ["minOSVersion", "min_os_version", "minimumOSVersion"])
+                  self.type = Int(JX.firstNumber(dict, ["type"]) ?? -1) >= 0 ? Int(JX.firstNumber(dict, ["type"]) ?? 0) : nil
+
+                  self.sourceName = sourceName
+                  self.sourceURL = sourceURL
+
+                  if let intId = JX.firstNumber(dict, ["id", "app_id", "appId"]), intId > 0, intId < 9_000_000_000 {
+                      self.id = Int(intId)
+                  } else {
+                      let seed = (self.bundleId ?? "") + "|" + self.name + "|" + (sourceName ?? "")
+                      self.id = abs(seed.hashValue)
+                  }
+              }
+
+              // ---------- Codable (goes through the same dictionary init) ----------
+              public init(from decoder: Decoder) throws {
+                  let c = try decoder.singleValueContainer()
+                  let boxed = try c.decode([String: JSONAny].self)
+                  self.init(json: boxed.mapValues { $0.value })
+              }
+
+              public func encode(to encoder: Encoder) throws {
+                  var c = encoder.container(keyedBy: CodingKeys.self)
+                  try c.encode(id, forKey: .id)
+                  try c.encode(name, forKey: .name)
+                  try c.encodeIfPresent(bundleId, forKey: .bundleId)
+                  try c.encodeIfPresent(bundleVersion, forKey: .bundleVersion)
+                  try c.encodeIfPresent(ipaSize, forKey: .ipaSize)
+                  try c.encodeIfPresent(size, forKey: .size)
+                  try c.encodeIfPresent(ipaUrl, forKey: .ipaUrl)
+                  try c.encodeIfPresent(icon, forKey: .icon)
+                  try c.encodeIfPresent(description, forKey: .description)
+                  try c.encodeIfPresent(screenshots, forKey: .screenshots)
+                  try c.encodeIfPresent(category, forKey: .category)
+                  try c.encodeIfPresent(developerName, forKey: .developerName)
+                  try c.encodeIfPresent(sourceName, forKey: .sourceName)
+                  try c.encodeIfPresent(updatedAt, forKey: .updatedAt)
+              }
+
+              enum CodingKeys: String, CodingKey {
+                  case id, name, bundleId, bundleVersion, ipaSize, size, ipaUrl, icon
+                  case description, screenshots, category, developerName, sourceName, updatedAt
+              }
+
+              public static func == (lhs: StoreAPIApp, rhs: StoreAPIApp) -> Bool {
+                  lhs.id == rhs.id && lhs.name == rhs.name && lhs.sourceName == rhs.sourceName
+              }
+
+              public func hash(into hasher: inout Hasher) {
+                  hasher.combine(id)
+                  hasher.combine(name)
+                  hasher.combine(sourceName)
+              }
+
+              // ---------- display helpers ----------
+              public var cleanSize: String {
+                  if let s = size, s > 0 {
+                      let f = ByteCountFormatter()
+                      f.allowedUnits = [.useKB, .useMB, .useGB]
+                      f.countStyle = .file
+                      return f.string(fromByteCount: Int64(s))
+                  }
+                  if let s = ipaSize, !s.isEmpty { return s }
+                  return "-"
+              }
+
+              public var cleanDescription: String {
+                  let raw = (description ?? localizedDescription ?? subtitle ?? "")
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+                  if raw.isEmpty {
+                      return "تطبيق متوفر على ONEs Store عبر المصدر \(sourceLabel). لم يوفّر المصدر وصفًا لهذا التطبيق."
+                  }
+                  return raw
+              }
+
+              public var displayVersion: String {
+                  if let v = version ?? bundleVersion, !v.isEmpty {
+                      return v.hasPrefix("v") ? v : "v\(v)"
+                  }
+                  return "-"
+              }
+
+              public var sourceLabel: String {
+                  if let s = sourceName, !s.isEmpty { return s }
+                  if let h = host, !h.isEmpty { return h }
+                  if let u = resolvedDownloadURL, let host = URL(string: u)?.host { return host }
+                  return "-"
+              }
+
+              public var resolvedDownloadURL: String? {
+                  return ipaUrl ?? downloadURL ?? down ?? archiveUrl ?? githubUrl
+              }
+
+              /// How complete this entry is - used when the same app comes from several repos.
+              public var metadataScore: Int {
+                  var s = 0
+                  if (description?.count ?? 0) > 10 { s += 3 }
+                  if (size ?? 0) > 0 || (ipaSize?.isEmpty == false) { s += 2 }
+                  if icon != nil { s += 1 }
+                  if resolvedDownloadURL != nil { s += 3 }
+                  if (screenshots?.isEmpty == false) { s += 1 }
+                  if developerName != nil { s += 1 }
+                  if version != nil { s += 1 }
+                  return s
+              }
+          }
+
+          struct DownloadRepository: Codable, Identifiable, Hashable {
+              let id: String
+              let name: String
+              let feedURL: String
+              let homepage: String
+              let enabled: Bool
+              let maxGB: Double
+
+              init(id: String, name: String, feedURL: String, homepage: String, enabled: Bool = true, maxGB: Double = 250) {
+                  self.id = id
+                  self.name = name
+                  self.feedURL = feedURL
+                  self.homepage = homepage
+                  self.enabled = enabled
+                  self.maxGB = maxGB
+              }
+          }
+
+          struct DownloadQuota: Codable, Identifiable, Hashable {
+              let id: String
+              let totalBytes: Int64
+              let usedBytes: Int64
+              var freeBytes: Int64 { max(0, totalBytes - usedBytes) }
+              var freeGB: Double { Double(freeBytes) / 1_073_741_824.0 }
+              var usedGB: Double { Double(usedBytes) / 1_073_741_824.0 }
+              var totalGB: Double { Double(totalBytes) / 1_073_741_824.0 }
+          }
           VIPEOF
+
       - name: Generate code - Repositories.swift
         run: |
           cat > Repositories.swift << 'VIPEOF'
@@ -527,8 +851,8 @@ jobs:
               @Published private(set) var quota: DownloadQuota
               @Published private(set) var totalAppsAvailable: Int = 0
 
-              private let keyRepos = "repositories.v2"
-              private let keyQuota = "quota.v2"
+              private let keyRepos = "repositories.v1"
+              private let keyQuota = "quota.v1"
               private let d = UserDefaults.standard
 
               private init() {
@@ -1527,26 +1851,128 @@ jobs:
           // ================= Store Feed (no local cache) =================
           @MainActor
           final class StoreFeed: ObservableObject {
-              @Published var apps:[StoreAPIApp]=[]; @Published var isLoading=false; @Published var lastError:String?; @Published var lastUpdated:String?; @Published var totalAvailable=0
-              private let repos=RepositoriesStore.shared
-              init(){Task{await refresh()}}
-              func refresh() async { isLoading=true; lastError=nil; do { let merged=try await fetchMergedFromAllRepos(); let enriched=await MetadataEnricher.enrichAll(merged.apps); apps=enriched; lastUpdated=merged.lastUpdated; totalAvailable=enriched.count; repos.updateTotalApps(enriched.count) } catch { lastError=error.localizedDescription }; isLoading=false }
-              private func fetchMergedFromAllRepos() async throws -> StoreAPIResponse {
-                  let enabled=repos.repositories.filter{$0.enabled}; var combined:[StoreAPIApp]=[]; var seen=Set<String>(); var latest:String?; var first:Error?
-                  await withTaskGroup(of:(DownloadRepository,StoreAPIResponse?,Error?).self){group in
-                      for repo in enabled { group.addTask { do { guard let u=URL(string:repo.feedURL) else {throw URLError(.badURL)}; var r=URLRequest(url:u,cachePolicy:.reloadIgnoringLocalCacheData,timeoutInterval:30); r.setValue("ONEs-iOS/2.0",forHTTPHeaderField:"User-Agent"); r.setValue("application/json,text/plain,*/*",forHTTPHeaderField:"Accept"); let(data,res)=try await URLSession.shared.data(for:r); if let h=res as? HTTPURLResponse,!(200...299).contains(h.statusCode){throw NSError(domain:"StoreFeed",code:h.statusCode,userInfo:[NSLocalizedDescriptionKey:"HTTP \(h.statusCode) from \(repo.name)"])}; return(repo,try JSONDecoder().decode(StoreAPIResponse.self,from:data),nil) } catch { return(repo,nil,error) } } }
-                      for await(repo,response,error) in group { if let response { for raw in response.apps { var app=raw; if app.host?.isEmpty != false { app.host=repo.name }; let key=app.bundleId?.lowercased() ?? "n_\(app.id)_\(app.name.lowercased())"; if !seen.contains(key){seen.insert(key);combined.append(app)} }; if let u=response.lastUpdated,latest==nil || u > latest! {latest=u} } else if let error,first==nil {first=error} }
-                  }
-                  if combined.isEmpty,let first{throw first}; combined.sort{($0.createdAt ?? $0.updatedAt ?? $0.versionDate ?? "") > ($1.createdAt ?? $1.updatedAt ?? $1.versionDate ?? "")}; return StoreAPIResponse(lastUpdated:latest,apps:combined)
-              }
-              func search(_ q:String)->[StoreAPIApp]{let x=q.trimmingCharacters(in:.whitespacesAndNewlines).lowercased(); if x.isEmpty{return apps}; return apps.filter{$0.name.lowercased().contains(x)||($0.category?.lowercased().contains(x) ?? false)||($0.bundleId?.lowercased().contains(x) ?? false)||($0.host?.lowercased().contains(x) ?? false)||($0.developerName?.lowercased().contains(x) ?? false)}}
-          }
+              @Published var apps: [StoreAPIApp] = []
+              @Published var isLoading: Bool = false
+              @Published var lastError: String?
+              @Published var lastUpdated: String?
+              @Published var totalAvailable: Int = 0
 
-          enum MetadataEnricher {
-              static func enrichAll(_ apps:[StoreAPIApp]) async->[StoreAPIApp]{await withTaskGroup(of:StoreAPIApp.self,returning:[StoreAPIApp].self){g in for app in apps{g.addTask{await enrich(app)}};var out:[StoreAPIApp]=[];for await app in g{out.append(app)};return out}}
-              static func enrich(_ original:StoreAPIApp) async->StoreAPIApp { var app=original; if let u=app.detailURL,let url=URL(string:u),url.scheme?.hasPrefix("http")==true { if let(data,res)=try? await URLSession.shared.data(from:url),let h=res as? HTTPURLResponse,(200...299).contains(h.statusCode){let html=String(data:data,encoding:.utf8) ?? ""; if app.description?.isEmpty != false {app=copy(app,description:meta(html,["description","og:description","twitter:description"]))} } }; if (app.size ?? 0)<=0,let u=app.resolvedDownloadURL,let url=URL(string:u),url.scheme?.hasPrefix("http")==true { var r=URLRequest(url:url,timeoutInterval:15);r.httpMethod="HEAD";if let(_,res)=try? await URLSession.shared.data(for:r),let h=res as? HTTPURLResponse,let n=Double(h.value(forHTTPHeaderField:"Content-Length") ?? ""),n>0{app=copy(app,size:n)} }; return app }
-              private static func meta(_ html:String,_ names:[String])->String?{for name in names{let e=NSRegularExpression.escapedPattern(for:name);for p in ["<meta[^>]+(?:name|property)\\s*=\\s*[\\\"']"+e+"[\\\"'][^>]+content\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']","<meta[^>]+content\\s*=\\s*[\\\"']([^\\\"']+)[\\\"'][^>]+(?:name|property)\\s*=\\s*[\\\"']"+e+"[\\\"']"]{if let re=try? NSRegularExpression(pattern:p,options:.caseInsensitive),let m=re.firstMatch(in:html,range:NSRange(html.startIndex...,in:html)),let rr=Range(m.range(at:1),in:html){return String(html[rr]).replacingOccurrences(of:"&amp;",with:"&")}}};return nil}
-              private static func copy(_ a:StoreAPIApp,description:String?=nil,size:Double?=nil)->StoreAPIApp{return StoreAPIApp(id:a.id,name:a.name,bundleId:a.bundleId,bundleVersion:a.bundleVersion,ipaSize:a.ipaSize,githubUrl:a.githubUrl,archiveUrl:a.archiveUrl,ipaUrl:a.ipaUrl,host:a.host,icon:a.icon,description:description ?? a.description,screenshots:a.screenshots,category:a.category,createdAt:a.createdAt,updatedAt:a.updatedAt,downloadURL:a.downloadURL,down:a.down,iconURL:a.iconURL,localizedDescription:a.localizedDescription,developerName:a.developerName,version:a.version,versionDate:a.versionDate,fullDate:a.fullDate,size:size ?? a.size,type:a.type,detailURL:a.detailURL,sourceURL:a.sourceURL)}
+              private let repos = RepositoriesStore.shared
+              private let pageSize = AppConstants.feedPageSize
+
+              init() {
+                  Task { await refresh() }
+              }
+
+              func refresh() async {
+                  isLoading = true
+                  lastError = nil
+                  do {
+                      let merged = try await fetchMergedFromAllRepos()
+                      self.apps = merged.apps
+                      self.lastUpdated = merged.lastUpdated
+                      self.totalAvailable = merged.apps.count
+                      repos.updateTotalApps(merged.apps.count)
+                  } catch {
+                      self.lastError = error.localizedDescription
+                  }
+                  isLoading = false
+              }
+
+                  private func fetchMergedFromAllRepos() async throws -> StoreAPIResponse {
+                      let enabled = repos.repositories.filter { $0.enabled }
+                      var combined: [String: StoreAPIApp] = [:]
+                      var order: [String] = []
+                      var latestUpdate: String? = nil
+                      var firstError: Error? = nil
+
+                      await withTaskGroup(of: ([StoreAPIApp], String?, Error?).self) { group in
+                          for repo in enabled {
+                              group.addTask { () -> ([StoreAPIApp], String?, Error?) in
+                                  do {
+                                      guard let url = URL(string: repo.feedURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                                          throw NSError(domain: "StoreFeed", code: -1,
+                                                        userInfo: [NSLocalizedDescriptionKey: "رابط غير صالح: \(repo.name)"])
+                                      }
+                                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+                                      req.setValue("ONEs-Store-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                                      req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+                                      let (data, response) = try await URLSession.shared.data(for: req)
+                                      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                                          throw NSError(domain: "StoreFeed", code: http.statusCode,
+                                                        userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) من \(repo.name)"])
+                                      }
+                                      let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+                                      let rawApps = JX.appsArray(from: root)
+                                      let repoTitle = JX.sourceName(from: root) ?? repo.name
+                                      let feedUpdated = (root as? [String: Any]).flatMap {
+                                          JX.firstString($0, ["last_updated", "lastUpdated", "updated_at", "date"])
+                                      }
+                                      let parsed = rawApps.map {
+                                          StoreAPIApp(json: $0, sourceName: repoTitle, sourceURL: repo.feedURL)
+                                      }
+                                      if parsed.isEmpty {
+                                          throw NSError(domain: "StoreFeed", code: -2,
+                                                        userInfo: [NSLocalizedDescriptionKey: "لم يتم العثور على تطبيقات في \(repo.name)"])
+                                      }
+                                      return (parsed, feedUpdated, nil)
+                                  } catch {
+                                      return ([], nil, error)
+                                  }
+                              }
+                          }
+
+                          for await (apps, updated, err) in group {
+                              if let err = err, firstError == nil, apps.isEmpty { firstError = err }
+                              for app in apps {
+                                  let key = (app.bundleId?.lowercased())
+                                      ?? "n_\(app.name.lowercased())_\(app.sourceLabel.lowercased())"
+                                  if let existing = combined[key] {
+                                      // keep the richest record, but never lose fields the other one has
+                                      var best = existing.metadataScore >= app.metadataScore ? existing : app
+                                      let other = existing.metadataScore >= app.metadataScore ? app : existing
+                                      if best.description == nil || (best.description?.count ?? 0) < 10 { best.description = other.description ?? best.description }
+                                      if best.localizedDescription == nil { best.localizedDescription = other.localizedDescription }
+                                      if (best.size ?? 0) <= 0 { best.size = other.size }
+                                      if best.ipaSize == nil { best.ipaSize = other.ipaSize }
+                                      if best.icon == nil { best.icon = other.icon }
+                                      if best.screenshots == nil { best.screenshots = other.screenshots }
+                                      if best.developerName == nil { best.developerName = other.developerName }
+                                      if best.version == nil { best.version = other.version; best.bundleVersion = other.bundleVersion }
+                                      if best.category == nil { best.category = other.category }
+                                      if best.ipaUrl == nil { best.ipaUrl = other.ipaUrl; best.downloadURL = other.downloadURL; best.down = other.down }
+                                      combined[key] = best
+                                  } else {
+                                      combined[key] = app
+                                      order.append(key)
+                                  }
+                              }
+                              if let u = updated, (latestUpdate == nil || u > latestUpdate!) { latestUpdate = u }
+                          }
+                      }
+
+                      if combined.isEmpty, let err = firstError { throw err }
+
+                      let merged = order.compactMap { combined[$0] }
+                      let sorted = merged.sorted { (a, b) in
+                          let da = a.createdAt ?? a.updatedAt ?? a.versionDate ?? ""
+                          let db = b.createdAt ?? b.updatedAt ?? b.versionDate ?? ""
+                          if da == db { return a.name.lowercased() < b.name.lowercased() }
+                          return da > db
+                      }
+
+                      return StoreAPIResponse(lastUpdated: latestUpdate, apps: sorted)
+                  }
+
+              func search(_ query: String) -> [StoreAPIApp] {
+                  let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                  if q.isEmpty { return apps }
+                  return apps.filter {
+                      $0.name.lowercased().contains(q)
+                      || ($0.category?.lowercased().contains(q) ?? false)
+                      || ($0.bundleId?.lowercased().contains(q) ?? false)
+                  }
+              }
           }
 
           // ================= STORE ROOT =================
@@ -2311,28 +2737,172 @@ jobs:
           struct ONEsAppStatsRow: View {
               let app: StoreAPIApp
 
-              private var sourceName: String {
-                  return (app.host ?? "-").capitalized
-              }
-
               var body: some View {
                   HStack {
-                      StatCell(top: "v\(app.bundleVersion ?? "-")", bottom: "الإصدار")
+                      StatCell(top: app.displayVersion, bottom: "الإصدار")
                       Divider().frame(height: 40)
                       StatCell(top: app.cleanSize, bottom: "الحجم")
                       Divider().frame(height: 40)
-                      StatCell(top: sourceName, bottom: "المصدر")
+                      StatCell(top: app.sourceLabel, bottom: "المصدر")
                   }
               }
           }
 
           // ================= INSTALLER =================
-          @MainActor final class StoreInstaller:ObservableObject{
-              static let shared=MainActor.assumeIsolated{StoreInstaller()};@Published var isWorking=false;private init(){}
-              func install(app:StoreAPIApp){isWorking=true;StatusCenter.shared.show(text:"جارٍ تجهيز التثبيت عبر السيرفر…");send(app,"/api/public/store/install-by-source")}
-              private func send(_ app:StoreAPIApp,_ path:String){guard let url=URL(string:ActivationManager.codesSiteBase+path)else{isWorking=false;return};var r=URLRequest(url:url,timeoutInterval:90);r.httpMethod="POST";r.setValue("application/json",forHTTPHeaderField:"Content-Type");r.httpBody=try? JSONSerialization.data(withJSONObject:["bundle_id":app.bundleId ?? "","name":app.name,"version":app.bundleVersion ?? app.version ?? "","ipa_url":app.resolvedDownloadURL ?? "","source_url":app.sourceURL ?? app.detailURL ?? "","detail_url":app.detailURL ?? "","source":app.host ?? "","udid":ActivationManager.shared.deviceID,"code":ActivationManager.shared.code]);URLSession.shared.dataTask(with:r){data,res,error in DispatchQueue.main.async{guard let data,let obj=try? JSONSerialization.jsonObject(with:data) as? [String:Any] else{self.fallback(app,error);return};if let u=self.url(obj){self.isWorking=false;UIApplication.shared.open(u);StatusCenter.shared.show(text:"جارٍ التثبيت على جهازك…");return};let code=(res as? HTTPURLResponse)?.statusCode ?? 0;if code==404 || code==405{self.fallback(app,nil)}else{self.isWorking=false;StatusCenter.shared.show(text:(obj["message"] as? String) ?? "السيرفر لم يعطِ رابط تثبيت")}}}.resume()}
-              private func fallback(_ app:StoreAPIApp,_ error:Error?){guard let url=URL(string:ActivationManager.codesSiteBase+"/api/public/store/install-by-bundle")else{isWorking=false;return};var r=URLRequest(url:url,timeoutInterval:60);r.httpMethod="POST";r.setValue("application/json",forHTTPHeaderField:"Content-Type");r.httpBody=try? JSONSerialization.data(withJSONObject:["bundle_id":app.bundleId ?? "","name":app.name,"udid":ActivationManager.shared.deviceID,"code":ActivationManager.shared.code,"ipa_url":app.resolvedDownloadURL ?? "","source_url":app.sourceURL ?? app.detailURL ?? "","source":app.host ?? ""]);URLSession.shared.dataTask(with:r){data,_,_ in DispatchQueue.main.async{self.isWorking=false;guard let data,let obj=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let u=self.url(obj)else{StatusCenter.shared.show(text:error?.localizedDescription ?? "تعذر تجهيز التثبيت من السيرفر");return};UIApplication.shared.open(u)}}.resume()}
-              private func url(_ o:[String:Any])->URL?{for k in ["install_url","installURL","ota_url","manifest_url"]{if let s=o[k] as? String,let u=URL(string:s){return u}};return nil}
+          @MainActor
+          final class StoreInstaller: ObservableObject {
+              static let shared = MainActor.assumeIsolated { StoreInstaller() }
+              @Published var isWorking: Bool = false
+              private init() {}
+
+              func install(app: StoreAPIApp) {
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
+                  fetchCertificate { _ in
+                      // even without a certificate record we still ask the server to build the install link
+                      self.performInstall(app: app)
+                  }
+              }
+
+              func install(bundleId: String?, name: String) {
+                  var app = StoreAPIApp(json: ["name": name])
+                  app.bundleId = bundleId
+                  install(app: app)
+              }
+
+              func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
+                      done(nil); return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 25)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                      "udid": ActivationManager.shared.deviceID,
+                      "code": ActivationManager.shared.code
+                  ])
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      var result: [String: Any]? = nil
+                      if let data = data,
+                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                         (obj["ok"] as? Bool) == true {
+                          result = obj["certificate"] as? [String: Any]
+                      }
+                      DispatchQueue.main.async { done(result) }
+                  }.resume()
+              }
+
+              /// Sends the full app metadata (including the source download URL) so the
+              /// server can sign / build a manifest even for apps coming from external repos.
+              private func performInstall(app: StoreAPIApp) {
+                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else {
+                      fallbackInstall(app: app, message: nil)
+                      return
+                  }
+                  isWorking = true
+                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت عبر السيرفر...")
+
+                  var payload: [String: Any] = [
+                      "bundle_id": app.bundleId ?? "",
+                      "name": app.name,
+                      "udid": ActivationManager.shared.deviceID,
+                      "code": ActivationManager.shared.code,
+                      "version": app.version ?? app.bundleVersion ?? "",
+                      "source": app.sourceLabel,
+                      "source_url": app.sourceURL ?? "",
+                      "icon_url": app.icon ?? "",
+                      "description": app.cleanDescription
+                  ]
+                  if let d = app.resolvedDownloadURL { payload["download_url"] = d; payload["ipa_url"] = d }
+                  if let s = app.size { payload["size"] = Int64(s) }
+
+                  var req = URLRequest(url: url, timeoutInterval: 40)
+                  req.httpMethod = "POST"
+                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      DispatchQueue.main.async {
+                          self.isWorking = false
+                          guard let data = data,
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                              self.fallbackInstall(app: app, message: "تعذّر الاتصال بسيرفر المتجر")
+                              return
+                          }
+                          if let installURL = obj["install_url"] as? String, let u = URL(string: installURL) {
+                              UIApplication.shared.open(u)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                              return
+                          }
+                          if let manifest = (obj["manifest_url"] as? String) ?? (obj["manifest"] as? String),
+                             let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(manifest)) {
+                              UIApplication.shared.open(u)
+                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                              return
+                          }
+                          self.fallbackInstall(app: app, message: obj["message"] as? String)
+                      }
+                  }.resume()
+              }
+
+              /// Direct install straight from the repository entry when the server has no record.
+              private func fallbackInstall(app: StoreAPIApp, message: String?) {
+                  isWorking = false
+                  guard let raw = app.resolvedDownloadURL, !raw.isEmpty else {
+                      StatusCenter.shared.show(text: message ?? "لا يوجد رابط تثبيت لهذا التطبيق في المصدر")
+                      return
+                  }
+
+                  // already an OTA link
+                  if raw.hasPrefix("itms-services://") {
+                      if let u = URL(string: raw) { UIApplication.shared.open(u) }
+                      StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                      return
+                  }
+
+                  // repository provides an Apple manifest directly
+                  if raw.lowercased().hasSuffix(".plist") {
+                      if let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(raw)) {
+                          UIApplication.shared.open(u)
+                          StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
+                      }
+                      return
+                  }
+
+                  // ask our server to wrap the external IPA into a manifest, then install
+                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/manifest")
+                  comps?.queryItems = [
+                      URLQueryItem(name: "url", value: raw),
+                      URLQueryItem(name: "name", value: app.name),
+                      URLQueryItem(name: "bundle_id", value: app.bundleId ?? ""),
+                      URLQueryItem(name: "version", value: app.version ?? app.bundleVersion ?? "1.0"),
+                      URLQueryItem(name: "icon", value: app.icon ?? ""),
+                      URLQueryItem(name: "udid", value: ActivationManager.shared.deviceID)
+                  ]
+                  if let manifestURL = comps?.url?.absoluteString,
+                     let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(manifestURL)) {
+                      UIApplication.shared.open(u) { opened in
+                          if !opened, let direct = URL(string: raw) {
+                              UIApplication.shared.open(direct)
+                          }
+                      }
+                      StatusCenter.shared.show(text: "جارٍ التثبيت من المصدر \(app.sourceLabel)...")
+                      return
+                  }
+
+                  if let direct = URL(string: raw) {
+                      UIApplication.shared.open(direct)
+                      StatusCenter.shared.show(text: "تم فتح رابط التحميل من المصدر")
+                  } else {
+                      StatusCenter.shared.show(text: message ?? "التثبيت غير متاح حاليًا")
+                  }
+              }
+
+              private static func encoded(_ s: String) -> String {
+                  var allowed = CharacterSet.alphanumerics
+                  allowed.insert(charactersIn: "-._~")
+                  return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
+              }
           }
 
           // ================= HOME VIEW =================
