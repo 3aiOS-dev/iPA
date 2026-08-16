@@ -514,23 +514,6 @@ jobs:
               let size: Double?
               let type: Int?
 
-               init(
-                   id: Int, name: String, bundleId: String?, bundleVersion: String?, ipaSize: String?,
-                   githubUrl: String?, archiveUrl: String?, ipaUrl: String?, host: String?, icon: String?,
-                   description: String?, screenshots: [String]?, category: String?, createdAt: String?,
-                   updatedAt: String?, downloadURL: String?, down: String?, iconURL: String?,
-                   localizedDescription: String?, developerName: String?, version: String?, versionDate: String?,
-                   fullDate: String?, size: Double?, type: Int?
-               ) {
-                   self.id=id; self.name=name; self.bundleId=bundleId; self.bundleVersion=bundleVersion
-                   self.ipaSize=ipaSize; self.githubUrl=githubUrl; self.archiveUrl=archiveUrl; self.ipaUrl=ipaUrl
-                   self.host=host; self.icon=icon; self.description=description; self.screenshots=screenshots
-                   self.category=category; self.createdAt=createdAt; self.updatedAt=updatedAt
-                   self.downloadURL=downloadURL; self.down=down; self.iconURL=iconURL
-                   self.localizedDescription=localizedDescription; self.developerName=developerName
-                   self.version=version; self.versionDate=versionDate; self.fullDate=fullDate; self.size=size; self.type=type
-               }
-
               enum CodingKeys: String, CodingKey {
                   case id, name
                   case bundleId = "bundle_id"
@@ -648,46 +631,6 @@ jobs:
               }
           }
 
-           extension StoreAPIApp {
-               static func alakbar(
-                   id: Int,
-                   name: String,
-                   category: String,
-                   sizeText: String?,
-                   iconURL: String?,
-                   pageURL: String,
-                   description: String?
-               ) -> StoreAPIApp {
-                   StoreAPIApp(
-                       id: id,
-                       name: name,
-                       bundleId: nil,
-                       bundleVersion: nil,
-                       ipaSize: sizeText,
-                       githubUrl: nil,
-                       archiveUrl: nil,
-                       ipaUrl: nil,
-                       host: "الأكبر ستور",
-                       icon: iconURL,
-                       description: description ?? "تطبيق من الأكبر ستور",
-                       screenshots: nil,
-                       category: category,
-                       createdAt: nil,
-                       updatedAt: nil,
-                       downloadURL: pageURL,
-                       down: pageURL,
-                       iconURL: iconURL,
-                       localizedDescription: description,
-                       developerName: "الأكبر ستور",
-                       version: nil,
-                       versionDate: nil,
-                       fullDate: nil,
-                       size: nil,
-                       type: 0
-                   )
-               }
-           }
-
           struct DownloadRepository: Codable, Identifiable, Hashable {
               let id: String
               let name: String
@@ -736,32 +679,22 @@ jobs:
               private let d = UserDefaults.standard
 
               private init() {
-                  let savedQuota: DownloadQuota
                   if let data = d.data(forKey: keyQuota),
                      let decoded = try? JSONDecoder().decode(DownloadQuota.self, from: data) {
-                      savedQuota = decoded
+                      self.quota = decoded
                   } else {
-                      savedQuota = DownloadQuota(id: "user-quota", totalBytes: Int64(1000) * 1_073_741_824, usedBytes: 0)
+                      self.quota = DownloadQuota(
+                          id: "user-quota",
+                          totalBytes: Int64(1000) * 1_073_741_824,
+                          usedBytes: 0
+                      )
                   }
 
-                  let alakbar = DownloadRepository(
-                      id: "alakbar-store",
-                      name: "الأكبر ستور",
-                      feedURL: "https://alakbar-store.com/browse-apps?page=1",
-                      homepage: "https://alakbar-store.com",
-                      enabled: true,
-                      maxGB: 500
-                  )
-
-                  let savedRepos: [DownloadRepository]
                   if let data = d.data(forKey: keyRepos),
                      let decoded = try? JSONDecoder().decode([DownloadRepository].self, from: data) {
-                      var list = decoded
-                      let hasAlakbar = list.contains { repository in repository.id == "alakbar-store" }
-                      if !hasAlakbar { list.append(alakbar) }
-                      savedRepos = list
+                      self.repositories = decoded
                   } else {
-                      savedRepos = [
+                      self.repositories = [
                           DownloadRepository(
                               id: "21s-admin-panel",
                               name: "ONEs",
@@ -777,22 +710,24 @@ jobs:
                               homepage: "https://21s.app",
                               enabled: true,
                               maxGB: 500
-                          ),
-                          alakbar
+                          )
                       ]
                   }
 
-                  self.quota = savedQuota
-                  self.repositories = savedRepos
                   self.persistRepositories()
                   self.persistQuota()
               }
 
-              func totalMaxGB() -> Double { repositories.filter { $0.enabled }.reduce(0) { $0 + $1.maxGB } }
+              func totalMaxGB() -> Double {
+                  repositories.filter { $0.enabled }.reduce(0) { $0 + $1.maxGB }
+              }
 
               func setEnabled(_ enabled: Bool, for repo: DownloadRepository) {
                   guard let idx = repositories.firstIndex(where: { $0.id == repo.id }) else { return }
-                  repositories[idx] = DownloadRepository(id: repo.id, name: repo.name, feedURL: repo.feedURL, homepage: repo.homepage, enabled: enabled, maxGB: repo.maxGB)
+                  repositories[idx] = DownloadRepository(
+                      id: repo.id, name: repo.name, feedURL: repo.feedURL,
+                      homepage: repo.homepage, enabled: enabled, maxGB: repo.maxGB
+                  )
                   persistRepositories()
               }
 
@@ -802,18 +737,33 @@ jobs:
               }
 
               func addUsedBytes(_ bytes: Int64) {
-                  quota = DownloadQuota(id: quota.id, totalBytes: quota.totalBytes, usedBytes: quota.usedBytes + bytes)
+                  let updated = DownloadQuota(id: quota.id, totalBytes: quota.totalBytes, usedBytes: quota.usedBytes + bytes)
+                  quota = updated
                   persistQuota()
               }
 
-              func updateTotalApps(_ count: Int) { totalAppsAvailable = count }
+              func updateTotalApps(_ count: Int) {
+                  totalAppsAvailable = count
+              }
+
+              // New method to add a repository
+              func addRepository(name: String, feedURL: String, homepage: String = "", enabled: Bool = true, maxGB: Double = 250) {
+                  let id = UUID().uuidString
+                  let repo = DownloadRepository(id: id, name: name, feedURL: feedURL, homepage: homepage.isEmpty ? feedURL : homepage, enabled: enabled, maxGB: maxGB)
+                  repositories.append(repo)
+                  persistRepositories()
+              }
 
               private func persistRepositories() {
-                  if let data = try? JSONEncoder().encode(repositories) { d.set(data, forKey: keyRepos) }
+                  if let data = try? JSONEncoder().encode(repositories) {
+                      d.set(data, forKey: keyRepos)
+                  }
               }
 
               private func persistQuota() {
-                  if let data = try? JSONEncoder().encode(quota) { d.set(data, forKey: keyQuota) }
+                  if let data = try? JSONEncoder().encode(quota) {
+                      d.set(data, forKey: keyQuota)
+                  }
               }
           }
           VIPEOF
@@ -1525,7 +1475,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift (no favorites, dynamic dark/light, fixed storePrimaryDk)
+      # SOURCE CODE - StoreView.swift (dynamic dark/light, repositories tab)
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -1721,114 +1671,7 @@ jobs:
               return .storePrimary
           }
 
-          // ================= Alakbar HTML crawler =================
-          enum AlakbarHTMLFeed {
-              static let baseURL = "https://alakbar-store.com/browse-apps"
-              static let knownCategories = [
-                  "التواصل الإجتماعي", "العاب", "المونتاج و التصميم",
-                  "تطبيقات إسلامية", "تطبيقات متنوعة", "قنوات و الأفلام"
-              ]
-
-              static func fetchAll() async throws -> [StoreAPIApp] {
-                  var result: [StoreAPIApp] = []
-                  var seen = Set<String>()
-                  var emptyPages = 0
-
-                  for page in 1...100 {
-                      guard let url = URL(string: "\(baseURL)?page=\(page)") else { continue }
-                      var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                      request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                      let (data, response) = try await URLSession.shared.data(for: request)
-                      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                          if page == 1 { throw NSError(domain: "AlakbarStore", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]) }
-                          break
-                      }
-                      guard let html = String(data: data, encoding: .utf8) else { continue }
-                      let apps = parsePage(html: html, pageURL: url)
-                      if apps.isEmpty {
-                          emptyPages += 1
-                          if page > 1 && emptyPages >= 1 { break }
-                      } else {
-                          emptyPages = 0
-                          for app in apps {
-                              let key = app.name.lowercased()
-                              if !seen.contains(key) { seen.insert(key); result.append(app) }
-                          }
-                      }
-                  }
-                  return result
-              }
-
-              private static func parsePage(html: String, pageURL: URL) -> [StoreAPIApp] {
-                  let anchors = allMatches(pattern: #"(?is)<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>"#, in: html)
-                  var apps: [StoreAPIApp] = []
-                  for match in anchors {
-                      let href = decode(match.1, base: pageURL)
-                      let body = match.1
-                      let plain = stripTags(body)
-                      let lower = plain.lowercased()
-                      guard lower.contains("get") else { continue }
-                      guard let size = firstMatch(pattern: #"(\d+(?:\.\d+)?)\s*(MB|GB)"#, in: plain) else { continue }
-                      let category = knownCategories.first { plain.contains($0) } ?? "تطبيقات متنوعة"
-                      var name = plain
-                      name = name.replacingOccurrences(of: size.0, with: "")
-                      name = name.replacingOccurrences(of: "GET", with: "", options: String.CompareOptions.caseInsensitive)
-                      name = name.replacingOccurrences(of: category, with: "")
-                      name = clean(name)
-                      guard !name.isEmpty else { continue }
-                      let icon = firstMatch(pattern: #"(?is)<img\b[^>]*(?:src|data-src)\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#, in: body).map { decode($0.0, base: pageURL) }
-                      let id = abs(name.hashValue)
-                      apps.append(.alakbar(id: id, name: name, category: category, sizeText: size.0, iconURL: icon, pageURL: href, description: "من الأكبر ستور • \(category)"))
-                  }
-                  return apps
-              }
-
-              private static func allMatches(pattern: String, in text: String) -> [(String,String)] {
-                  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-                  let ns = text as NSString
-                  return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).compactMap {
-                      guard $0.numberOfRanges >= 3,
-                            let a = Range($0.range(at: 1), in: text),
-                            let b = Range($0.range(at: 2), in: text) else { return nil }
-                      return (String(text[a]), String(text[b]))
-                  }
-              }
-
-              private static func firstMatch(pattern: String, in text: String) -> (String,String)? {
-                  guard let regex = try? NSRegularExpression(pattern: pattern),
-                        let m = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)),
-                        m.numberOfRanges >= 3,
-                        let a = Range(m.range(at: 0), in: text),
-                        let b = Range(m.range(at: 1), in: text) else { return nil }
-                  return (String(text[a]), String(text[b]))
-              }
-
-              private static func stripTags(_ value: String) -> String {
-                  guard let regex = try? NSRegularExpression(pattern: "(?is)<[^>]+>") else { return clean(value) }
-                  let s = regex.stringByReplacingMatches(in: value, range: NSRange(location: 0, length: (value as NSString).length), withTemplate: " ")
-                  return clean(decodeEntities(s))
-              }
-
-              private static func decode(_ value: String, base: URL) -> String {
-                  let decoded = decodeEntities(value)
-                  return URL(string: decoded, relativeTo: base)?.absoluteURL.absoluteString ?? decoded
-              }
-
-              private static func decodeEntities(_ value: String) -> String {
-                  value.replacingOccurrences(of: "&amp;", with: "&")
-                      .replacingOccurrences(of: "&quot;", with: "\"")
-                      .replacingOccurrences(of: "&#39;", with: "'")
-                      .replacingOccurrences(of: "&lt;", with: "<")
-                      .replacingOccurrences(of: "&gt;", with: ">")
-                      .replacingOccurrences(of: "&nbsp;", with: " ")
-              }
-
-              private static func clean(_ value: String) -> String {
-                  value.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
-              }
-          }
-
-          // ================= Store Feed (JSON repositories + Alakbar HTML) =================
+          // ================= Store Feed (no local cache) =================
           @MainActor
           final class StoreFeed: ObservableObject {
               @Published var apps: [StoreAPIApp] = []
@@ -1838,8 +1681,11 @@ jobs:
               @Published var totalAvailable: Int = 0
 
               private let repos = RepositoriesStore.shared
+              private let pageSize = AppConstants.feedPageSize
 
-              init() { Task { await refresh() } }
+              init() {
+                  Task { await refresh() }
+              }
 
               func refresh() async {
                   isLoading = true
@@ -1865,51 +1711,59 @@ jobs:
 
                   await withTaskGroup(of: (StoreAPIResponse?, Error?).self) { group in
                       for repo in enabled {
-                          if repo.id == "alakbar-store" {
-                              group.addTask {
-                                  do { return (StoreAPIResponse(lastUpdated: ISO8601DateFormatter().string(from: Date()), apps: try await AlakbarHTMLFeed.fetchAll()), nil) }
-                                  catch { return (nil, error) }
-                              }
-                          } else {
-                              group.addTask {
-                                  do {
-                                      guard let url = URL(string: repo.feedURL) else { throw URLError(.badURL) }
-                                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                                      req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                                      let (data, response) = try await URLSession.shared.data(for: req)
-                                      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                                          throw NSError(domain: "StoreFeed", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from \(repo.name)"])
-                                      }
-                                      return (try JSONDecoder().decode(StoreAPIResponse.self, from: data), nil)
-                                  } catch { return (nil, error) }
+                          group.addTask { () -> (StoreAPIResponse?, Error?) in
+                              do {
+                                  var req = URLRequest(url: URL(string: repo.feedURL)!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+                                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                                  let (data, response) = try await URLSession.shared.data(for: req)
+                                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                                      throw NSError(domain: "StoreFeed", code: http.statusCode,
+                                                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from \(repo.name)"])
+                                  }
+                                  let parsed = try JSONDecoder().decode(StoreAPIResponse.self, from: data)
+                                  return (parsed, nil)
+                              } catch {
+                                  return (nil, error)
                               }
                           }
                       }
-
                       for await (resp, err) in group {
                           if let resp = resp {
                               for app in resp.apps {
                                   let key = app.bundleId?.lowercased() ?? "n_\(app.id)_\(app.name.lowercased())"
-                                  if !seen.contains(key) { seen.insert(key); combined.append(app) }
+                                  if !seen.contains(key) {
+                                      seen.insert(key)
+                                      combined.append(app)
+                                  }
                               }
-                              if let u = resp.lastUpdated, (latestUpdate == nil || u > latestUpdate!) { latestUpdate = u }
-                          } else if let err = err, firstError == nil { firstError = err }
+                              if let u = resp.lastUpdated, (latestUpdate == nil || u > latestUpdate!) {
+                                  latestUpdate = u
+                              }
+                          } else if let err = err, firstError == nil {
+                              firstError = err
+                          }
                       }
                   }
 
                   if combined.isEmpty, let err = firstError { throw err }
-                  let sorted = combined.sorted { (a, b) in
+
+                  let sort = combined.sorted { (a, b) in
                       let da = a.createdAt ?? a.updatedAt ?? a.versionDate ?? ""
                       let db = b.createdAt ?? b.updatedAt ?? b.versionDate ?? ""
                       return da > db
                   }
-                  return StoreAPIResponse(lastUpdated: latestUpdate, apps: sorted)
+
+                  return StoreAPIResponse(lastUpdated: latestUpdate, apps: sort)
               }
 
               func search(_ query: String) -> [StoreAPIApp] {
                   let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                   if q.isEmpty { return apps }
-                  return apps.filter { $0.name.lowercased().contains(q) || ($0.category?.lowercased().contains(q) ?? false) || ($0.bundleId?.lowercased().contains(q) ?? false) }
+                  return apps.filter {
+                      $0.name.lowercased().contains(q)
+                      || ($0.category?.lowercased().contains(q) ?? false)
+                      || ($0.bundleId?.lowercased().contains(q) ?? false)
+                  }
               }
           }
 
@@ -1945,6 +1799,17 @@ jobs:
                                   }
                               }
                               .tag(1)
+
+                          RepositoriesView()
+                              .tabItem {
+                                  VStack(spacing: 2) {
+                                      Image(systemName: "folder")
+                                          .font(.system(size: 20))
+                                      Text(LS("المصادر"))
+                                          .font(.system(size: 10, weight: .semibold))
+                                  }
+                              }
+                              .tag(2)
                       }
                       .tint(Color.storePrimary)
 
@@ -1958,6 +1823,117 @@ jobs:
                   .environment(\.locale, lang.locale)
                   .environment(\.layoutDirection, lang.layout)
                   .id(lang.isArabic)
+              }
+          }
+
+          // ================= REPOSITORIES VIEW =================
+          struct RepositoriesView: View {
+              @ObservedObject private var repos = RepositoriesStore.shared
+              @State private var newFeedURL: String = ""
+              @State private var newName: String = ""
+              @State private var showingAddSheet = false
+              @State private var errorMessage: String?
+
+              var body: some View {
+                  NavigationView {
+                      List {
+                          ForEach(repos.repositories) { repo in
+                              HStack {
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text(repo.name)
+                                          .font(.headline)
+                                          .foregroundColor(Color.storeText)
+                                      Text(repo.feedURL)
+                                          .font(.caption)
+                                          .foregroundColor(Color.storeSub)
+                                          .lineLimit(2)
+                                  }
+                                  Spacer()
+                                  Toggle("", isOn: Binding(
+                                      get: { repo.enabled },
+                                      set: { _ in repos.setEnabled(!repo.enabled, for: repo) }
+                                  ))
+                                  .toggleStyle(SwitchToggleStyle(tint: Color.storePrimary))
+                              }
+                              .padding(.vertical, 4)
+                          }
+                          .onDelete(perform: deleteRepositories)
+                      }
+                      .listStyle(PlainListStyle())
+                      .background(ONEsStoreBackground())
+                      .navigationBarTitle("المصادر", displayMode: .inline)
+                      .toolbar {
+                          ToolbarItem(placement: .navigationBarTrailing) {
+                              Button {
+                                  showingAddSheet = true
+                              } label: {
+                                  Image(systemName: "plus")
+                                      .foregroundColor(Color.storePrimary)
+                              }
+                          }
+                      }
+                      .sheet(isPresented: $showingAddSheet) {
+                          NavigationView {
+                              VStack(spacing: 20) {
+                                  TextField("اسم المصدر", text: $newName)
+                                      .textFieldStyle(RoundedBorderTextFieldStyle())
+                                      .foregroundColor(Color.storeText)
+                                  TextField("رابط المصدر (feed URL)", text: $newFeedURL)
+                                      .textFieldStyle(RoundedBorderTextFieldStyle())
+                                      .autocapitalization(.none)
+                                      .foregroundColor(Color.storeText)
+                                  if let error = errorMessage {
+                                      Text(error)
+                                          .foregroundColor(.red)
+                                          .font(.caption)
+                                  }
+                                  Button {
+                                      guard !newName.isEmpty, !newFeedURL.isEmpty, URL(string: newFeedURL) != nil else {
+                                          errorMessage = "الرجاء إدخال اسم ورابط صحيح"
+                                          return
+                                      }
+                                      repos.addRepository(name: newName, feedURL: newFeedURL)
+                                      newName = ""
+                                      newFeedURL = ""
+                                      errorMessage = nil
+                                      showingAddSheet = false
+                                      // Force refresh feed
+                                      Task {
+                                          await StoreFeed().refresh()
+                                      }
+                                  } label: {
+                                      Text("إضافة المصدر")
+                                          .font(.headline)
+                                          .foregroundColor(.white)
+                                          .padding()
+                                          .frame(maxWidth: .infinity)
+                                          .background(Color.storePrimary)
+                                          .cornerRadius(10)
+                                  }
+                                  .padding(.horizontal)
+                                  Spacer()
+                              }
+                              .padding()
+                              .navigationBarTitle("إضافة مصدر", displayMode: .inline)
+                              .toolbar {
+                                  ToolbarItem(placement: .cancellationAction) {
+                                      Button("إلغاء") {
+                                          showingAddSheet = false
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  .navigationViewStyle(StackNavigationViewStyle())
+              }
+
+              private func deleteRepositories(at offsets: IndexSet) {
+                  for index in offsets {
+                      let repo = repos.repositories[index]
+                      repos.setEnabled(false, for: repo) // just disable, or remove?
+                      // For removal, we need a remove method; we'll just disable for now
+                  }
               }
           }
 
@@ -2280,26 +2256,17 @@ jobs:
                           }
                       }
                       Spacer()
-                      if app.host == "الأكبر ستور", let source = app.downloadURL ?? app.down, let url = URL(string: source) {
-                          Link(destination: url) {
-                              Text("عرض المصدر")
-                                  .font(.system(size: 12, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 14).padding(.vertical, 7)
-                                  .background(Capsule().fill(Color.storePrimary))
-                          }
-                      } else {
-                          Button {
-                              HapticManager.shared.success()
-                              StoreInstaller.shared.install(app: app)
-                          } label: {
-                              Text("تثبيت")
-                                  .font(.system(size: 12, weight: .bold))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 14).padding(.vertical, 7)
-                                  .background(Capsule().fill(Color.storePrimary))
-                          }
+                      Button {
+                          HapticManager.shared.success()
+                          StoreInstaller.shared.install(app: app)
+                      } label: {
+                          Text("تثبيت")
+                              .font(.system(size: 12, weight: .bold))
+                              .foregroundColor(.white)
+                              .padding(.horizontal, 14).padding(.vertical, 7)
+                              .background(Capsule().fill(Color.storePrimary))
                       }
+                      .buttonStyle(.plain)
                   }
                   .padding(14)
                   .background(
@@ -2384,7 +2351,7 @@ jobs:
               var body: some View {
                   ScrollView {
                       VStack(spacing: 0) {
-                          ZStack(alignment: .topLeading) {
+                          ZStack(alignment: .top) {
                               Group {
                                   if let img = UIImage.bundled("home_banner.png") {
                                       Image(uiImage: img)
@@ -2400,19 +2367,7 @@ jobs:
                               .clipped()
                               .clipShape(RoundedCorner(radius: 34, corners: [.bottomLeft, .bottomRight]))
                               .shadow(color: Color.black.opacity(0.10), radius: 10, y: 5)
-                              HStack {
-                                  Button { dismiss() } label: {
-                                      Image(systemName: "arrow.left")
-                                          .font(.system(size: 16, weight: .bold))
-                                          .foregroundColor(Color.storeText)
-                                          .frame(width: 40, height: 40)
-                                          .background(Circle().fill(Color.storeCard))
-                                          .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
-                                  }
-                                  Spacer()
-                              }
-                              .padding(.horizontal, 20)
-                              .padding(.top, 8)
+                              // No back button here – rely on swipe gesture
                           }
 
                           HStack(spacing: 14) {
@@ -2425,25 +2380,15 @@ jobs:
                                   }
                               }
                               Spacer()
-                              if app.host == "الأكبر ستور", let source = app.downloadURL ?? app.down, let url = URL(string: source) {
-                                  Link(destination: url) {
-                                      Text("عرض المصدر")
-                                          .font(.system(size: 13, weight: .bold))
-                                          .foregroundColor(.white)
-                                          .padding(.horizontal, 20).padding(.vertical, 10)
-                                          .background(Capsule().fill(Color.storePrimary))
-                                  }
-                              } else {
-                                  Button {
-                                      HapticManager.shared.success()
-                                      StoreInstaller.shared.install(app: app)
-                                  } label: {
-                                      Text("تثبيت")
-                                          .font(.system(size: 13, weight: .bold))
-                                          .foregroundColor(.white)
-                                          .padding(.horizontal, 20).padding(.vertical, 10)
-                                          .background(Capsule().fill(Color.storePrimary))
-                                  }
+                              Button {
+                                  HapticManager.shared.success()
+                                  StoreInstaller.shared.install(app: app)
+                              } label: {
+                                  Text("تثبيت")
+                                      .font(.system(size: 13, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 20).padding(.vertical, 10)
+                                      .background(Capsule().fill(Color.storePrimary))
                               }
                           }
                           .padding(16)
@@ -2486,6 +2431,7 @@ jobs:
                               .padding(.top, 4)
                           }
 
+                          // Description without formatting
                           VStack(alignment: .leading, spacing: 10) {
                               HStack {
                                   Text("الوصف")
@@ -2494,10 +2440,7 @@ jobs:
                                   Spacer()
                               }
                               Text(app.cleanDescription)
-                                  .font(.system(size: 13))
-                                  .foregroundColor(Color.storeInk.opacity(0.78))
-                                  .lineSpacing(4)
-                                  .fixedSize(horizontal: false, vertical: true)
+                                  // No formatting, just plain text
                           }
                           .padding(16)
                           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2510,6 +2453,7 @@ jobs:
                   }
                   .background(ONEsStoreBackground())
                   .navigationBarHidden(true)
+                  .navigationBarBackButtonHidden(true) // hide back button, swipe gesture still works
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
                   }
