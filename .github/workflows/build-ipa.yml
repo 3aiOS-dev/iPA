@@ -541,6 +541,60 @@ jobs:
                   case size, type
               }
 
+              init(
+                  id: Int,
+                  name: String,
+                  bundleId: String?,
+                  bundleVersion: String?,
+                  ipaSize: String?,
+                  githubUrl: String?,
+                  archiveUrl: String?,
+                  ipaUrl: String?,
+                  host: String?,
+                  icon: String?,
+                  description: String?,
+                  screenshots: [String]?,
+                  category: String?,
+                  createdAt: String?,
+                  updatedAt: String?,
+                  downloadURL: String?,
+                  down: String?,
+                  iconURL: String?,
+                  localizedDescription: String?,
+                  developerName: String?,
+                  version: String?,
+                  versionDate: String?,
+                  fullDate: String?,
+                  size: Double?,
+                  type: Int?
+              ) {
+                  self.id = id
+                  self.name = name
+                  self.bundleId = bundleId
+                  self.bundleVersion = bundleVersion
+                  self.ipaSize = ipaSize
+                  self.githubUrl = githubUrl
+                  self.archiveUrl = archiveUrl
+                  self.ipaUrl = ipaUrl
+                  self.host = host
+                  self.icon = icon
+                  self.description = description
+                  self.screenshots = screenshots
+                  self.category = category
+                  self.createdAt = createdAt
+                  self.updatedAt = updatedAt
+                  self.downloadURL = downloadURL
+                  self.down = down
+                  self.iconURL = iconURL
+                  self.localizedDescription = localizedDescription
+                  self.developerName = developerName
+                  self.version = version
+                  self.versionDate = versionDate
+                  self.fullDate = fullDate
+                  self.size = size
+                  self.type = type
+              }
+
               init(from decoder: Decoder) throws {
                   let c = try decoder.container(keyedBy: CodingKeys.self)
                   if let intId = try? c.decode(Int.self, forKey: .id) {
@@ -674,9 +728,18 @@ jobs:
               @Published private(set) var quota: DownloadQuota
               @Published private(set) var totalAppsAvailable: Int = 0
 
-              private let keyRepos = "repositories.v1"
+              private let keyRepos = "repositories.v2"
               private let keyQuota = "quota.v1"
               private let d = UserDefaults.standard
+
+              private let alakbarRepository = DownloadRepository(
+                  id: "alakbar-store-web",
+                  name: "الأكبر ستور",
+                  feedURL: "https://alakbar-store.com/browse-apps?page=2",
+                  homepage: "https://alakbar-store.com",
+                  enabled: true,
+                  maxGB: 500
+              )
 
               private init() {
                   if let data = d.data(forKey: keyQuota),
@@ -692,7 +755,11 @@ jobs:
 
                   if let data = d.data(forKey: keyRepos),
                      let decoded = try? JSONDecoder().decode([DownloadRepository].self, from: data) {
-                      self.repositories = decoded
+                      var list = decoded
+                      if !list.contains(where: { $0.id == alakbarRepository.id }) {
+                          list.append(alakbarRepository)
+                      }
+                      self.repositories = list
                   } else {
                       self.repositories = [
                           DownloadRepository(
@@ -710,7 +777,8 @@ jobs:
                               homepage: "https://21s.app",
                               enabled: true,
                               maxGB: 500
-                          )
+                          ),
+                          alakbarRepository
                       ]
                   }
 
@@ -725,8 +793,12 @@ jobs:
               func setEnabled(_ enabled: Bool, for repo: DownloadRepository) {
                   guard let idx = repositories.firstIndex(where: { $0.id == repo.id }) else { return }
                   repositories[idx] = DownloadRepository(
-                      id: repo.id, name: repo.name, feedURL: repo.feedURL,
-                      homepage: repo.homepage, enabled: enabled, maxGB: repo.maxGB
+                      id: repo.id,
+                      name: repo.name,
+                      feedURL: repo.feedURL,
+                      homepage: repo.homepage,
+                      enabled: enabled,
+                      maxGB: repo.maxGB
                   )
                   persistRepositories()
               }
@@ -737,21 +809,17 @@ jobs:
               }
 
               func addUsedBytes(_ bytes: Int64) {
-                  let updated = DownloadQuota(id: quota.id, totalBytes: quota.totalBytes, usedBytes: quota.usedBytes + bytes)
+                  let updated = DownloadQuota(
+                      id: quota.id,
+                      totalBytes: quota.totalBytes,
+                      usedBytes: quota.usedBytes + bytes
+                  )
                   quota = updated
                   persistQuota()
               }
 
               func updateTotalApps(_ count: Int) {
                   totalAppsAvailable = count
-              }
-
-              // New method to add a repository
-              func addRepository(name: String, feedURL: String, homepage: String = "", enabled: Bool = true, maxGB: Double = 250) {
-                  let id = UUID().uuidString
-                  let repo = DownloadRepository(id: id, name: name, feedURL: feedURL, homepage: homepage.isEmpty ? feedURL : homepage, enabled: enabled, maxGB: maxGB)
-                  repositories.append(repo)
-                  persistRepositories()
               }
 
               private func persistRepositories() {
@@ -1475,7 +1543,7 @@ jobs:
           VIPEOF
 
       # =========================================================
-      # SOURCE CODE - StoreView.swift (dynamic dark/light, repositories tab)
+      # SOURCE CODE - StoreView.swift (no favorites, dynamic dark/light, fixed storePrimaryDk)
       # =========================================================
       - name: Generate code - StoreView.swift
         run: |
@@ -1671,7 +1739,7 @@ jobs:
               return .storePrimary
           }
 
-          // ================= Store Feed (no local cache) =================
+          // ================= Store Feed (ONEs + الأكبر ستور web catalog) =================
           @MainActor
           final class StoreFeed: ObservableObject {
               @Published var apps: [StoreAPIApp] = []
@@ -1682,6 +1750,9 @@ jobs:
 
               private let repos = RepositoriesStore.shared
               private let pageSize = AppConstants.feedPageSize
+
+              private let alakbarHost = "alakbar-store.com"
+              private let alakbarMaxPages = 20
 
               init() {
                   Task { await refresh() }
@@ -1713,13 +1784,44 @@ jobs:
                       for repo in enabled {
                           group.addTask { () -> (StoreAPIResponse?, Error?) in
                               do {
-                                  var req = URLRequest(url: URL(string: repo.feedURL)!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-                                  req.setValue("21s-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                                  let (data, response) = try await URLSession.shared.data(for: req)
-                                  if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                                      throw NSError(domain: "StoreFeed", code: http.statusCode,
-                                                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from \(repo.name)"])
+                                  guard let sourceURL = URL(string: repo.feedURL) else {
+                                      throw NSError(
+                                          domain: "StoreFeed",
+                                          code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: "رابط المصدر غير صحيح: \(repo.name)"]
+                                      )
                                   }
+
+                                  // الأكبر ستور is a normal web catalog, not a JSON API.
+                                  // Parse its public browse pages into the same StoreAPIApp model
+                                  // so the rest of the ONEs Store UI can display it normally.
+                                  if sourceURL.host?.lowercased() == self.alakbarHost {
+                                      let parsed = try await self.scrapeAlakbarStore()
+                                      return (parsed, nil)
+                                  }
+
+                                  var req = URLRequest(
+                                      url: sourceURL,
+                                      cachePolicy: .reloadIgnoringLocalCacheData,
+                                      timeoutInterval: 25
+                                  )
+                                  req.setValue("ONEs-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                                  req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+
+                                  let (data, response) = try await URLSession.shared.data(for: req)
+
+                                  if let http = response as? HTTPURLResponse,
+                                     !(200...299).contains(http.statusCode) {
+                                      throw NSError(
+                                          domain: "StoreFeed",
+                                          code: http.statusCode,
+                                          userInfo: [
+                                              NSLocalizedDescriptionKey:
+                                                  "HTTP \(http.statusCode) from \(repo.name)"
+                                          ]
+                                      )
+                                  }
+
                                   let parsed = try JSONDecoder().decode(StoreAPIResponse.self, from: data)
                                   return (parsed, nil)
                               } catch {
@@ -1727,16 +1829,27 @@ jobs:
                               }
                           }
                       }
+
                       for await (resp, err) in group {
                           if let resp = resp {
                               for app in resp.apps {
-                                  let key = app.bundleId?.lowercased() ?? "n_\(app.id)_\(app.name.lowercased())"
+                                  let key: String
+                                  if let page = app.archiveUrl, !page.isEmpty {
+                                      key = "page:\(page.lowercased())"
+                                  } else if let bundle = app.bundleId, !bundle.isEmpty {
+                                      key = "bundle:\(bundle.lowercased())"
+                                  } else {
+                                      key = "name:\(app.name.lowercased())"
+                                  }
+
                                   if !seen.contains(key) {
                                       seen.insert(key)
                                       combined.append(app)
                                   }
                               }
-                              if let u = resp.lastUpdated, (latestUpdate == nil || u > latestUpdate!) {
+
+                              if let u = resp.lastUpdated,
+                                 (latestUpdate == nil || u > latestUpdate!) {
                                   latestUpdate = u
                               }
                           } else if let err = err, firstError == nil {
@@ -1745,7 +1858,9 @@ jobs:
                       }
                   }
 
-                  if combined.isEmpty, let err = firstError { throw err }
+                  if combined.isEmpty, let err = firstError {
+                      throw err
+                  }
 
                   let sort = combined.sorted { (a, b) in
                       let da = a.createdAt ?? a.updatedAt ?? a.versionDate ?? ""
@@ -1756,13 +1871,399 @@ jobs:
                   return StoreAPIResponse(lastUpdated: latestUpdate, apps: sort)
               }
 
+              // MARK: - الأكبر ستور HTML scraper
+              //
+              // It intentionally imports catalog metadata only:
+              // name, category, size, icon and the public detail-page URL.
+              // No fake bundle identifier or fake install URL is generated.
+              // Therefore an item can be shown normally even when it cannot be
+              // installed by the current ONEs signing server.
+              private func scrapeAlakbarStore() async throws -> StoreAPIResponse {
+                  var collected: [StoreAPIApp] = []
+                  var seenPages = Set<String>()
+                  var latestUpdate: String? = nil
+                  var firstError: Error?
+
+                  for page in 1...alakbarMaxPages {
+                      do {
+                          let urlString = "https://alakbar-store.com/browse-apps?page=\(page)"
+
+                          guard let url = URL(string: urlString) else {
+                              throw NSError(
+                                  domain: "AlakbarStore",
+                                  code: -1,
+                                  userInfo: [NSLocalizedDescriptionKey: "رابط الأكبر ستور غير صحيح"]
+                              )
+                          }
+
+                          var req = URLRequest(
+                              url: url,
+                              cachePolicy: .reloadIgnoringLocalCacheData,
+                              timeoutInterval: 30
+                          )
+                          req.setValue("ONEs-iOS/1.0", forHTTPHeaderField: "User-Agent")
+                          req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+
+                          let (data, response) = try await URLSession.shared.data(for: req)
+
+                          if let http = response as? HTTPURLResponse,
+                             !(200...299).contains(http.statusCode) {
+                              throw NSError(
+                                  domain: "AlakbarStore",
+                                  code: http.statusCode,
+                                  userInfo: [
+                                      NSLocalizedDescriptionKey:
+                                          "HTTP \(http.statusCode) from الأكبر ستور"
+                                  ]
+                              )
+                          }
+
+                          guard let html = String(data: data, encoding: .utf8)
+                                  ?? String(data: data, encoding: .windowsCP1256) else {
+                              throw NSError(
+                                  domain: "AlakbarStore",
+                                  code: -2,
+                                  userInfo: [NSLocalizedDescriptionKey: "تعذر قراءة صفحة الأكبر ستور"]
+                              )
+                          }
+
+                          let pageApps = Self.parseAlakbarHTML(html: html, page: page)
+
+                          for app in pageApps {
+                              let key = app.archiveUrl?.lowercased()
+                                  ?? "name:\(app.name.lowercased())"
+
+                              if !seenPages.contains(key) {
+                                  seenPages.insert(key)
+                                  collected.append(app)
+                              }
+                          }
+
+                          let now = ISO8601DateFormatter().string(from: Date())
+                          if latestUpdate == nil || now > latestUpdate! {
+                              latestUpdate = now
+                          }
+
+                          if pageApps.isEmpty && page >= 2 {
+                              break
+                          }
+                      } catch {
+                          if firstError == nil {
+                              firstError = error
+                          }
+                      }
+                  }
+
+                  if collected.isEmpty, let firstError {
+                      throw firstError
+                  }
+
+                  return StoreAPIResponse(
+                      lastUpdated: latestUpdate,
+                      apps: collected
+                  )
+              }
+
+              private static func parseAlakbarHTML(
+                  html: String,
+                  page: Int
+              ) -> [StoreAPIApp] {
+                  let anchorPattern =
+                      #"<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#
+
+                  guard let anchorRegex = try? NSRegularExpression(
+                      pattern: anchorPattern,
+                      options: [.caseInsensitive, .dotMatchesLineSeparators]
+                  ) else {
+                      return []
+                  }
+
+                  let nsHTML = html as NSString
+                  let matches = anchorRegex.matches(
+                      in: html,
+                      range: NSRange(location: 0, length: nsHTML.length)
+                  )
+
+                  var results: [StoreAPIApp] = []
+                  var seen = Set<String>()
+
+                  for match in matches {
+                      guard match.numberOfRanges >= 3 else { continue }
+
+                      let href = nsHTML.substring(with: match.range(at: 1))
+                          .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                      let body = nsHTML.substring(with: match.range(at: 2))
+
+                      // Only import catalog cards. The public page uses GET cards
+                      // and exposes the size/category in the visible card text.
+                      let plain = htmlToPlainText(body)
+                      guard plain.localizedCaseInsensitiveContains("GET"),
+                            containsCatalogSize(plain) else {
+                          continue
+                      }
+
+                      guard let absoluteURL = absoluteURL(
+                          href,
+                          base: "https://alakbar-store.com"
+                      ) else {
+                          continue
+                      }
+
+                      let normalizedPage = absoluteURL.absoluteString
+                      guard !seen.contains(normalizedPage) else { continue }
+                      seen.insert(normalizedPage)
+
+                      let category = extractAlakbarCategory(from: plain)
+                      let size = extractAlakbarSize(from: plain)
+                      let name = extractAlakbarName(
+                          from: plain,
+                          category: category,
+                          size: size
+                      )
+
+                      guard !name.isEmpty else { continue }
+
+                      let iconURL = extractFirstImageURL(
+                          from: body,
+                          base: "https://alakbar-store.com"
+                      )
+
+                      let deterministicID = stableID(normalizedPage)
+
+                      let app = StoreAPIApp(
+                          id: deterministicID,
+                          name: name,
+                          bundleId: nil,
+                          bundleVersion: nil,
+                          ipaSize: size,
+                          githubUrl: nil,
+                          archiveUrl: normalizedPage,
+                          ipaUrl: nil,
+                          host: "الأكبر ستور",
+                          icon: iconURL,
+                          description: "تطبيق من الأكبر ستور. يمكنك فتح صفحة التطبيق الأصلية من المتجر.",
+                          screenshots: nil,
+                          category: category ?? "تطبيقات متنوعة",
+                          createdAt: "alakbar-\(page)",
+                          updatedAt: "alakbar-\(page)",
+                          downloadURL: nil,
+                          down: nil,
+                          iconURL: iconURL,
+                          localizedDescription: "كتالوج خارجي من الأكبر ستور",
+                          developerName: nil,
+                          version: nil,
+                          versionDate: nil,
+                          fullDate: nil,
+                          size: parseByteCount(size),
+                          type: nil
+                      )
+
+                      results.append(app)
+                  }
+
+                  return results
+              }
+
+              private static func htmlToPlainText(_ html: String) -> String {
+                  var value = html
+
+                  if let regex = try? NSRegularExpression(
+                      pattern: #"<[^>]+>"#,
+                      options: [.caseInsensitive, .dotMatchesLineSeparators]
+                  ) {
+                      value = regex.stringByReplacingMatches(
+                          in: value,
+                          range: NSRange(location: 0, length: (value as NSString).length),
+                          withTemplate: " "
+                      )
+                  }
+
+                  let replacements: [(String, String)] = [
+                      ("&nbsp;", " "),
+                      ("&#160;", " "),
+                      ("&amp;", "&"),
+                      ("&quot;", "\""),
+                      ("&#34;", "\""),
+                      ("&#39;", "'"),
+                      ("&apos;", "'"),
+                      ("&lt;", "<"),
+                      ("&gt;", ">")
+                  ]
+
+                  for (from, to) in replacements {
+                      value = value.replacingOccurrences(of: from, with: to)
+                  }
+
+                  return value
+                      .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+              }
+
+              private static func containsCatalogSize(_ text: String) -> Bool {
+                  let pattern = #"\b\d+(?:[.,]\d+)?\s*(?:MB|GB|KB)\b"#
+                  return text.range(of: pattern, options: .regularExpression) != nil
+              }
+
+              private static func extractAlakbarSize(_ text: String) -> String? {
+                  let pattern = #"\b\d+(?:[.,]\d+)?\s*(?:MB|GB|KB)\b"#
+                  guard let range = text.range(of: pattern, options: .regularExpression) else {
+                      return nil
+                  }
+                  return String(text[range])
+              }
+
+              private static func extractAlakbarCategory(_ text: String) -> String? {
+                  let categories = [
+                      "التواصل الإجتماعي",
+                      "العاب",
+                      "المونتاج و التصميم",
+                      "تطبيقات إسلامية",
+                      "تطبيقات متنوعة",
+                      "قنوات و الأفلام"
+                  ]
+
+                  for category in categories where text.contains(category) {
+                      return category
+                  }
+
+                  return nil
+              }
+
+              private static func extractAlakbarName(
+                  from text: String,
+                  category: String?,
+                  size: String?
+              ) -> String {
+                  var value = text
+
+                  value = value.replacingOccurrences(
+                      of: "GET",
+                      with: " ",
+                      options: [.caseInsensitive]
+                  )
+
+                  if let size {
+                      value = value.replacingOccurrences(of: size, with: " ")
+                  }
+
+                  if let category {
+                      value = value.replacingOccurrences(of: category, with: " ")
+                  }
+
+                  value = value.replacingOccurrences(
+                      of: #"[\u{00B7}\u{2022}|]"#,
+                      with: " ",
+                      options: .regularExpression
+                  )
+
+                  value = value
+                      .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                  // Keep only the useful leading card title when navigation text
+                  // such as "Browse" or footer labels are accidentally included.
+                  let blocked = [
+                      "Browse", "English", "Privacy", "Terms", "Guides",
+                      "Contact", "Get Started", "الأكبر ستور"
+                  ]
+
+                  for item in blocked {
+                      value = value.replacingOccurrences(of: item, with: " ")
+                  }
+
+                  return value
+                      .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+              }
+
+              private static func extractFirstImageURL(
+                  from html: String,
+                  base: String
+              ) -> String? {
+                  let pattern = #"<img\b[^>]*src\s*=\s*["']([^"']+)["'][^>]*>"#
+
+                  guard let regex = try? NSRegularExpression(
+                      pattern: pattern,
+                      options: [.caseInsensitive, .dotMatchesLineSeparators]
+                  ) else {
+                      return nil
+                  }
+
+                  let ns = html as NSString
+                  guard let match = regex.firstMatch(
+                      in: html,
+                      range: NSRange(location: 0, length: ns.length)
+                  ) else {
+                      return nil
+                  }
+
+                  let src = ns.substring(with: match.range(at: 1))
+                  return absoluteURL(src, base: base)?.absoluteString
+              }
+
+              private static func absoluteURL(
+                  _ raw: String,
+                  base: String
+              ) -> URL? {
+                  let cleaned = raw
+                      .replacingOccurrences(of: "&amp;", with: "&")
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                  if cleaned.hasPrefix("data:") {
+                      return nil
+                  }
+
+                  if let direct = URL(string: cleaned), direct.scheme != nil {
+                      return direct
+                  }
+
+                  return URL(string: cleaned, relativeTo: URL(string: base))?.absoluteURL
+              }
+
+              private static func stableID(_ value: String) -> Int {
+                  var hash: UInt64 = 1469598103934665603
+                  for byte in value.utf8 {
+                      hash ^= UInt64(byte)
+                      hash &*= 1099511628211
+                  }
+                  return Int(hash & 0x7fffffffffffffff)
+              }
+
+              private static func parseByteCount(_ value: String?) -> Double? {
+                  guard let value else { return nil }
+
+                  let parts = value
+                      .replacingOccurrences(of: ",", with: ".")
+                      .split(separator: " ")
+
+                  guard let number = Double(parts.first ?? "") else {
+                      return nil
+                  }
+
+                  let unit = parts.dropFirst().first?.uppercased() ?? "MB"
+
+                  switch unit {
+                  case "GB":
+                      return number * 1_073_741_824
+                  case "MB":
+                      return number * 1_048_576
+                  case "KB":
+                      return number * 1_024
+                  default:
+                      return number
+                  }
+              }
+
               func search(_ query: String) -> [StoreAPIApp] {
                   let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                   if q.isEmpty { return apps }
+
                   return apps.filter {
                       $0.name.lowercased().contains(q)
                       || ($0.category?.lowercased().contains(q) ?? false)
                       || ($0.bundleId?.lowercased().contains(q) ?? false)
+                      || ($0.host?.lowercased().contains(q) ?? false)
                   }
               }
           }
@@ -1799,17 +2300,6 @@ jobs:
                                   }
                               }
                               .tag(1)
-
-                          RepositoriesView()
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: "folder")
-                                          .font(.system(size: 20))
-                                      Text(LS("المصادر"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .tag(2)
                       }
                       .tint(Color.storePrimary)
 
@@ -1823,117 +2313,6 @@ jobs:
                   .environment(\.locale, lang.locale)
                   .environment(\.layoutDirection, lang.layout)
                   .id(lang.isArabic)
-              }
-          }
-
-          // ================= REPOSITORIES VIEW =================
-          struct RepositoriesView: View {
-              @ObservedObject private var repos = RepositoriesStore.shared
-              @State private var newFeedURL: String = ""
-              @State private var newName: String = ""
-              @State private var showingAddSheet = false
-              @State private var errorMessage: String?
-
-              var body: some View {
-                  NavigationView {
-                      List {
-                          ForEach(repos.repositories) { repo in
-                              HStack {
-                                  VStack(alignment: .leading, spacing: 4) {
-                                      Text(repo.name)
-                                          .font(.headline)
-                                          .foregroundColor(Color.storeText)
-                                      Text(repo.feedURL)
-                                          .font(.caption)
-                                          .foregroundColor(Color.storeSub)
-                                          .lineLimit(2)
-                                  }
-                                  Spacer()
-                                  Toggle("", isOn: Binding(
-                                      get: { repo.enabled },
-                                      set: { _ in repos.setEnabled(!repo.enabled, for: repo) }
-                                  ))
-                                  .toggleStyle(SwitchToggleStyle(tint: Color.storePrimary))
-                              }
-                              .padding(.vertical, 4)
-                          }
-                          .onDelete(perform: deleteRepositories)
-                      }
-                      .listStyle(PlainListStyle())
-                      .background(ONEsStoreBackground())
-                      .navigationBarTitle("المصادر", displayMode: .inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button {
-                                  showingAddSheet = true
-                              } label: {
-                                  Image(systemName: "plus")
-                                      .foregroundColor(Color.storePrimary)
-                              }
-                          }
-                      }
-                      .sheet(isPresented: $showingAddSheet) {
-                          NavigationView {
-                              VStack(spacing: 20) {
-                                  TextField("اسم المصدر", text: $newName)
-                                      .textFieldStyle(RoundedBorderTextFieldStyle())
-                                      .foregroundColor(Color.storeText)
-                                  TextField("رابط المصدر (feed URL)", text: $newFeedURL)
-                                      .textFieldStyle(RoundedBorderTextFieldStyle())
-                                      .autocapitalization(.none)
-                                      .foregroundColor(Color.storeText)
-                                  if let error = errorMessage {
-                                      Text(error)
-                                          .foregroundColor(.red)
-                                          .font(.caption)
-                                  }
-                                  Button {
-                                      guard !newName.isEmpty, !newFeedURL.isEmpty, URL(string: newFeedURL) != nil else {
-                                          errorMessage = "الرجاء إدخال اسم ورابط صحيح"
-                                          return
-                                      }
-                                      repos.addRepository(name: newName, feedURL: newFeedURL)
-                                      newName = ""
-                                      newFeedURL = ""
-                                      errorMessage = nil
-                                      showingAddSheet = false
-                                      // Force refresh feed
-                                      Task {
-                                          await StoreFeed().refresh()
-                                      }
-                                  } label: {
-                                      Text("إضافة المصدر")
-                                          .font(.headline)
-                                          .foregroundColor(.white)
-                                          .padding()
-                                          .frame(maxWidth: .infinity)
-                                          .background(Color.storePrimary)
-                                          .cornerRadius(10)
-                                  }
-                                  .padding(.horizontal)
-                                  Spacer()
-                              }
-                              .padding()
-                              .navigationBarTitle("إضافة مصدر", displayMode: .inline)
-                              .toolbar {
-                                  ToolbarItem(placement: .cancellationAction) {
-                                      Button("إلغاء") {
-                                          showingAddSheet = false
-                                      }
-                                  }
-                              }
-                          }
-                      }
-                  }
-                  .navigationViewStyle(StackNavigationViewStyle())
-              }
-
-              private func deleteRepositories(at offsets: IndexSet) {
-                  for index in offsets {
-                      let repo = repos.repositories[index]
-                      repos.setEnabled(false, for: repo) // just disable, or remove?
-                      // For removal, we need a remove method; we'll just disable for now
-                  }
               }
           }
 
@@ -2256,17 +2635,26 @@ jobs:
                           }
                       }
                       Spacer()
-                      Button {
-                          HapticManager.shared.success()
-                          StoreInstaller.shared.install(app: app)
-                      } label: {
-                          Text("تثبيت")
+                      if app.bundleId != nil {
+                          Button {
+                              HapticManager.shared.success()
+                              StoreInstaller.shared.install(app: app)
+                          } label: {
+                              Text("تثبيت")
+                                  .font(.system(size: 12, weight: .bold))
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14).padding(.vertical, 7)
+                                  .background(Capsule().fill(Color.storePrimary))
+                          }
+                          .buttonStyle(.plain)
+                      } else {
+                          Text("عرض")
                               .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.white)
+                              .foregroundColor(Color.storePrimary)
                               .padding(.horizontal, 14).padding(.vertical, 7)
-                              .background(Capsule().fill(Color.storePrimary))
+                              .background(Capsule().stroke(Color.storePrimary, lineWidth: 1))
+                              .clipShape(Capsule())
                       }
-                      .buttonStyle(.plain)
                   }
                   .padding(14)
                   .background(
@@ -2351,7 +2739,7 @@ jobs:
               var body: some View {
                   ScrollView {
                       VStack(spacing: 0) {
-                          ZStack(alignment: .top) {
+                          ZStack(alignment: .topLeading) {
                               Group {
                                   if let img = UIImage.bundled("home_banner.png") {
                                       Image(uiImage: img)
@@ -2367,7 +2755,19 @@ jobs:
                               .clipped()
                               .clipShape(RoundedCorner(radius: 34, corners: [.bottomLeft, .bottomRight]))
                               .shadow(color: Color.black.opacity(0.10), radius: 10, y: 5)
-                              // No back button here – rely on swipe gesture
+                              HStack {
+                                  Button { dismiss() } label: {
+                                      Image(systemName: "arrow.left")
+                                          .font(.system(size: 16, weight: .bold))
+                                          .foregroundColor(Color.storeText)
+                                          .frame(width: 40, height: 40)
+                                          .background(Circle().fill(Color.storeCard))
+                                          .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
+                                  }
+                                  Spacer()
+                              }
+                              .padding(.horizontal, 20)
+                              .padding(.top, 8)
                           }
 
                           HStack(spacing: 14) {
@@ -2375,20 +2775,34 @@ jobs:
                               VStack(alignment: .leading, spacing: 4) {
                                   Text(app.name).font(.system(size: 18, weight: .bold)).foregroundColor(Color.storeInk)
                                   Text(app.category ?? "التطبيقات").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.storePrimary)
+                                  if app.bundleId == nil {
+                                      Text("من الأكبر ستور • عرض فقط")
+                                          .font(.system(size: 10, weight: .semibold))
+                                          .foregroundColor(Color.storeSub)
+                                  }
                                   if let bid = app.bundleId {
                                       Text(bid).font(.system(size: 10, weight: .medium)).foregroundColor(Color.storeInkSub).lineLimit(1)
                                   }
                               }
                               Spacer()
-                              Button {
-                                  HapticManager.shared.success()
-                                  StoreInstaller.shared.install(app: app)
-                              } label: {
-                                  Text("تثبيت")
-                                      .font(.system(size: 13, weight: .bold))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 20).padding(.vertical, 10)
-                                      .background(Capsule().fill(Color.storePrimary))
+                              if app.bundleId != nil {
+                                  Button {
+                                      HapticManager.shared.success()
+                                      StoreInstaller.shared.install(app: app)
+                                  } label: {
+                                      Text("تثبيت")
+                                          .font(.system(size: 13, weight: .bold))
+                                          .foregroundColor(.white)
+                                          .padding(.horizontal, 20).padding(.vertical, 10)
+                                          .background(Capsule().fill(Color.storePrimary))
+                                  }
+                                  .buttonStyle(.plain)
+                              } else {
+                                  Text("مصدر خارجي")
+                                      .font(.system(size: 11, weight: .bold))
+                                      .foregroundColor(Color.storePrimary)
+                                      .padding(.horizontal, 12).padding(.vertical, 8)
+                                      .background(Capsule().stroke(Color.storePrimary, lineWidth: 1))
                               }
                           }
                           .padding(16)
@@ -2431,7 +2845,6 @@ jobs:
                               .padding(.top, 4)
                           }
 
-                          // Description without formatting
                           VStack(alignment: .leading, spacing: 10) {
                               HStack {
                                   Text("الوصف")
@@ -2440,7 +2853,10 @@ jobs:
                                   Spacer()
                               }
                               Text(app.cleanDescription)
-                                  // No formatting, just plain text
+                                  .font(.system(size: 13))
+                                  .foregroundColor(Color.storeInk.opacity(0.78))
+                                  .lineSpacing(4)
+                                  .fixedSize(horizontal: false, vertical: true)
                           }
                           .padding(16)
                           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2453,7 +2869,6 @@ jobs:
                   }
                   .background(ONEsStoreBackground())
                   .navigationBarHidden(true)
-                  .navigationBarBackButtonHidden(true) // hide back button, swipe gesture still works
                   .sheet(isPresented: $showScreenshots) {
                       ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
                   }
@@ -2552,7 +2967,12 @@ jobs:
               private init() {}
 
               func install(app: StoreAPIApp) {
-                  install(bundleId: app.bundleId, name: app.name)
+                  guard let bundleId = app.bundleId,
+                        !bundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                      StatusCenter.shared.show(text: "هذا التطبيق معروض من مصدر خارجي ولا يتوفر له تثبيت مباشر.")
+                      return
+                  }
+                  install(bundleId: bundleId, name: app.name)
               }
 
               func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
