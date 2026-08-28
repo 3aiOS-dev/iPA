@@ -1,3249 +1,676 @@
-name: ONEs Store - Login + Apps (SwiftUI) - Dynamic Dark/Light
+name: AppScope 27 - Safe Installed App Checker
 
-"on":
+on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
 env:
-  NEW_BUNDLE_ID: "com.vip21.store.pro"
-  NEW_APP_NAME:  "ONEs"
+  APP_NAME: "AppScope"
+  BUNDLE_ID: "com.appscope.safe"
+  DEPLOYMENT_TARGET: "18.0"
 
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
+
     steps:
-
-      - name: Maximize build resources (1TB+ capacity)
-        run: |
-          echo "=== Build capacity check ==="
-          df -h
-          echo "=== macOS resource limits ==="
-          ulimit -a
-          echo "=== Available CPUs ==="
-          sysctl -n hw.ncpu
-          echo "=== Available memory ==="
-          sysctl -n hw.memsize
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Xcode
+      - name: Select latest installed Xcode
+        shell: bash
         run: |
-          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
-          xcode-select -p
+          set -euo pipefail
+
+          XCODE_APP="$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -V | tail -n 1)"
+
+          if [ -z "${XCODE_APP}" ]; then
+            echo "No Xcode installation was found."
+            exit 1
+          fi
+
+          sudo xcode-select --switch "${XCODE_APP}/Contents/Developer"
+
+          echo "Selected Xcode:"
+          xcodebuild -version
+          echo "Swift:"
           swift --version
 
-      - name: Install required tools
+      - name: Install XcodeGen and zip
+        shell: bash
         run: |
-          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install ldid zip 2>/dev/null || true
-          command -v ldid || { echo "ldid not installed"; exit 1; }
-          command -v zip || { echo "zip not installed"; exit 1; }
+          set -euo pipefail
+          brew install xcodegen
+          command -v xcodegen
+          command -v zip
 
-      # =========================================================
-      # RESOURCES & ASSETS - only static PNGs (no GIFs)
-      # =========================================================
-      - name: Download project images
+      - name: Create project directories
+        shell: bash
         run: |
-          mkdir -p Resources
-          curl -L -o Resources/header_logo.png     "https://up6.cc/2026/08/17868045641091.png"
-          curl -L -o Resources/appstore_glyph.png  "https://up6.cc/2026/08/17868045641091.png"
-          curl -L -o Resources/sub_mascot.png      "https://up6.cc/2026/08/178680469138521.png"
-          curl -L -o Resources/home_banner.png     "https://up6.cc/2026/08/178680278357461.png"   # <-- تم تغيير الرابط
-          file Resources/*.png 2>/dev/null || true
-          ls -lh Resources
-
-      - name: Generate app icons (simple)
-        run: |
-          python3 -m pip install --quiet --break-system-packages Pillow
-          python3 << 'PYEOF'
-          from PIL import Image, ImageDraw, ImageFont
-          import os
-
-          def generate_icon(size, path):
-              img = Image.new("RGBA", (size, size), (255, 255, 255, 255))
-              draw = ImageDraw.Draw(img)
-              rect_size = int(size * 0.8)
-              x0 = (size - rect_size) // 2
-              y0 = (size - rect_size) // 2
-              draw.rounded_rectangle((x0, y0, x0+rect_size, y0+rect_size), radius=int(rect_size*0.2), fill=(232, 184, 92))
-              try:
-                  font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", int(size*0.3))
-              except:
-                  font = ImageFont.load_default()
-              draw.text((size//2, size//2), "ONEs", font=font, fill=(255,255,255), anchor="mm")
-              img.save(path, "PNG")
-
-          generate_icon(120,  "Resources/AppIcon60x60@2x.png")
-          generate_icon(180,  "Resources/AppIcon60x60@3x.png")
-          generate_icon(152,  "Resources/AppIcon76x76@2x~ipad.png")
-          generate_icon(167,  "Resources/AppIcon83.5x83.5@2x~ipad.png")
-          generate_icon(1024, "Resources/AppIcon1024x1024.png")
-          PYEOF
-          ls -lh Resources
+          set -euo pipefail
+          rm -rf AppScopeBuild
+          mkdir -p AppScopeBuild/AppScope
 
       - name: Generate Info.plist
+        shell: bash
         run: |
-          cat > Resources/Info.plist << 'PEOF'
+          cat > AppScopeBuild/AppScope/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleDevelopmentRegion</key>     <string>ar</string>
-              <key>CFBundleAllowMixedLocalizations</key> <true/>
-              <key>CFBundleLocalizations</key>
-              <array><string>ar</string></array>
-              <key>CFBundleExecutable</key>            <string>VIP21Store</string>
-              <key>CFBundleIdentifier</key>            <string>${{ env.NEW_BUNDLE_ID }}</string>
-              <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
-              <key>CFBundleName</key>                  <string>ONEs</string>
-              <key>CFBundleDisplayName</key>            <string>ONEs</string>
-              <key>CFBundlePackageType</key>            <string>APPL</string>
-              <key>CFBundleSignature</key>              <string>????</string>
-              <key>CFBundleShortVersionString</key>     <string>1.0</string>
-              <key>CFBundleVersion</key>                <string>1</string>
-              <key>CFBundleSupportedPlatforms</key>
-              <array><string>iPhoneOS</string></array>
-              <key>LSRequiresIPhoneOS</key>             <true/>
-              <key>UIFileSharingEnabled</key>            <true/>
-              <key>LSSupportsOpeningDocumentsInPlace</key> <true/>
-              <key>UIBackgroundModes</key>
+              <key>CFBundleDisplayName</key>
+              <string>AppScope</string>
+
+              <key>CFBundleIdentifier</key>
+              <string>com.appscope.safe</string>
+
+              <key>CFBundleName</key>
+              <string>AppScope</string>
+
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+
+              <key>CFBundleVersion</key>
+              <string>1</string>
+
+              <key>UILaunchScreen</key>
+              <dict>
+                  <key>UIColorName</key>
+                  <string>LaunchBackground</string>
+              </dict>
+
+              <key>UIRequiredDeviceCapabilities</key>
               <array>
-                  <string>remote-notification</string>
-                  <string>fetch</string>
-                  <string>processing</string>
+                  <string>arm64</string>
               </array>
-              <key>BGTaskSchedulerPermittedIdentifiers</key>
-              <array>
-                  <string>com.21s.store.refresh</string>
-              </array>
-              <key>NSUserNotificationsUsageDescription</key>
-              <string>نُبلغك برموز التحقق وحالة التنزيل والتوقيع.</string>
+
+              <!--
+               iOS requires queried custom URL schemes to be explicitly declared.
+               iOS 27 limits this list to 25 entries for apps linked on/after iOS 27.
+               These are only well-known schemes used by the consent-based checker.
+              -->
               <key>LSApplicationQueriesSchemes</key>
               <array>
-                  <string>itms-services</string>
+                  <string>youtube</string>
+                  <string>twitter</string>
+                  <string>instagram</string>
+                  <string>facebook</string>
+                  <string>telegram</string>
+                  <string>whatsapp</string>
+                  <string>discord</string>
+                  <string>reddit</string>
+                  <string>spotify</string>
+                  <string>tiktok</string>
+                  <string>snapchat</string>
+                  <string>linkedin</string>
+                  <string>github</string>
+                  <string>googlechrome</string>
+                  <string>googlemaps</string>
+                  <string>waze</string>
+                  <string>mailto</string>
+                  <string>tel</string>
+                  <string>facetime</string>
+                  <string>calshow</string>
+                  <string>shortcuts</string>
+                  <string>music</string>
+                  <string>podcasts</string>
+                  <string>photos</string>
                   <string>itms-apps</string>
               </array>
-              <key>MinimumOSVersion</key>               <string>16.0</string>
-              <key>UIDeviceFamily</key>
-              <array><integer>1</integer><integer>2</integer></array>
-              <key>UIRequiredDeviceCapabilities</key>
-              <array><string>arm64</string></array>
-              <key>UISupportedInterfaceOrientations</key>
-              <array><string>UIInterfaceOrientationPortrait</string></array>
-              <key>UISupportedInterfaceOrientations~ipad</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
-              </array>
-              <key>UIPrerenderedIcon</key>              <true/>
-              <key>UILaunchScreen</key>
-              <dict/>
-              <key>UIRequiresFullScreen</key>          <true/>
-              <key>UIStatusBarHidden</key>             <false/>
-              <key>UIViewControllerBasedStatusBarAppearance</key><false/>
-              <key>UIApplicationSceneManifest</key>
-              <dict>
-                  <key>UIApplicationSupportsMultipleScenes</key><false/>
-              </dict>
-              <key>UIApplicationSupportsIndirectInputEvents</key><true/>
-              <key>CFBundleURLTypes</key>
-              <array>
-                  <dict>
-                      <key>CFBundleURLName</key>
-                      <string>com.vip21.store.pro</string>
-                      <key>CFBundleURLSchemes</key>
-                      <array>
-                          <string>21s</string>
-                      </array>
-                  </dict>
-              </array>
-              <!-- Removed forced Light mode, now follows system -->
-              <key>NSAppTransportSecurity</key>
-              <dict>
-                  <key>NSAllowsArbitraryLoads</key>
-                  <false/>
-                  <key>NSExceptionDomains</key>
-                  <dict>
-                      <key>apptesters.org</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
-                      <key>githubusercontent.com</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
-                      <key>github.com</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
-                      <key>21s.app</key>
-                      <dict>
-                          <key>NSIncludesSubdomains</key>
-                          <true/>
-                          <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                          <false/>
-                          <key>NSExceptionRequiresForwardSecrecy</key>
-                          <true/>
-                      </dict>
-                  </dict>
-              </dict>
-              <key>NSCameraUsageDescription</key>
-              <string>يستخدم ONEs الكاميرا لمسح رموز QR الخاصة بالمحفظة.</string>
-              <key>NSPhotoLibraryUsageDescription</key>
-              <string>يستخدم ONEs مكتبة الصور لحفظ لقطات الشاشة ومشاركتها مع الأصدقاء.</string>
-              <key>NSPhotoLibraryAddUsageDescription</key>
-              <string>يحفظ ONEs لقطات الشاشة لتتمكن من مشاركتها لاحقًا.</string>
           </dict>
           </plist>
-          PEOF
+          PLIST
 
-      # =========================================================
-      # SOURCE CODE - Localization.swift (Arabic only)
-      # =========================================================
-      - name: Generate code - Localization.swift
+      - name: Generate Swift source - AppScopeApp.swift
+        shell: bash
         run: |
-          cat > Localization.swift << 'LANGEOF'
-          import SwiftUI
-          import Foundation
-          import Combine
-
-          public let kAppLanguageKey = "app_language_v1"
-
-          public final class LanguageManager: ObservableObject {
-              public static let shared = LanguageManager()
-              public let isArabic: Bool = true
-              private init() {
-                  UserDefaults.standard.set("ar", forKey: kAppLanguageKey)
-              }
-              public var locale: Locale { Locale(identifier: "ar") }
-              public var layout: LayoutDirection { .rightToLeft }
-              public var title: String { "العربية" }
-          }
-
-          public func LS(_ ar: String) -> String {
-              return ar
-          }
-          LANGEOF
-
-      # =========================================================
-      # SOURCE CODE - Constants.swift (dynamic dark/light + fixed storePrimaryDk)
-      # =========================================================
-      - name: Generate code - Constants.swift
-        run: |
-          cat > Constants.swift << 'VIPEOF'
+          cat > AppScopeBuild/AppScope/AppScopeApp.swift <<'SWIFT'
           import SwiftUI
 
-          struct AppConstants {
-              static let appVersion = "1.0"
-              static let storeName  = "ONEs"
-              static let userDefaultsKey = "21sProUserData"
-              static let hasSeenOnboardingKey = "hasSeenOnboarding21s"
-              static let maxFeedCacheBytes: Int = 256 * 1024 * 1024
-              static let maxIconCacheBytes: Int = 512 * 1024 * 1024
-              static let feedPageSize: Int = 200
-          }
-
-          // Dynamic colors that adapt to light/dark mode
-          extension Color {
-              // Backgrounds
-              static var storeBg: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.055, green: 0.071, blue: 0.188, alpha: 1) : // #0e1230
-                          UIColor(red: 0.957, green: 0.945, blue: 0.918, alpha: 1)   // #f4f1ea
-                  })
-              }
-              static var storeCard: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.082, green: 0.102, blue: 0.239, alpha: 1) :
-                          UIColor.white
-                  })
-              }
-              static var storeCardAlt: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.12, green: 0.15, blue: 0.28, alpha: 1) :
-                          UIColor(red: 0.94, green: 0.92, blue: 0.88, alpha: 1)
-                  })
-              }
-              // Primary gold
-              static var storePrimary: Color {
-                  Color(UIColor { trait in
-                      // Gold: #e8b85c
-                      UIColor(red: 0.91, green: 0.72, blue: 0.36, alpha: 1)
-                  })
-              }
-              // Dark gold for gradients / contrast
-              static var storePrimaryDk: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.73, green: 0.58, blue: 0.28, alpha: 1) : // ليل
-                          UIColor(red: 0.79, green: 0.54, blue: 0.18, alpha: 1)   // نهار
-                  })
-              }
-              // Turquoise
-              static var storeTurquoise: Color {
-                  Color(UIColor(red: 0.247, green: 0.749, blue: 0.682, alpha: 1)) // #3fbfae
-              }
-              // Text
-              static var storeText: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.953, green: 0.945, blue: 0.918, alpha: 1) : // #f3f1ea
-                          UIColor(red: 0.11, green: 0.11, blue: 0.11, alpha: 1)       // #1c1c1c
-                  })
-              }
-              static var storeSub: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(red: 0.596, green: 0.627, blue: 0.741, alpha: 1) : // #98a0bd
-                          UIColor(red: 0.596, green: 0.627, blue: 0.741, alpha: 1)
-                  })
-              }
-              static var storeDivider: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(white: 1, alpha: 0.12) :
-                          UIColor(red: 0.85, green: 0.87, blue: 0.9, alpha: 1)
-                  })
-              }
-              // Compatibility aliases
-              static var storeInk: Color { storeText }
-              static var storeInkSub: Color { storeSub }
-              static var storeInkLine: Color { storeDivider }
-              static var storeSurface: Color { storeCard }
-
-              // Legacy (keep for compatibility)
-              static let storePink = Color(red: 1.0, green: 0.18, blue: 0.33)
-              static let storeBlush = Color(red: 0.98, green: 0.94, blue: 0.98)
-              static let storeYellow = Color(red: 1.0, green: 0.76, blue: 0.0)
-              static let storeCyan = Color(red: 0.0, green: 0.78, blue: 0.78)
-              static let betaOrange = Color(red: 1.0, green: 0.6, blue: 0.0)
-              static let walletGreen = storePrimary
-              static let walletDark = storePrimary
-              static let walletDeep = storePrimary
-              static let creamBg = Color(UIColor { trait in
-                  trait.userInterfaceStyle == .dark ?
-                      UIColor(red: 0.1, green: 0.12, blue: 0.22, alpha: 1) :
-                      UIColor(red: 0.98, green: 0.96, blue: 1.0, alpha: 1)
-              })
-          }
-
-          extension UIImage {
-              static func bundled(_ filename: String) -> UIImage? {
-                  guard let path = Bundle.main.path(forResource: filename, ofType: nil) else { return nil }
-                  return UIImage(contentsOfFile: path)
-              }
-          }
-          VIPEOF
-
-      # =========================================================
-      # SOURCE CODE - HapticManager.swift
-      # =========================================================
-      - name: Generate code - HapticManager.swift
-        run: |
-          cat > HapticManager.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import UserNotifications
-
-          class HapticManager {
-              static let shared = HapticManager()
-              func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
-                  UIImpactFeedbackGenerator(style: style).impactOccurred()
-              }
-              func notification(_ type: UINotificationFeedbackGenerator.FeedbackType) {
-                  UINotificationFeedbackGenerator().notificationOccurred(type)
-              }
-              func selection() { UISelectionFeedbackGenerator().selectionChanged() }
-              func success() { notification(.success) }
-              func error() { notification(.error) }
-          }
-
-          final class ForegroundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
-              static let shared = ForegroundNotificationDelegate()
-              func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                          willPresent notification: UNNotification,
-                                          withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-                  completionHandler([.banner, .list, .sound, .badge])
-              }
-              func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                          didReceive response: UNNotificationResponse,
-                                          withCompletionHandler completionHandler: @escaping () -> Void) {
-                  completionHandler()
-              }
-          }
-
-          struct XcodeCardModifier: ViewModifier {
-              var radius: CGFloat = 12
-              func body(content: Content) -> some View {
-                  content
-                      .background(
-                          RoundedRectangle(cornerRadius: radius)
-                              .fill(Color.storeCard)
-                              .overlay(
-                                  RoundedRectangle(cornerRadius: radius)
-                                      .stroke(Color.storeDivider, lineWidth: 0.5)
-                              )
-                      )
-                      .clipShape(RoundedRectangle(cornerRadius: radius))
-              }
-          }
-
-          extension View {
-              func xcodeCard(radius: CGFloat = 12) -> some View {
-                  modifier(XcodeCardModifier(radius: radius))
-              }
-          }
-
-          final class ScreenCaptureService: ObservableObject {
-              static let shared = ScreenCaptureService()
-              @Published var lastScreenshot: UIImage? = nil
-              @Published var showThanksOverlay: Bool = false
-              private var observer: NSObjectProtocol?
-              private init() {}
-              func start() {}
-              func stop() {
-                  if let obs = observer {
-                      NotificationCenter.default.removeObserver(obs)
-                      observer = nil
+          @main
+          struct AppScopeApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                          .environment(\.layoutDirection, .rightToLeft)
                   }
               }
-              func dismissOverlay() {
-                  showThanksOverlay = false
-              }
           }
-          VIPEOF
+          SWIFT
 
-      # =========================================================
-      # SOURCE CODE - Models.swift (with additional initializer)
-      # =========================================================
-      - name: Generate code - Models.swift
+      - name: Generate Swift source - Models.swift
+        shell: bash
         run: |
-          cat > Models.swift << 'VIPEOF'
+          cat > AppScopeBuild/AppScope/Models.swift <<'SWIFT'
           import Foundation
 
-          // ============================================================
-          // Flexible JSON helpers - repositories differ a lot in shape
-          // ============================================================
-          public enum JX {
-              public static func str(_ any: Any?) -> String? {
-                  if let s = any as? String {
-                      let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-                      return t.isEmpty ? nil : t
-                  }
-                  if let n = any as? NSNumber { return n.stringValue }
-                  return nil
-              }
-
-              public static func num(_ any: Any?) -> Double? {
-                  if let n = any as? NSNumber { return n.doubleValue }
-                  if let d = any as? Double { return d }
-                  if let i = any as? Int { return Double(i) }
-                  if let s = any as? String { return sizeFromString(s) }
-                  return nil
-              }
-
-              /// "13.4 MB" / "1,2 GB" / "532144" -> bytes
-              public static func sizeFromString(_ raw: String) -> Double? {
-                  let s = raw.replacingOccurrences(of: ",", with: ".")
-                      .trimmingCharacters(in: .whitespacesAndNewlines)
-                      .uppercased()
-                  if let plain = Double(s) { return plain }
-                  let numberPart = s.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
-                      .filter { !$0.isEmpty }.first
-                  guard let value = Double(numberPart ?? "") else { return nil }
-                  if s.contains("GB") || s.contains("GIB") { return value * 1_073_741_824 }
-                  if s.contains("MB") || s.contains("MIB") { return value * 1_048_576 }
-                  if s.contains("KB") || s.contains("KIB") { return value * 1024 }
-                  if s.contains("B") { return value }
-                  return value
-              }
-
-              public static func firstValue(_ dict: [String: Any], _ keys: [String]) -> Any? {
-                  let lower = Dictionary(uniqueKeysWithValues: dict.map { ($0.key.lowercased(), $0.value) })
-                  for k in keys {
-                      if let v = dict[k], !(v is NSNull) { return v }
-                      if let v = lower[k.lowercased()], !(v is NSNull) { return v }
-                  }
-                  return nil
-              }
-
-              public static func firstString(_ dict: [String: Any], _ keys: [String]) -> String? {
-                  return str(firstValue(dict, keys))
-              }
-
-              public static func firstNumber(_ dict: [String: Any], _ keys: [String]) -> Double? {
-                  return num(firstValue(dict, keys))
-              }
-
-              /// Accepts ["a","b"], [{"imageURL":..}], {"iphone":[...],"ipad":[...]}
-              public static func urlList(_ any: Any?) -> [String] {
-                  var out: [String] = []
-                  if let arr = any as? [Any] {
-                      for item in arr {
-                          if let s = str(item) { out.append(s) }
-                          else if let d = item as? [String: Any],
-                                  let s = firstString(d, ["imageURL", "url", "image", "src", "screenshot"]) {
-                              out.append(s)
-                          }
-                      }
-                  } else if let dict = any as? [String: Any] {
-                      for key in ["iphone", "ipad", "universal", "urls", "items"] {
-                          if let v = firstValue(dict, [key]) { out.append(contentsOf: urlList(v)) }
-                      }
-                  } else if let s = str(any) {
-                      out.append(s)
-                  }
-                  return out.filter { $0.hasPrefix("http") }
-              }
-
-              public static func dict(_ any: Any?) -> [String: Any]? { any as? [String: Any] }
-
-              /// Extract the apps array out of any repository payload shape.
-              public static func appsArray(from root: Any) -> [[String: Any]] {
-                  if let arr = root as? [[String: Any]] { return arr }
-                  guard let d = root as? [String: Any] else { return [] }
-                  let keys = ["apps", "data", "items", "results", "applications", "list", "packages", "entries"]
-                  for k in keys {
-                      if let v = firstValue(d, [k]) {
-                          if let arr = v as? [[String: Any]] { return arr }
-                          if let one = v as? [String: Any] {
-                              // nested envelope: { data: { apps: [...] } } or a single app
-                              let nested = appsArray(from: one)
-                              if !nested.isEmpty { return nested }
-                              if one["name"] != nil { return [one] }
-                          }
-                      }
-                  }
-                  return []
-              }
-
-              public static func sourceName(from root: Any) -> String? {
-                  guard let d = root as? [String: Any] else { return nil }
-                  return firstString(d, ["name", "title", "sourceName", "source_name", "repoName"])
-              }
-          }
-
-          /// Minimal Codable box so StoreAPIApp keeps Codable conformance.
-          public struct JSONAny: Codable {
-              public let value: Any
-              public init(_ value: Any) { self.value = value }
-
-              public init(from decoder: Decoder) throws {
-                  if let c = try? decoder.singleValueContainer() {
-                      if c.decodeNil() { value = NSNull() ; return }
-                      if let v = try? c.decode(Bool.self) { value = v; return }
-                      if let v = try? c.decode(Double.self) { value = v; return }
-                      if let v = try? c.decode(String.self) { value = v; return }
-                      if let v = try? c.decode([JSONAny].self) { value = v.map { $0.value }; return }
-                      if let v = try? c.decode([String: JSONAny].self) { value = v.mapValues { $0.value }; return }
-                  }
-                  value = NSNull()
-              }
-
-              public func encode(to encoder: Encoder) throws {
-                  var c = encoder.singleValueContainer()
-                  switch value {
-                  case let v as Bool: try c.encode(v)
-                  case let v as Int: try c.encode(v)
-                  case let v as Double: try c.encode(v)
-                  case let v as String: try c.encode(v)
-                  case let v as [Any]: try c.encode(v.map { JSONAny($0) })
-                  case let v as [String: Any]: try c.encode(v.mapValues { JSONAny($0) })
-                  default: try c.encodeNil()
-                  }
-              }
-          }
-
-          // ============================================================
-          // MODELS
-          // ============================================================
-          public struct StoreAPIResponse: Codable {
-              public let lastUpdated: String?
-              public let apps: [StoreAPIApp]
-
-              public init(lastUpdated: String?, apps: [StoreAPIApp]) {
-                  self.lastUpdated = lastUpdated
-                  self.apps = apps
-              }
-
-              enum CodingKeys: String, CodingKey {
-                  case lastUpdated = "last_updated"
-                  case apps
-              }
-
-              public init(from decoder: Decoder) throws {
-                  let c = try decoder.container(keyedBy: CodingKeys.self)
-                  self.lastUpdated = try? c.decode(String.self, forKey: .lastUpdated)
-                  self.apps = (try? c.decode([StoreAPIApp].self, forKey: .apps)) ?? []
-              }
-
-              public func encode(to encoder: Encoder) throws {
-                  var c = encoder.container(keyedBy: CodingKeys.self)
-                  try c.encodeIfPresent(lastUpdated, forKey: .lastUpdated)
-                  try c.encode(apps, forKey: .apps)
-              }
-          }
-
-          public struct StoreAPIApp: Codable, Identifiable, Hashable {
-              public var id: Int
-              public var name: String
-              public var bundleId: String?
-              public var bundleVersion: String?
-              public var ipaSize: String?
-              public var githubUrl: String?
-              public var archiveUrl: String?
-              public var ipaUrl: String?
-              public var host: String?
-              public var icon: String?
-              public var description: String?
-              public var screenshots: [String]?
-              public var category: String?
-              public var createdAt: String?
-              public var updatedAt: String?
-              public var downloadURL: String?
-              public var down: String?
-              public var iconURL: String?
-              public var localizedDescription: String?
-              public var developerName: String?
-              public var version: String?
-              public var versionDate: String?
-              public var fullDate: String?
-              public var size: Double?
-              public var type: Int?
-              public var subtitle: String?
-              public var minOSVersion: String?
-              public var sourceName: String?
-              public var sourceURL: String?
-
-              // ---------- universal dictionary init (used for every repo) ----------
-              public init(json raw: [String: Any], sourceName: String? = nil, sourceURL: String? = nil) {
-                  var dict = raw
-
-                  // AltStore / SideStore style: latest metadata lives inside versions[0]
-                  if let versions = JX.firstValue(raw, ["versions"]) as? [[String: Any]],
-                     let latest = versions.first {
-                      for (k, v) in latest where !(v is NSNull) {
-                          if dict[k] == nil || JX.str(dict[k]) == nil { dict[k] = v }
-                      }
-                      if dict["version"] == nil { dict["version"] = latest["version"] }
-                      if JX.firstValue(raw, ["size"]) == nil { dict["size"] = latest["size"] }
-                      if JX.firstValue(raw, ["downloadURL", "download_url"]) == nil {
-                          dict["downloadURL"] = JX.firstValue(latest, ["downloadURL", "download_url", "url"])
-                      }
-                  }
-
-                  self.name = JX.firstString(dict, ["name", "appName", "app_name", "title", "displayName"]) ?? "Untitled"
-                  self.bundleId = JX.firstString(dict, ["bundle_id", "bundleIdentifier", "bundleID", "bundleId", "identifier", "package"])
-                  self.version = JX.firstString(dict, ["version", "bundle_version", "bundleVersion", "latestVersion", "app_version"])
-                  self.bundleVersion = self.version
-                  self.developerName = JX.firstString(dict, ["developerName", "developer", "author", "seller", "publisher", "team"])
-                  self.subtitle = JX.firstString(dict, ["subtitle", "tagline", "shortDescription", "short_description"])
-
-                  let desc = JX.firstString(dict, [
-                      "localizedDescription", "description", "desc", "about",
-                      "details", "summary", "app_description", "long_description", "body"
-                  ])
-                  self.description = desc ?? self.subtitle
-                  self.localizedDescription = self.description
-
-                  self.icon = JX.firstString(dict, ["iconURL", "icon_url", "icon", "imageURL", "image_url", "image", "thumbnail", "logo"])
-                  self.iconURL = self.icon
-
-                  let shots = JX.urlList(JX.firstValue(dict, ["screenshotURLs", "screenshots", "screenshot_urls", "images", "previews", "screenshotUrls"]))
-                  self.screenshots = shots.isEmpty ? nil : shots
-
-                  // category may be a string, an array, or a number
-                  if let cat = JX.firstString(dict, ["category", "genre", "section", "kind"]) {
-                      self.category = cat
-                  } else if let arr = JX.firstValue(dict, ["categories", "genres", "tags"]) as? [Any] {
-                      self.category = JX.str(arr.first)
-                  } else {
-                      self.category = nil
-                  }
-
-                  // size: bytes number, or "12.4 MB", or ipa_size string
-                  let bytes = JX.firstNumber(dict, ["size", "sizeBytes", "size_bytes", "fileSize", "file_size", "ipa_size", "ipaSize", "filesize"])
-                  self.size = (bytes ?? 0) > 0 ? bytes : nil
-                  self.ipaSize = JX.firstString(dict, ["ipa_size", "ipaSize", "sizeText", "size_label"])
-
-                  self.ipaUrl = JX.firstString(dict, [
-                      "ipa_url", "ipaUrl", "downloadURL", "download_url", "download",
-                      "url", "down", "install_url", "installURL", "link", "file_url", "fileURL"
-                  ])
-                  self.downloadURL = self.ipaUrl
-                  self.down = self.ipaUrl
-                  self.githubUrl = JX.firstString(dict, ["github_url", "githubUrl", "repo_url", "source_url"])
-                  self.archiveUrl = JX.firstString(dict, ["archive_url", "archiveUrl"])
-                  self.host = JX.firstString(dict, ["host", "server", "provider"]) ?? sourceName
-
-                  self.createdAt = JX.firstString(dict, ["created_at", "createdAt", "added", "addedDate"])
-                  self.updatedAt = JX.firstString(dict, ["updated_at", "updatedAt", "versionDate", "date", "fullDate", "lastUpdated"])
-                  self.versionDate = JX.firstString(dict, ["versionDate", "date", "version_date"])
-                  self.fullDate = JX.firstString(dict, ["fullDate", "full_date"])
-                  self.minOSVersion = JX.firstString(dict, ["minOSVersion", "min_os_version", "minimumOSVersion"])
-                  self.type = Int(JX.firstNumber(dict, ["type"]) ?? -1) >= 0 ? Int(JX.firstNumber(dict, ["type"]) ?? 0) : nil
-
-                  self.sourceName = sourceName
-                  self.sourceURL = sourceURL
-
-                  if let intId = JX.firstNumber(dict, ["id", "app_id", "appId"]), intId > 0, intId < 9_000_000_000 {
-                      self.id = Int(intId)
-                  } else {
-                      let seed = (self.bundleId ?? "") + "|" + self.name + "|" + (sourceName ?? "")
-                      self.id = abs(seed.hashValue)
-                  }
-              }
-
-              // ---------- Codable (goes through the same dictionary init) ----------
-              public init(from decoder: Decoder) throws {
-                  let c = try decoder.singleValueContainer()
-                  let boxed = try c.decode([String: JSONAny].self)
-                  self.init(json: boxed.mapValues { $0.value })
-              }
-
-              public func encode(to encoder: Encoder) throws {
-                  var c = encoder.container(keyedBy: CodingKeys.self)
-                  try c.encode(id, forKey: .id)
-                  try c.encode(name, forKey: .name)
-                  try c.encodeIfPresent(bundleId, forKey: .bundleId)
-                  try c.encodeIfPresent(bundleVersion, forKey: .bundleVersion)
-                  try c.encodeIfPresent(ipaSize, forKey: .ipaSize)
-                  try c.encodeIfPresent(size, forKey: .size)
-                  try c.encodeIfPresent(ipaUrl, forKey: .ipaUrl)
-                  try c.encodeIfPresent(icon, forKey: .icon)
-                  try c.encodeIfPresent(description, forKey: .description)
-                  try c.encodeIfPresent(screenshots, forKey: .screenshots)
-                  try c.encodeIfPresent(category, forKey: .category)
-                  try c.encodeIfPresent(developerName, forKey: .developerName)
-                  try c.encodeIfPresent(sourceName, forKey: .sourceName)
-                  try c.encodeIfPresent(updatedAt, forKey: .updatedAt)
-              }
-
-              enum CodingKeys: String, CodingKey {
-                  case id, name, bundleId, bundleVersion, ipaSize, size, ipaUrl, icon
-                  case description, screenshots, category, developerName, sourceName, updatedAt
-              }
-
-              public static func == (lhs: StoreAPIApp, rhs: StoreAPIApp) -> Bool {
-                  lhs.id == rhs.id && lhs.name == rhs.name && lhs.sourceName == rhs.sourceName
-              }
-
-              public func hash(into hasher: inout Hasher) {
-                  hasher.combine(id)
-                  hasher.combine(name)
-                  hasher.combine(sourceName)
-              }
-
-              // ---------- display helpers ----------
-              public var cleanSize: String {
-                  if let s = size, s > 0 {
-                      let f = ByteCountFormatter()
-                      f.allowedUnits = [.useKB, .useMB, .useGB]
-                      f.countStyle = .file
-                      return f.string(fromByteCount: Int64(s))
-                  }
-                  if let s = ipaSize, !s.isEmpty { return s }
-                  return "-"
-              }
-
-              public var cleanDescription: String {
-                  let raw = (description ?? localizedDescription ?? subtitle ?? "")
-                      .trimmingCharacters(in: .whitespacesAndNewlines)
-                  if raw.isEmpty {
-                      return "تطبيق متوفر على ONEs Store عبر المصدر \(sourceLabel). لم يوفّر المصدر وصفًا لهذا التطبيق."
-                  }
-                  return raw
-              }
-
-              public var displayVersion: String {
-                  if let v = version ?? bundleVersion, !v.isEmpty {
-                      return v.hasPrefix("v") ? v : "v\(v)"
-                  }
-                  return "-"
-              }
-
-              public var sourceLabel: String {
-                  if let s = sourceName, !s.isEmpty { return s }
-                  if let h = host, !h.isEmpty { return h }
-                  if let u = resolvedDownloadURL, let host = URL(string: u)?.host { return host }
-                  return "-"
-              }
-
-              public var resolvedDownloadURL: String? {
-                  return ipaUrl ?? downloadURL ?? down ?? archiveUrl ?? githubUrl
-              }
-
-              /// How complete this entry is - used when the same app comes from several repos.
-              public var metadataScore: Int {
-                  var s = 0
-                  if (description?.count ?? 0) > 10 { s += 3 }
-                  if (size ?? 0) > 0 || (ipaSize?.isEmpty == false) { s += 2 }
-                  if icon != nil { s += 1 }
-                  if resolvedDownloadURL != nil { s += 3 }
-                  if (screenshots?.isEmpty == false) { s += 1 }
-                  if developerName != nil { s += 1 }
-                  if version != nil { s += 1 }
-                  return s
-              }
-          }
-
-          struct DownloadRepository: Codable, Identifiable, Hashable {
+          struct KnownApp: Identifiable, Hashable {
               let id: String
               let name: String
-              let feedURL: String
-              let homepage: String
-              let enabled: Bool
-              let maxGB: Double
+              let scheme: String
+              let icon: String
 
-              init(id: String, name: String, feedURL: String, homepage: String, enabled: Bool = true, maxGB: Double = 250) {
-                  self.id = id
-                  self.name = name
-                  self.feedURL = feedURL
-                  self.homepage = homepage
-                  self.enabled = enabled
-                  self.maxGB = maxGB
-              }
+              static let catalog: [KnownApp] = [
+                  .init(id: "youtube", name: "YouTube", scheme: "youtube", icon: "play.rectangle.fill"),
+                  .init(id: "twitter", name: "X", scheme: "twitter", icon: "xmark"),
+                  .init(id: "instagram", name: "Instagram", scheme: "instagram", icon: "camera.fill"),
+                  .init(id: "facebook", name: "Facebook", scheme: "facebook", icon: "person.2.fill"),
+                  .init(id: "telegram", name: "Telegram", scheme: "telegram", icon: "paperplane.fill"),
+                  .init(id: "whatsapp", name: "WhatsApp", scheme: "whatsapp", icon: "message.fill"),
+                  .init(id: "discord", name: "Discord", scheme: "discord", icon: "bubble.left.and.bubble.right.fill"),
+                  .init(id: "reddit", name: "Reddit", scheme: "reddit", icon: "text.bubble.fill"),
+                  .init(id: "spotify", name: "Spotify", scheme: "spotify", icon: "music.note"),
+                  .init(id: "tiktok", name: "TikTok", scheme: "tiktok", icon: "music.note"),
+                  .init(id: "snapchat", name: "Snapchat", scheme: "snapchat", icon: "camera.viewfinder"),
+                  .init(id: "linkedin", name: "LinkedIn", scheme: "linkedin", icon: "briefcase.fill"),
+                  .init(id: "github", name: "GitHub", scheme: "github", icon: "chevron.left.forwardslash.chevron.right"),
+                  .init(id: "chrome", name: "Google Chrome", scheme: "googlechrome", icon: "globe"),
+                  .init(id: "maps", name: "Google Maps", scheme: "googlemaps", icon: "map.fill"),
+                  .init(id: "waze", name: "Waze", scheme: "waze", icon: "location.fill"),
+                  .init(id: "mail", name: "Ø§ÙØ¨Ø±ÙØ¯", scheme: "mailto", icon: "envelope.fill"),
+                  .init(id: "phone", name: "Ø§ÙÙØ§ØªÙ", scheme: "tel", icon: "phone.fill"),
+                  .init(id: "facetime", name: "FaceTime", scheme: "facetime", icon: "video.fill"),
+                  .init(id: "calendar", name: "Ø§ÙØªÙÙÙÙ", scheme: "calshow", icon: "calendar"),
+                  .init(id: "shortcuts", name: "Ø§ÙØ§Ø®ØªØµØ§Ø±Ø§Øª", scheme: "shortcuts", icon: "square.grid.2x2.fill"),
+                  .init(id: "music", name: "Ø§ÙÙÙØ³ÙÙÙ", scheme: "music", icon: "music.note"),
+                  .init(id: "podcasts", name: "Ø§ÙØ¨ÙØ¯ÙØ§Ø³Øª", scheme: "podcasts", icon: "mic.fill"),
+                  .init(id: "photos", name: "Ø§ÙØµÙØ±", scheme: "photos", icon: "photo.fill"),
+                  .init(id: "appstore", name: "App Store", scheme: "itms-apps", icon: "bag.fill")
+              ]
           }
 
-          struct DownloadQuota: Codable, Identifiable, Hashable {
-              let id: String
-              let totalBytes: Int64
-              let usedBytes: Int64
-              var freeBytes: Int64 { max(0, totalBytes - usedBytes) }
-              var freeGB: Double { Double(freeBytes) / 1_073_741_824.0 }
-              var usedGB: Double { Double(usedBytes) / 1_073_741_824.0 }
-              var totalGB: Double { Double(totalBytes) / 1_073_741_824.0 }
-          }
-          VIPEOF
+          struct AppCheckResult: Identifiable, Hashable {
+              let app: KnownApp
+              let installed: Bool
 
-      - name: Generate code - Repositories.swift
+              var id: String { app.id }
+          }
+          SWIFT
+
+      - name: Generate Swift source - InstalledAppsService.swift
+        shell: bash
         run: |
-          cat > Repositories.swift << 'VIPEOF'
+          cat > AppScopeBuild/AppScope/InstalledAppsService.swift <<'SWIFT'
           import Foundation
-          import SwiftUI
-
-          @MainActor
-          final class RepositoriesStore: ObservableObject {
-              static let shared = RepositoriesStore()
-
-              @Published private(set) var repositories: [DownloadRepository]
-              @Published private(set) var quota: DownloadQuota
-              @Published private(set) var totalAppsAvailable: Int = 0
-
-              private let keyRepos = "repositories.v1"
-              private let keyQuota = "quota.v1"
-              private let d = UserDefaults.standard
-
-              private init() {
-                  if let data = d.data(forKey: keyQuota),
-                     let decoded = try? JSONDecoder().decode(DownloadQuota.self, from: data) {
-                      self.quota = decoded
-                  } else {
-                      self.quota = DownloadQuota(
-                          id: "user-quota",
-                          totalBytes: Int64(1000) * 1_073_741_824,
-                          usedBytes: 0
-                      )
-                  }
-
-                  if let data = d.data(forKey: keyRepos),
-                     let decoded = try? JSONDecoder().decode([DownloadRepository].self, from: data) {
-                      self.repositories = decoded
-                  } else {
-                      self.repositories = [
-                          DownloadRepository(
-                              id: "21s-admin-panel",
-                              name: "ONEs",
-                              feedURL: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app/api/public/store/apps",
-                              homepage: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app",
-                              enabled: true,
-                              maxGB: 500
-                          ),
-                          DownloadRepository(
-                              id: "21s-originals",
-                              name: "ONEs Originals",
-                              feedURL: "https://21s.app/repo/apps.json",
-                              homepage: "https://21s.app",
-                              enabled: true,
-                              maxGB: 500
-                          )
-                      ]
-                  }
-
-                  self.persistRepositories()
-                  self.persistQuota()
-              }
-
-              func totalMaxGB() -> Double {
-                  repositories.filter { $0.enabled }.reduce(0) { $0 + $1.maxGB }
-              }
-
-              func setEnabled(_ enabled: Bool, for repo: DownloadRepository) {
-                  guard let idx = repositories.firstIndex(where: { $0.id == repo.id }) else { return }
-                  repositories[idx] = DownloadRepository(
-                      id: repo.id, name: repo.name, feedURL: repo.feedURL,
-                      homepage: repo.homepage, enabled: enabled, maxGB: repo.maxGB
-                  )
-                  persistRepositories()
-              }
-
-              func resetQuotaUsage() {
-                  quota = DownloadQuota(id: quota.id, totalBytes: quota.totalBytes, usedBytes: 0)
-                  persistQuota()
-              }
-
-              func addUsedBytes(_ bytes: Int64) {
-                  let updated = DownloadQuota(id: quota.id, totalBytes: quota.totalBytes, usedBytes: quota.usedBytes + bytes)
-                  quota = updated
-                  persistQuota()
-              }
-
-              func updateTotalApps(_ count: Int) {
-                  totalAppsAvailable = count
-              }
-
-              // New method to add a repository
-              func addRepository(name: String, feedURL: String, homepage: String = "", enabled: Bool = true, maxGB: Double = 250) {
-                  let id = UUID().uuidString
-                  let repo = DownloadRepository(id: id, name: name, feedURL: feedURL, homepage: homepage.isEmpty ? feedURL : homepage, enabled: enabled, maxGB: maxGB)
-                  repositories.append(repo)
-                  persistRepositories()
-              }
-
-              private func persistRepositories() {
-                  if let data = try? JSONEncoder().encode(repositories) {
-                      d.set(data, forKey: keyRepos)
-                  }
-              }
-
-              private func persistQuota() {
-                  if let data = try? JSONEncoder().encode(quota) {
-                      d.set(data, forKey: keyQuota)
-                  }
-              }
-          }
-          VIPEOF
-
-      # =========================================================
-      # SOURCE CODE - ActivationManager.swift (full server-based activation)
-      # =========================================================
-      - name: Generate code - ActivationManager.swift
-        run: |
-          cat > ActivationManager.swift << 'ACTEOF'
-          import SwiftUI
-          import Foundation
-          import Combine
           import UIKit
 
           @MainActor
-          public final class ActivationManager: ObservableObject {
-              public static let shared = MainActor.assumeIsolated { ActivationManager() }
+          final class InstalledAppsService: ObservableObject {
+              @Published private(set) var results: [AppCheckResult] = []
+              @Published private(set) var isChecking = false
+              @Published private(set) var checkedAt: Date?
 
-              @Published public private(set) var isActive: Bool = false
-              @Published public private(set) var code: String = ""
-              @Published public private(set) var expiresAt: Date? = nil
-              @Published public private(set) var durationDays: Int = 0
-              @Published public private(set) var fullName: String = ""
-              @Published public var isWorking: Bool = false
-              @Published public var lastError: String = ""
+              /*
+               This is intentionally limited to a fixed, declared list of URL schemes.
+               It does NOT enumerate the filesystem, private LaunchServices databases,
+               installed application bundles, or use private APIs.
 
-              @Published public private(set) var daysLeft: Int = 0
-              @Published public private(set) var expiryText: String = "غير مفعّل"
+               A positive result means that iOS reports an installed app registered
+               for that declared URL scheme. It is not a general installed-app list.
+              */
+              func checkKnownApps() {
+                  guard !isChecking else { return }
 
-              public static let codesSiteBase = "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
-              public static let activationNameLink = "https://t.me/deviosx"
+                  isChecking = true
+                  results = []
 
-              private let kCode = "activation_code_v1"
-              private let kExpires = "activation_expires_v1"
-              private let kDays = "activation_days_v1"
-              private let kName = "activation_full_name_v1"
+                  let catalog = KnownApp.catalog
 
-              @Published public var udid: String = UserDefaults.standard.string(forKey: "official_udid_v1") ?? "" {
-                  didSet {
-                      let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                      UserDefaults.standard.set(clean, forKey: "official_udid_v1")
-                  }
-              }
-
-              public var deviceID: String {
-                  let clean = udid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  if !clean.isEmpty { return clean }
-                  if let saved = UserDefaults.standard.string(forKey: "activation_device_id_v1"), !saved.isEmpty {
-                      return saved
-                  }
-                  let generated = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-                  UserDefaults.standard.set(generated, forKey: "activation_device_id_v1")
-                  return generated
-              }
-
-              private init() {
-                  let d = UserDefaults.standard
-                  code = d.string(forKey: kCode) ?? ""
-                  durationDays = d.integer(forKey: kDays)
-                  fullName = d.string(forKey: kName) ?? ""
-                  if let ts = d.object(forKey: kExpires) as? Double, ts > 0 {
-                      expiresAt = Date(timeIntervalSince1970: ts)
-                  }
-                  refreshLocalState()
-              }
-
-              private func refreshLocalState() {
-                  if let exp = expiresAt, exp > Date(), !code.isEmpty {
-                      isActive = true
-                  } else {
-                      isActive = false
-                  }
-                  if let exp = expiresAt {
-                      let days = max(0, Int(ceil(exp.timeIntervalSinceNow / 86400.0)))
-                      daysLeft = days
-                      let f = DateFormatter()
-                      f.locale = Locale(identifier: "ar")
-                      f.dateStyle = .medium
-                      expiryText = f.string(from: exp)
-                  } else {
-                      daysLeft = 0
-                      expiryText = "غير مفعّل"
-                  }
-              }
-
-              private func persist() {
-                  let d = UserDefaults.standard
-                  d.set(code, forKey: kCode)
-                  d.set(durationDays, forKey: kDays)
-                  d.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: kExpires)
-                  d.set(fullName, forKey: kName)
-              }
-
-              public static func parseDate(_ raw: String) -> Date? {
-                  let iso = ISO8601DateFormatter()
-                  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                  if let d = iso.date(from: raw) { return d }
-                  if let d = ISO8601DateFormatter().date(from: raw) { return d }
-                  let f = DateFormatter()
-                  f.locale = Locale(identifier: "en_US_POSIX")
-                  f.timeZone = TimeZone(secondsFromGMT: 0)
-                  for fmt in ["yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"] {
-                      f.dateFormat = fmt
-                      if let d = f.date(from: raw) {
-                          return fmt == "yyyy-MM-dd" ? d.addingTimeInterval(86_399) : d
-                      }
-                  }
-                  return nil
-              }
-
-              private func apply(_ json: [String: Any], fallbackCode: String? = nil) -> Bool {
-                  guard (json["ok"] as? Bool) == true else { return false }
-                  var jsonData = json
-                  if let acc = json["account"] as? [String: Any] {
-                      for (k, v) in acc { jsonData[k] = v }
-                  }
-                  if let active = jsonData["active"] as? Bool, active == false { return false }
-                  if let c = jsonData["code"] as? String, !c.isEmpty {
-                      code = c
-                  } else if let fb = fallbackCode, !fb.isEmpty {
-                      code = fb
-                  }
-                  if let u = jsonData["udid"] as? String, !u.isEmpty {
-                      udid = u
-                  }
-                  if let days = jsonData["duration_days"] as? Int { durationDays = days }
-                  if let name = jsonData["full_name"] as? String, !name.isEmpty {
-                      fullName = name
-                  }
-                  if let raw = jsonData["expires_at"] as? String, let d = ActivationManager.parseDate(raw) {
-                      expiresAt = d
-                      durationDays = max(durationDays, max(0, Int(ceil(d.timeIntervalSinceNow / 86_400.0))))
-                  }
-                  persist()
-                  refreshLocalState()
-                  return isActive
-              }
-
-              public func activate(code newCode: String, completion: ((Bool) -> Void)? = nil) {
-                  let clean = newCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                  guard clean.count >= 6 else {
-                      lastError = LS("أدخل كود اشتراك صحيح")
-                      completion?(false)
-                      return
-                  }
-                  guard !udid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                      lastError = LS("ألصق UDID الرسمي للجهاز أولًا")
-                      completion?(false)
-                      return
-                  }
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/activate") else {
-                      lastError = "رابط الموقع غير صحيح"; completion?(false); return
-                  }
-                  isWorking = true
-                  lastError = ""
-                  var req = URLRequest(url: url)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "code": clean,
-                      "udid": deviceID,
-                      "device_id": deviceID,
-                      "device_model": UIDevice.current.model
-                  ])
-                  URLSession.shared.dataTask(with: req) { data, _, error in
-                      Task { @MainActor in
-                          self.isWorking = false
-                          guard let data = data,
-                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              self.lastError = error?.localizedDescription ?? "تعذر الاتصال بالخادم"
-                              completion?(false); return
-                          }
-                          if self.apply(json, fallbackCode: clean) {
-                              HapticManager.shared.success()
-                              completion?(true)
-                          } else {
-                              self.lastError = (json["message"] as? String) ?? LS("الاسم غير صالح")
-                              completion?(false)
-                          }
-                      }
-                  }.resume()
-              }
-
-              public func verify(completion: ((Bool) -> Void)? = nil) {
-                  guard !code.isEmpty else { completion?(false); return }
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/verify")
-                  comps?.queryItems = [
-                      URLQueryItem(name: "code", value: code),
-                      URLQueryItem(name: "udid", value: deviceID),
-                      URLQueryItem(name: "device_id", value: deviceID)
-                  ]
-                  guard let url = comps?.url else { completion?(false); return }
-                  URLSession.shared.dataTask(with: url) { data, _, _ in
-                      Task { @MainActor in
-                          guard let data = data,
-                                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                              self.refreshLocalState()
-                              completion?(self.isActive); return
-                          }
-                          if self.apply(json) {
-                              completion?(true)
-                          } else {
-                              self.lastError = (json["message"] as? String) ?? "انتهى الاشتراك"
-                              self.deactivate(keepMessage: true)
-                              completion?(false)
-                          }
-                      }
-                  }.resume()
-              }
-
-              public func deactivate(keepMessage: Bool = false) {
-                  code = ""
-                  expiresAt = nil
-                  durationDays = 0
-                  fullName = ""
-                  isActive = false
-                  if !keepMessage { lastError = "" }
-                  persist()
-                  refreshLocalState()
-              }
-
-              public func fetchStatus(completion: ((Bool) -> Void)? = nil) {
-                  verify(completion: completion)
-              }
-          }
-
-          struct SubscriptionGateView: View {
-              @ObservedObject private var activation = ActivationManager.shared
-              @State private var input: String = ""
-              @State private var agreed: Bool = false
-              @State private var shake: Bool = false
-              @FocusState private var focused: Bool
-
-              // Dynamic colors
-              private var inkColor: Color { Color.storeText }
-              private var goldColor: Color { Color.storePrimary }
-              private var fieldColor: Color {
-                  Color(UIColor { trait in
-                      trait.userInterfaceStyle == .dark ?
-                          UIColor(white: 0.15, alpha: 1) :
-                          UIColor(red: 0.957, green: 0.961, blue: 0.969, alpha: 1)
-                  })
-              }
-              private var cardColor: Color { Color.storeCard }
-
-              private var canActivate: Bool {
-                  !activation.isWorking
-                      && agreed
-                      && !input.trimmingCharacters(in: .whitespaces).isEmpty
-              }
-
-              var body: some View {
-                  ZStack(alignment: .top) {
-                      LinearGradient(
-                          colors: [
-                              Color.storeBg,
-                              Color.storeBg.opacity(0.8),
-                              Color.storeBg
-                          ],
-                          startPoint: .top,
-                          endPoint: .bottom
-                      )
-                      .ignoresSafeArea()
-
-                      ScrollView(showsIndicators: false) {
-                          VStack(spacing: 0) {
-
-                              HStack {
-                                  Spacer()
-                                  Button {
-                                      activation.verify()
-                                  } label: {
-                                      Text(LS("استعادة الاشتراك"))
-                                          .font(.system(size: 14, weight: .semibold))
-                                          .foregroundColor(inkColor)
-                                          .padding(.horizontal, 18)
-                                          .padding(.vertical, 11)
-                                          .background(
-                                              Capsule().stroke(inkColor.opacity(0.4), lineWidth: 1.2)
-                                          )
-                                  }
-                              }
-                              .padding(.horizontal, 20)
-                              .padding(.top, 8)
-
-                              if let mascot = UIImage.bundled("sub_mascot.png") {
-                                  Image(uiImage: mascot)
-                                      .resizable()
-                                      .scaledToFit()
-                                      .frame(height: 250)
-                                      .padding(.top, 18)
-                                      .padding(.bottom, -52)
-                                      .zIndex(2)
-                              } else {
-                                  Spacer().frame(height: 40)
-                              }
-
-                              VStack(spacing: 0) {
-                                  Text(LS("فعّل اشتراكك الآن"))
-                                      .font(.system(size: 30, weight: .heavy))
-                                      .foregroundColor(inkColor)
-                                      .multilineTextAlignment(.center)
-                                      .padding(.top, 46)
-
-                                  Text(LS("أدخل بيانات جهازك وكود الاشتراك للحصول علي الوصول الكامل لجميع المزايا والتطبيقات."))
-                                      .font(.system(size: 15, weight: .medium))
-                                      .foregroundColor(Color.storeSub)
-                                      .multilineTextAlignment(.center)
-                                      .lineSpacing(6)
-                                      .padding(.horizontal, 24)
-                                      .padding(.top, 14)
-
-                                  Text(LS("لصق UDID هنا"))
-                                      .font(.system(size: 16, weight: .bold))
-                                      .foregroundColor(inkColor)
-                                      .frame(maxWidth: .infinity)
-                                      .padding(.top, 34)
-
-                                  TextField("", text: $activation.udid,
-                                            prompt: Text(LS("ألصق UDID الخاص بجهازك"))
-                                                .foregroundColor(Color.storeSub))
-                                      .multilineTextAlignment(.center)
-                                      .textInputAutocapitalization(.characters)
-                                      .disableAutocorrection(true)
-                                      .foregroundColor(inkColor)
-                                      .font(.system(size: 15, weight: .semibold))
-                                      .tint(goldColor)
-                                      .padding(.horizontal, 16)
-                                      .frame(height: 62)
-                                      .frame(maxWidth: .infinity)
-                                      .background(
-                                          RoundedRectangle(cornerRadius: 18)
-                                              .fill(fieldColor)
-                                              .overlay(
-                                                  RoundedRectangle(cornerRadius: 18)
-                                                      .stroke(Color.storeDivider, lineWidth: 1)
-                                              )
-                                      )
-                                      .padding(.horizontal, 22)
-                                      .padding(.top, 14)
-
-                                  Text(LS("لصق كود الاشتراك هنا"))
-                                      .font(.system(size: 16, weight: .bold))
-                                      .foregroundColor(inkColor)
-                                      .frame(maxWidth: .infinity)
-                                      .padding(.top, 30)
-
-                                  TextField("", text: $input,
-                                            prompt: Text(LS("اصق كود الاشتراك"))
-                                                .foregroundColor(Color.storeSub))
-                                      .multilineTextAlignment(.center)
-                                      .textInputAutocapitalization(.characters)
-                                      .disableAutocorrection(true)
-                                      .foregroundColor(inkColor)
-                                      .font(.system(size: 15, weight: .semibold))
-                                      .focused($focused)
-                                      .tint(goldColor)
-                                      .padding(.horizontal, 16)
-                                      .frame(height: 62)
-                                      .frame(maxWidth: .infinity)
-                                      .background(
-                                          RoundedRectangle(cornerRadius: 18)
-                                              .fill(fieldColor)
-                                              .overlay(
-                                                  RoundedRectangle(cornerRadius: 18)
-                                                      .stroke(Color.storeDivider, lineWidth: 1)
-                                              )
-                                      )
-                                      .padding(.horizontal, 22)
-                                      .padding(.top, 14)
-                                      .offset(x: shake ? 8 : 0)
-
-                                  if !activation.lastError.isEmpty {
-                                      Text(activation.lastError)
-                                          .font(.system(size: 13, weight: .semibold))
-                                          .foregroundColor(Color(red: 0.85, green: 0.20, blue: 0.28))
-                                          .multilineTextAlignment(.center)
-                                          .padding(.horizontal, 24)
-                                          .padding(.top, 12)
-                                  }
-
-                                  Button {
-                                      focused = false
-                                      guard agreed else {
-                                          withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
-                                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
-                                          return
-                                      }
-                                      HapticManager.shared.impact(.medium)
-                                      activation.activate(code: input) { ok in
-                                          if ok {
-                                              activation.verify()
-                                          } else {
-                                              withAnimation(.default.repeatCount(3, autoreverses: true).speed(6)) { shake = true }
-                                              DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { shake = false }
-                                          }
-                                      }
-                                  } label: {
-                                      HStack(spacing: 10) {
-                                          if activation.isWorking {
-                                              ProgressView().tint(.white)
-                                          }
-                                          Text(activation.isWorking ? LS("جارٍ التحقق…") : LS("تحقق وتفعيل الاشتراك"))
-                                              .font(.system(size: 19, weight: .bold))
-                                      }
-                                      .foregroundColor(.white)
-                                      .frame(maxWidth: .infinity)
-                                      .frame(height: 66)
-                                      .background(
-                                          RoundedRectangle(cornerRadius: 18)
-                                              .fill(goldColor)
-                                      )
-                                  }
-                                  .disabled(!canActivate)
-                                  .opacity(canActivate ? 1 : 0.6)
-                                  .padding(.horizontal, 22)
-                                  .padding(.top, 26)
-                                  .padding(.bottom, 30)
-                              }
-                              .frame(maxWidth: .infinity)
-                              .background(
-                                  RoundedRectangle(cornerRadius: 34)
-                                      .fill(cardColor)
-                                      .shadow(color: Color.black.opacity(0.08), radius: 24, y: 10)
-                              )
-                              .padding(.horizontal, 14)
-
-                              Button {
-                                  HapticManager.shared.selection()
-                                  withAnimation(.easeOut(duration: 0.15)) { agreed.toggle() }
-                              } label: {
-                                  HStack(spacing: 8) {
-                                      ZStack {
-                                          RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                              .fill(agreed ? goldColor : Color.white.opacity(0.85))
-                                          RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                              .stroke(agreed ? goldColor : Color(white: 0.7), lineWidth: 1.4)
-                                          if agreed {
-                                              Image(systemName: "checkmark")
-                                                  .font(.system(size: 13, weight: .heavy))
-                                                  .foregroundColor(.white)
-                                          }
-                                      }
-                                      .frame(width: 24, height: 24)
-
-                                      HStack(spacing: 4) {
-                                          Text(LS("بإكمال العملية، أنت توافق على"))
-                                              .foregroundColor(Color.storeSub)
-                                          Text(LS("الشروط والأحكام"))
-                                              .foregroundColor(goldColor)
-                                      }
-                                      .font(.system(size: 13, weight: .semibold))
-                                  }
-                              }
-                              .buttonStyle(.plain)
-                              .padding(.top, 18)
-
-                              Spacer(minLength: 30)
-                          }
-                      }
-                  }
-                  .environment(\.layoutDirection, .rightToLeft)
-                  .onAppear { activation.verify() }
-              }
-          }
-
-          struct ActivationGateContainer<Content: View>: View {
-              @ObservedObject private var activation = ActivationManager.shared
-              private let content: () -> Content
-              init(@ViewBuilder content: @escaping () -> Content) { self.content = content }
-
-              var body: some View {
-                  Group {
-                      if activation.isActive {
-                          content()
-                      } else {
-                          SubscriptionGateView()
-                      }
-                  }
-                  .animation(.easeInOut(duration: 0.35), value: activation.isActive)
-              }
-          }
-          ACTEOF
-
-      # =========================================================
-      # SOURCE CODE - GreenWave.swift (plain helpers)
-      # =========================================================
-      - name: Generate code - GreenWave.swift
-        run: |
-          cat > GreenWave.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-
-          struct AnimatedWaveBackground: View {
-              var height: CGFloat = 260
-              var body: some View {
-                  ONEsStoreBackground()
-              }
-          }
-
-          struct PlainWhiteCard: ViewModifier {
-              var radius: CGFloat = 20
-              func body(content: Content) -> some View {
-                  content
-                      .background(
-                          RoundedRectangle(cornerRadius: radius, style: .continuous)
-                              .fill(Color.storeCard)
-                      )
-                      .overlay(
-                          RoundedRectangle(cornerRadius: radius, style: .continuous)
-                              .stroke(Color.storeDivider, lineWidth: 0.8)
-                      )
-                      .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-                      .shadow(color: Color.black.opacity(0.06), radius: 6, y: 2)
-              }
-          }
-
-          extension View {
-              func emerald3D(radius: CGFloat = 20, depth: CGFloat = 0) -> some View {
-                  modifier(PlainWhiteCard(radius: radius))
-              }
-          }
-
-          struct EmeraldOrb: View {
-              var size: CGFloat = 90
-              var body: some View {
-                  Circle()
-                      .fill(Color.storeCardAlt)
-                      .frame(width: size, height: size)
-                      .overlay(Circle().stroke(Color.storeDivider, lineWidth: 1))
-                      .overlay(
-                          Image(systemName: "lock.shield")
-                              .font(.system(size: size * 0.38, weight: .semibold))
-                              .foregroundColor(Color.storePrimary)
-                      )
-              }
-          }
-          VIPEOF
-
-      # =========================================================
-      # SOURCE CODE - StatusScreens.swift (simple no internet)
-      # =========================================================
-      - name: Generate code - StatusScreens.swift
-        run: |
-          cat > StatusScreens.swift << 'STATUSEOF'
-          import SwiftUI
-          import Network
-          import UIKit
-          import Foundation
-
-          enum StatusKind: Equatable {
-              case ok
-              case noInternet
-          }
-
-          @MainActor
-          final class StatusCenter: ObservableObject {
-              static let shared = StatusCenter()
-
-              @Published var kind: StatusKind = .ok
-              @Published var hasShownFirstWelcome: Bool = false
-
-              private let monitor = NWPathMonitor()
-              private let queue = DispatchQueue(label: "com.21s.status.monitor")
-              private var didStart = false
-
-              @Published var toastText: String = ""
-              private var toastToken: Int = 0
-
-              private init() {}
-
-              nonisolated func show(text: String) {
                   Task { @MainActor in
-                      StatusCenter.shared.presentToast(text)
-                  }
-              }
+                      var checked: [AppCheckResult] = []
+                      checked.reserveCapacity(catalog.count)
 
-              private func presentToast(_ text: String) {
-                  toastText = text
-                  toastToken &+= 1
-                  let token = toastToken
-                  Task { @MainActor in
-                      try? await Task.sleep(nanoseconds: 2_600_000_000)
-                      if self.toastToken == token {
-                          self.toastText = ""
+                      for item in catalog {
+                          guard let url = URL(string: "\(item.scheme)://") else {
+                              checked.append(AppCheckResult(app: item, installed: false))
+                              continue
+                          }
+
+                          let installed = UIApplication.shared.canOpenURL(url)
+                          checked.append(AppCheckResult(app: item, installed: installed))
+
+                          // Keep the UI responsive on physical devices.
+                          await Task.yield()
                       }
+
+                      results = checked
+                      checkedAt = Date()
+                      isChecking = false
                   }
               }
 
-              func start() {
-                  guard !didStart else { return }
-                  didStart = true
-                  monitor.pathUpdateHandler = { [weak self] path in
-                      guard let self else { return }
-                      DispatchQueue.main.async {
-                          self.evaluate(currentPath: path)
-                      }
-                  }
-                  monitor.start(queue: queue)
-                  evaluate(currentPath: monitor.currentPath)
-              }
-
-              func refresh() {
-                  evaluate(currentPath: monitor.currentPath)
-              }
-
-              private func evaluate(currentPath: NWPath) {
-                  let online = (currentPath.status == .satisfied)
-                  if !online {
-                      if kind != .noInternet {
-                          HapticManager.shared.error()
-                      }
-                      kind = .noInternet
-                      return
-                  }
-                  kind = .ok
+              func clear() {
+                  results.removeAll()
+                  checkedAt = nil
               }
           }
+          SWIFT
 
-          struct NoInternetScreen: View {
-              var onRetry: () -> Void
-
-              var body: some View {
-                  VStack(spacing: 20) {
-                      Image(systemName: "wifi.slash")
-                          .font(.system(size: 50))
-                          .foregroundColor(Color.storeSub)
-                      Text("لا يوجد اتصال")
-                          .font(.system(size: 20, weight: .bold))
-                          .foregroundColor(Color.storeText)
-                      Text("تحقق من اتصالك بالإنترنت ثم حاول مرة أخرى.")
-                          .font(.system(size: 14))
-                          .foregroundColor(Color.storeSub)
-                          .multilineTextAlignment(.center)
-                          .padding(.horizontal, 40)
-                      Button(action: onRetry) {
-                          HStack {
-                              Image(systemName: "arrow.clockwise")
-                              Text("إعادة المحاولة")
-                          }
-                          .padding(.horizontal, 30)
-                          .padding(.vertical, 10)
-                          .background(Capsule().fill(Color.storePrimary))
-                          .foregroundColor(.white)
-                      }
-                  }
-                  .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  .background(ONEsStoreBackground())
-              }
-          }
-
-          struct StatusOverlayHost: View {
-              @ObservedObject var center = StatusCenter.shared
-
-              var body: some View {
-                  ZStack {
-                      Group {
-                          switch center.kind {
-                          case .ok:
-                              EmptyView()
-                          case .noInternet:
-                              NoInternetScreen {
-                                  HapticManager.shared.impact(.light)
-                                  center.refresh()
-                              }
-                              .transition(.opacity.combined(with: .scale(scale: 1.02)))
-                          }
-                      }
-                      .animation(.easeInOut(duration: 0.25), value: center.kind)
-
-                      if !center.toastText.isEmpty {
-                          VStack {
-                              Spacer()
-                              Text(center.toastText)
-                                  .font(.system(size: 14, weight: .semibold))
-                                  .foregroundColor(.white)
-                                  .multilineTextAlignment(.center)
-                                  .padding(.horizontal, 18)
-                                  .padding(.vertical, 12)
-                                  .background(
-                                      RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                          .fill(Color.black.opacity(0.85))
-                                  )
-                                  .padding(.bottom, 60)
-                                  .padding(.horizontal, 24)
-                          }
-                          .transition(.opacity)
-                      }
-                  }
-                  .animation(.easeInOut(duration: 0.25), value: center.toastText)
-              }
-          }
-          STATUSEOF
-
-      # =========================================================
-      # SOURCE CODE - ContentView.swift (root)
-      # =========================================================
-      - name: Generate code - ContentView.swift
+      - name: Generate Swift source - ContentView.swift
+        shell: bash
         run: |
-          cat > ContentView.swift << 'VIPEOF'
+          cat > AppScopeBuild/AppScope/ContentView.swift <<'SWIFT'
           import SwiftUI
 
           struct ContentView: View {
-              var body: some View {
-                  StoreRootView()
-              }
-          }
-          VIPEOF
+              @StateObject private var service = InstalledAppsService()
+              @AppStorage("scanConsent") private var scanConsent = false
+              @State private var showingConsent = false
+              @State private var search = ""
 
-      # =========================================================
-      # SOURCE CODE - StoreView.swift (dynamic dark/light, repositories tab)
-      # =========================================================
-      - name: Generate code - StoreView.swift
-        run: |
-          cat > StoreView.swift << 'VIPEOF'
-          import SwiftUI
-          import UIKit
-          import ImageIO
-
-          // Dynamic background that adapts to system appearance
-          struct ONEsStoreBackground: View {
-              @Environment(\.colorScheme) var colorScheme
-              var body: some View {
-                  if colorScheme == .dark {
-                      LinearGradient(
-                          colors: [
-                              Color(red: 0.055, green: 0.071, blue: 0.188), // #0e1230
-                              Color(red: 0.082, green: 0.102, blue: 0.239)  // slightly lighter
-                          ],
-                          startPoint: .top,
-                          endPoint: .bottom
-                      )
-                      .ignoresSafeArea()
-                  } else {
-                      LinearGradient(
-                          colors: [
-                              Color(red: 0.957, green: 0.945, blue: 0.918), // #f4f1ea
-                              Color(red: 0.933, green: 0.914, blue: 0.863)  // slightly darker
-                          ],
-                          startPoint: .top,
-                          endPoint: .bottom
-                      )
-                      .ignoresSafeArea()
+              private var visibleResults: [AppCheckResult] {
+                  guard !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                      return service.results
                   }
-              }
-          }
 
-          struct ONEsArtBanner: View {
-              var body: some View {
-                  Group {
-                      if let img = UIImage.bundled("home_banner.png") {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(img.size.width / max(img.size.height, 1), contentMode: .fit)
-                      } else {
-                          Color.clear.frame(height: 0)
-                      }
-                  }
-                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                  .padding(.horizontal, 18)
-              }
-          }
-
-          // ================= Image Cache =================
-          @MainActor
-          final class RemoteIconCache: ObservableObject {
-              static let shared = RemoteIconCache()
-              @Published private(set) var cache: [String: UIImage] = [:]
-              private let memCache: NSCache<NSString, UIImage> = {
-                  let c = NSCache<NSString, UIImage>()
-                  c.totalCostLimit = AppConstants.maxIconCacheBytes
-                  c.countLimit = 20_000
-                  return c
-              }()
-              private let session: URLSession
-              private let diskDir: URL
-              private let diskIndexKey = "apptesters-icon-disk-index"
-              private var diskIndex: [String: String] = [:]
-              private let inflightQueue = DispatchQueue(label: "com.21s.iconcache.inflight")
-              private var inflightSet: Set<String> = []
-
-              init() {
-                  let cfg = URLSessionConfiguration.default
-                  cfg.requestCachePolicy = .returnCacheDataElseLoad
-                  cfg.urlCache = URLCache(
-                      memoryCapacity: 64 * 1024 * 1024,
-                      diskCapacity: AppConstants.maxIconCacheBytes,
-                      diskPath: "icons-v2"
-                  )
-                  cfg.httpMaximumConnectionsPerHost = 16
-                  cfg.timeoutIntervalForRequest = 10
-                  cfg.timeoutIntervalForResource = 30
-                  self.session = URLSession(configuration: cfg)
-
-                  let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                  let dir = caches.appendingPathComponent("apptesters-icons-v2", isDirectory: true)
-                  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                  self.diskDir = dir
-                  if let data = UserDefaults.standard.data(forKey: diskIndexKey),
-                     let map = try? JSONDecoder().decode([String: String].self, from: data) {
-                      self.diskIndex = map
+                  let query = search.lowercased()
+                  return service.results.filter {
+                      $0.app.name.lowercased().contains(query) ||
+                      $0.app.scheme.lowercased().contains(query)
                   }
               }
 
-              func image(for urlString: String?) -> UIImage? {
-                  guard let s = urlString, !s.isEmpty, let url = URL(string: s) else { return nil }
-                  if let hit = cache[s] { return hit }
-                  if let hit = memCache.object(forKey: s as NSString) {
-                      cache[s] = hit
-                      return hit
-                  }
-
-                  let name = Self.sanitize(s)
-                  let path = diskDir.appendingPathComponent(name)
-                  if let data = try? Data(contentsOf: path), let img = UIImage(data: data) {
-                      memCache.setObject(img, forKey: s as NSString, cost: data.count)
-                      cache[s] = img
-                      return img
-                  }
-
-                  var already = false
-                  inflightQueue.sync { already = inflightSet.contains(s); if !already { inflightSet.insert(s) } }
-                  if !already {
-                      Task { [weak self] in
-                          await self?.fetch(urlString: s, url: url, name: name)
-                      }
-                  }
-                  return nil
-              }
-
-              private func fetch(urlString: String, url: URL, name: String) async {
-                  defer {
-                      _ = inflightQueue.sync { inflightSet.remove(urlString) }
-                  }
-                  do {
-                      let (data, _) = try await session.data(from: url)
-                      guard let img = UIImage(data: data) else { return }
-                      memCache.setObject(img, forKey: urlString as NSString, cost: data.count)
-                      cache[urlString] = img
-                      let path = diskDir.appendingPathComponent(name)
-                      try? data.write(to: path, options: .atomic)
-                      diskIndex[urlString] = name
-                      if let data = try? JSONEncoder().encode(diskIndex) {
-                          UserDefaults.standard.set(data, forKey: diskIndexKey)
-                      }
-                  } catch {
-                  }
-              }
-
-              func purgeMemory() {
-                  memCache.removeAllObjects()
-                  cache.removeAll(keepingCapacity: true)
-              }
-
-              private static func sanitize(_ s: String) -> String {
-                  let cleaned = s
-                      .replacingOccurrences(of: "https://", with: "")
-                      .replacingOccurrences(of: "http://", with: "")
-                      .replacingOccurrences(of: "/", with: "_")
-                      .replacingOccurrences(of: ":", with: "_")
-                      .replacingOccurrences(of: "?", with: "_")
-                      .replacingOccurrences(of: "&", with: "_")
-                  return String(cleaned.prefix(160))
-              }
-          }
-
-          struct RemoteIcon: View {
-              let url: String?
-              var size: CGFloat = 56
-              var cornerRadius: CGFloat = 14
-              @ObservedObject private var cache = RemoteIconCache.shared
-
-              var body: some View {
-                  Group {
-                      if let img = cache.image(for: url) {
-                          Image(uiImage: img)
-                              .resizable()
-                              .aspectRatio(contentMode: .fill)
-                      } else {
-                          RoundedRectangle(cornerRadius: cornerRadius)
-                              .fill(Color.storeDivider)
-                              .overlay(
-                                  Image(systemName: "app.fill")
-                                      .font(.system(size: size * 0.45, weight: .bold))
-                                      .foregroundColor(Color.storeSub)
-                              )
-                      }
-                  }
-                  .frame(width: size, height: size)
-                  .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-              }
-          }
-
-          func colorForCategory(_ category: String?) -> Color {
-              guard let c = category?.lowercased() else { return .storePrimary }
-              if c.contains("photo") || c.contains("camera") { return Color(red: 0.91, green: 0.72, blue: 0.36) } // gold
-              if c.contains("music") { return Color(red: 0.11, green: 0.72, blue: 0.36) }
-              if c.contains("video") || c.contains("stream") { return .storePrimary }
-              if c.contains("social") || c.contains("messag") { return .storeTurquoise }
-              if c.contains("tool") || c.contains("util") { return Color(red: 0.91, green: 0.72, blue: 0.36) }
-              if c.contains("game") { return .storePrimary }
-              if c.contains("book") || c.contains("edu") { return .storeTurquoise }
-              if c.contains("shop") { return .storePrimary }
-              return .storePrimary
-          }
-
-          // ================= Store Feed (no local cache) =================
-          @MainActor
-          final class StoreFeed: ObservableObject {
-              @Published var apps: [StoreAPIApp] = []
-              @Published var isLoading: Bool = false
-              @Published var lastError: String?
-              @Published var lastUpdated: String?
-              @Published var totalAvailable: Int = 0
-
-              private let repos = RepositoriesStore.shared
-              private let pageSize = AppConstants.feedPageSize
-
-              init() {
-                  Task { await refresh() }
-              }
-
-              func refresh() async {
-                  isLoading = true
-                  lastError = nil
-                  do {
-                      let merged = try await fetchMergedFromAllRepos()
-                      self.apps = merged.apps
-                      self.lastUpdated = merged.lastUpdated
-                      self.totalAvailable = merged.apps.count
-                      repos.updateTotalApps(merged.apps.count)
-                  } catch {
-                      self.lastError = error.localizedDescription
-                  }
-                  isLoading = false
-              }
-
-                  private func fetchMergedFromAllRepos() async throws -> StoreAPIResponse {
-                      let enabled = repos.repositories.filter { $0.enabled }
-                      var combined: [String: StoreAPIApp] = [:]
-                      var order: [String] = []
-                      var latestUpdate: String? = nil
-                      var firstError: Error? = nil
-
-                      await withTaskGroup(of: ([StoreAPIApp], String?, Error?).self) { group in
-                          for repo in enabled {
-                              group.addTask { () -> ([StoreAPIApp], String?, Error?) in
-                                  do {
-                                      guard let url = URL(string: repo.feedURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-                                          throw NSError(domain: "StoreFeed", code: -1,
-                                                        userInfo: [NSLocalizedDescriptionKey: "رابط غير صالح: \(repo.name)"])
-                                      }
-                                      var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-                                      req.setValue("ONEs-Store-iOS/1.0", forHTTPHeaderField: "User-Agent")
-                                      req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-                                      let (data, response) = try await URLSession.shared.data(for: req)
-                                      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                                          throw NSError(domain: "StoreFeed", code: http.statusCode,
-                                                        userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) من \(repo.name)"])
-                                      }
-                                      let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-                                      let rawApps = JX.appsArray(from: root)
-                                      let repoTitle = JX.sourceName(from: root) ?? repo.name
-                                      let feedUpdated = (root as? [String: Any]).flatMap {
-                                          JX.firstString($0, ["last_updated", "lastUpdated", "updated_at", "date"])
-                                      }
-                                      let parsed = rawApps.map {
-                                          StoreAPIApp(json: $0, sourceName: repoTitle, sourceURL: repo.feedURL)
-                                      }
-                                      if parsed.isEmpty {
-                                          throw NSError(domain: "StoreFeed", code: -2,
-                                                        userInfo: [NSLocalizedDescriptionKey: "لم يتم العثور على تطبيقات في \(repo.name)"])
-                                      }
-                                      return (parsed, feedUpdated, nil)
-                                  } catch {
-                                      return ([], nil, error)
-                                  }
-                              }
-                          }
-
-                          for await (apps, updated, err) in group {
-                              if let err = err, firstError == nil, apps.isEmpty { firstError = err }
-                              for app in apps {
-                                  let key = (app.bundleId?.lowercased())
-                                      ?? "n_\(app.name.lowercased())_\(app.sourceLabel.lowercased())"
-                                  if let existing = combined[key] {
-                                      // keep the richest record, but never lose fields the other one has
-                                      var best = existing.metadataScore >= app.metadataScore ? existing : app
-                                      let other = existing.metadataScore >= app.metadataScore ? app : existing
-                                      if best.description == nil || (best.description?.count ?? 0) < 10 { best.description = other.description ?? best.description }
-                                      if best.localizedDescription == nil { best.localizedDescription = other.localizedDescription }
-                                      if (best.size ?? 0) <= 0 { best.size = other.size }
-                                      if best.ipaSize == nil { best.ipaSize = other.ipaSize }
-                                      if best.icon == nil { best.icon = other.icon }
-                                      if best.screenshots == nil { best.screenshots = other.screenshots }
-                                      if best.developerName == nil { best.developerName = other.developerName }
-                                      if best.version == nil { best.version = other.version; best.bundleVersion = other.bundleVersion }
-                                      if best.category == nil { best.category = other.category }
-                                      if best.ipaUrl == nil { best.ipaUrl = other.ipaUrl; best.downloadURL = other.downloadURL; best.down = other.down }
-                                      combined[key] = best
-                                  } else {
-                                      combined[key] = app
-                                      order.append(key)
-                                  }
-                              }
-                              if let u = updated, (latestUpdate == nil || u > latestUpdate!) { latestUpdate = u }
-                          }
-                      }
-
-                      if combined.isEmpty, let err = firstError { throw err }
-
-                      let merged = order.compactMap { combined[$0] }
-                      let sorted = merged.sorted { (a, b) in
-                          let da = a.createdAt ?? a.updatedAt ?? a.versionDate ?? ""
-                          let db = b.createdAt ?? b.updatedAt ?? b.versionDate ?? ""
-                          if da == db { return a.name.lowercased() < b.name.lowercased() }
-                          return da > db
-                      }
-
-                      return StoreAPIResponse(lastUpdated: latestUpdate, apps: sorted)
-                  }
-
-              func search(_ query: String) -> [StoreAPIApp] {
-                  let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                  if q.isEmpty { return apps }
-                  return apps.filter {
-                      $0.name.lowercased().contains(q)
-                      || ($0.category?.lowercased().contains(q) ?? false)
-                      || ($0.bundleId?.lowercased().contains(q) ?? false)
-                  }
-              }
-          }
-
-          // ================= STORE ROOT =================
-          struct StoreRootView: View {
-              @ObservedObject private var lang = LanguageManager.shared
-              @StateObject private var feed = StoreFeed()
-              @State private var tab: Int = 0
-
-              var body: some View {
-                  ZStack {
-                      ONEsStoreBackground()
-
-                      TabView(selection: $tab) {
-                          StoreHomeView(feed: feed)
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: tab == 0 ? "house.fill" : "house")
-                                          .font(.system(size: 20))
-                                      Text(LS("الرئيسية"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .tag(0)
-
-                          AppsListView(feed: feed)
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: tab == 1 ? "square.grid.2x2.fill" : "square.grid.2x2")
-                                          .font(.system(size: 20))
-                                      Text(LS("التطبيقات"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .tag(1)
-
-                          RepositoriesView()
-                              .tabItem {
-                                  VStack(spacing: 2) {
-                                      Image(systemName: "folder")
-                                          .font(.system(size: 20))
-                                      Text(LS("المصادر"))
-                                          .font(.system(size: 10, weight: .semibold))
-                                  }
-                              }
-                              .tag(2)
-                      }
-                      .tint(Color.storePrimary)
-
-                      StatusOverlayHost()
-                          .ignoresSafeArea(.keyboard)
-                          .zIndex(9999)
-                  }
-                  .onAppear {
-                      StatusCenter.shared.start()
-                  }
-                  .environment(\.locale, lang.locale)
-                  .environment(\.layoutDirection, lang.layout)
-                  .id(lang.isArabic)
-              }
-          }
-
-          // ================= REPOSITORIES VIEW =================
-          struct RepositoriesView: View {
-              @ObservedObject private var repos = RepositoriesStore.shared
-              @State private var newFeedURL: String = ""
-              @State private var newName: String = ""
-              @State private var showingAddSheet = false
-              @State private var errorMessage: String?
-
-              var body: some View {
-                  NavigationView {
-                      List {
-                          ForEach(repos.repositories) { repo in
-                              HStack {
-                                  VStack(alignment: .leading, spacing: 4) {
-                                      Text(repo.name)
-                                          .font(.headline)
-                                          .foregroundColor(Color.storeText)
-                                      Text(repo.feedURL)
-                                          .font(.caption)
-                                          .foregroundColor(Color.storeSub)
-                                          .lineLimit(2)
-                                  }
-                                  Spacer()
-                                  Toggle("", isOn: Binding(
-                                      get: { repo.enabled },
-                                      set: { _ in repos.setEnabled(!repo.enabled, for: repo) }
-                                  ))
-                                  .toggleStyle(SwitchToggleStyle(tint: Color.storePrimary))
-                              }
-                              .padding(.vertical, 4)
-                          }
-                          .onDelete(perform: deleteRepositories)
-                      }
-                      .listStyle(PlainListStyle())
-                      .background(ONEsStoreBackground())
-                      .navigationBarTitle("المصادر", displayMode: .inline)
-                      .toolbar {
-                          ToolbarItem(placement: .navigationBarTrailing) {
-                              Button {
-                                  showingAddSheet = true
-                              } label: {
-                                  Image(systemName: "plus")
-                                      .foregroundColor(Color.storePrimary)
-                              }
-                          }
-                      }
-                      .sheet(isPresented: $showingAddSheet) {
-                          NavigationView {
-                              VStack(spacing: 20) {
-                                  TextField("اسم المصدر", text: $newName)
-                                      .textFieldStyle(RoundedBorderTextFieldStyle())
-                                      .foregroundColor(Color.storeText)
-                                  TextField("رابط المصدر (feed URL)", text: $newFeedURL)
-                                      .textFieldStyle(RoundedBorderTextFieldStyle())
-                                      .autocapitalization(.none)
-                                      .foregroundColor(Color.storeText)
-                                  if let error = errorMessage {
-                                      Text(error)
-                                          .foregroundColor(.red)
-                                          .font(.caption)
-                                  }
-                                  Button {
-                                      guard !newName.isEmpty, !newFeedURL.isEmpty, URL(string: newFeedURL) != nil else {
-                                          errorMessage = "الرجاء إدخال اسم ورابط صحيح"
-                                          return
-                                      }
-                                      repos.addRepository(name: newName, feedURL: newFeedURL)
-                                      newName = ""
-                                      newFeedURL = ""
-                                      errorMessage = nil
-                                      showingAddSheet = false
-                                      // Force refresh feed
-                                      Task {
-                                          await StoreFeed().refresh()
-                                      }
-                                  } label: {
-                                      Text("إضافة المصدر")
-                                          .font(.headline)
-                                          .foregroundColor(.white)
-                                          .padding()
-                                          .frame(maxWidth: .infinity)
-                                          .background(Color.storePrimary)
-                                          .cornerRadius(10)
-                                  }
-                                  .padding(.horizontal)
-                                  Spacer()
-                              }
-                              .padding()
-                              .navigationBarTitle("إضافة مصدر", displayMode: .inline)
-                              .toolbar {
-                                  ToolbarItem(placement: .cancellationAction) {
-                                      Button("إلغاء") {
-                                          showingAddSheet = false
-                                      }
-                                  }
-                              }
-                          }
-                      }
-                  }
-                  .navigationViewStyle(StackNavigationViewStyle())
-              }
-
-              private func deleteRepositories(at offsets: IndexSet) {
-                  for index in offsets {
-                      let repo = repos.repositories[index]
-                      repos.setEnabled(false, for: repo) // just disable, or remove?
-                      // For removal, we need a remove method; we'll just disable for now
-                  }
-              }
-          }
-
-          // ================= HOME =================
-          enum ONEsAssets {
-              static let brandGlyph = "https://up6.cc/2026/08/178601510097731.png"
-          }
-
-          struct RemoteGlyph: View {
-              let url: String
-              var size: CGFloat = 30
-
-              var body: some View {
-                  AsyncImage(url: URL(string: url)) { phase in
-                      switch phase {
-                      case .success(let image):
-                          image
-                              .resizable()
-                              .renderingMode(.original)
-                              .aspectRatio(contentMode: .fit)
-                      default:
-                          Color.clear
-                      }
-                  }
-                  .frame(width: size, height: size)
-                  .background(Color.clear)
-                  .contentShape(Rectangle())
-              }
-          }
-
-          struct ONEsTopBar: View {
-              var body: some View {
-                  HStack(spacing: 0) {
-                      Spacer().frame(width: 42, height: 42)
-                      Spacer()
-                      HStack(spacing: 10) {
-                          RemoteGlyph(url: ONEsAssets.brandGlyph, size: 34)
-                          Text("ONEs")
-                              .font(.system(size: 22, weight: .heavy))
-                              .foregroundColor(Color.storeText)
-                      }
-                      Spacer()
-                      Color.clear.frame(width: 42, height: 42)
-                  }
-                  .padding(.horizontal, 18)
-                  .padding(.top, 12)
-                  .padding(.bottom, 12)
-                  .background(
-                      Color.clear
-                          .overlay(
-                              VStack {
-                                  Spacer()
-                                  Divider().overlay(Color.storeDivider)
-                              }
-                          )
-                  )
-                  .environment(\.layoutDirection, .leftToRight)
-              }
-          }
-
-          struct FeaturedBannerCard: View {
-              let apps: [StoreAPIApp]
-
-              private var dayIndex: Int {
-                  let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
-                  return apps.isEmpty ? 0 : day % apps.count
-              }
-              private var featured: StoreAPIApp? { apps.isEmpty ? nil : apps[dayIndex] }
-
-              var body: some View {
-                  ZStack(alignment: .topTrailing) {
-                      LinearGradient(colors: [Color.storePrimaryDk, Color(red: 0.1, green: 0.2, blue: 0.4)],
-                                     startPoint: .topTrailing, endPoint: .bottomLeading)
-
-                      VStack(alignment: .trailing, spacing: 8) {
-                          HStack {
-                              Image(systemName: "chevron.left")
-                                  .font(.system(size: 11, weight: .bold))
-                                  .foregroundColor(.white.opacity(0.8))
-                                  .frame(width: 26, height: 26)
-                                  .background(Circle().fill(Color.white.opacity(0.12)))
-                              Spacer()
-                              Text("تطبيق اليوم")
-                                  .font(.system(size: 10, weight: .heavy))
-                                  .foregroundColor(.white)
-                                  .padding(.horizontal, 10).padding(.vertical, 5)
-                                  .background(Capsule().fill(Color.white.opacity(0.16)))
-                          }
-
-                          HStack(alignment: .center, spacing: 12) {
-                              VStack(alignment: .trailing, spacing: 6) {
-                                  Text(featured?.name ?? "اشتراك مجاني للايباد")
-                                      .font(.system(size: 20, weight: .black))
-                                      .foregroundColor(.white)
-                                      .lineLimit(1)
-                                  Text(featured.map { "\($0.category ?? "التطبيقات") • \($0.cleanSize) • جاهز للتثبيت المباشر" }
-                                       ?? "يمكنك الآن الحصول على اشتراك مجاني بمجرد اشتراكك بالباقة الذهبية")
-                                      .font(.system(size: 11, weight: .semibold))
-                                      .foregroundColor(.white.opacity(0.75))
-                                      .lineLimit(2)
-                                      .multilineTextAlignment(.trailing)
-                              }
-                              if let f = featured {
-                                  RemoteIcon(url: f.icon, size: 58, cornerRadius: 15)
-                                      .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
-                              }
-                          }
-
-                          if let f = featured {
-                              NavigationLink(value: f) {
-                                  Text("عرض التطبيق")
-                                      .font(.system(size: 12, weight: .heavy))
-                                      .foregroundColor(.black)
-                                      .padding(.horizontal, 18).padding(.vertical, 8)
-                                      .background(Capsule().fill(Color.white))
-                              }
-                              .buttonStyle(.plain)
-                          }
-                      }
-                      .padding(16)
-                  }
-                  .frame(height: 176)
-                  .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                  .padding(.horizontal, 18)
-              }
-          }
-
-          // ================= APPS TAB =================
-          struct AppsListView: View {
-              @ObservedObject var feed: StoreFeed
-              @State private var searchText: String = ""
-              @State private var selectedCategory: String? = nil
-              @State private var visiblePage: Int = 0
-
-              private static let hiddenCategories: [String] = ["movies", "movie", "films", "film", "أفلام", "افلام"]
-
-              private static func isHidden(_ c: String?) -> Bool {
-                  let v = (c ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-                  return hiddenCategories.contains(v)
-              }
-
-              private var filtered: [StoreAPIApp] {
-                  let base = feed.apps.filter { !AppsListView.isHidden($0.category) }
-                  let byCat: [StoreAPIApp]
-                  if let cat = selectedCategory {
-                      byCat = base.filter { ($0.category ?? "التطبيقات").lowercased() == cat.lowercased() }
-                  } else {
-                      byCat = base
-                  }
-                  let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                  if q.isEmpty { return byCat }
-                  return byCat.filter {
-                      $0.name.lowercased().contains(q) || ($0.bundleId?.lowercased().contains(q) ?? false)
-                  }
-              }
-
-              private var filteredPages: Int {
-                  max(1, Int(ceil(Double(filtered.count) / Double(AppConstants.feedPageSize))))
-              }
-
-              private var visibleItems: [StoreAPIApp] {
-                  let start = visiblePage * AppConstants.feedPageSize
-                  let end = min(start + AppConstants.feedPageSize, filtered.count)
-                  guard start < filtered.count else { return [] }
-                  return Array(filtered[start..<end])
-              }
-
-              private var categories: [String] {
-                  let set = Set(feed.apps.compactMap { $0.category?.capitalized }
-                                  .filter { !AppsListView.isHidden($0) })
-                  return Array(set).sorted()
+              private var installedCount: Int {
+                  service.results.filter(\.installed).count
               }
 
               var body: some View {
                   NavigationStack {
-                      VStack(spacing: 0) {
-                          StoreHeader(title: LS("التطبيقات"))
+                      ScrollView {
+                          VStack(spacing: 18) {
+                              header
 
-                          ScrollView(showsIndicators: false) {
-                              VStack(spacing: 14) {
-                                  HStack(spacing: 8) {
-                                      Image(systemName: "magnifyingglass")
-                                          .foregroundColor(Color.storeSub)
-                                      TextField("ابحث في \(feed.totalAvailable) تطبيق...", text: $searchText)
-                                          .font(.system(size: 14))
-                                          .foregroundColor(Color.storeText)
-                                          .background(Color.clear)
-                                          .tint(Color.storePrimary)
-                                      if !searchText.isEmpty {
-                                          Button { searchText = "" } label: {
-                                              Image(systemName: "xmark.circle.fill")
-                                                  .foregroundColor(Color.storeSub)
-                                          }
-                                      }
-                                  }
-                                  .padding(.horizontal, 14)
-                                  .frame(height: 46)
-                                  .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                                  .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.storeDivider, lineWidth: 1))
-                                  .padding(.horizontal, 18)
+                              if !scanConsent {
+                                  consentCard
+                              } else {
+                                  statusCard
 
-                                  FeaturedBannerCard(apps: filtered)
-
-                                  if !categories.isEmpty {
-                                      ScrollView(.horizontal, showsIndicators: false) {
-                                          HStack(spacing: 9) {
-                                              pill(label: "الكل", value: nil, color: Color.storeCardAlt)
-                                              ForEach(Array(categories.enumerated()), id: \.element) { i, c in
-                                                  pill(label: c, value: c, color: colorForCategory(c))
-                                              }
-                                          }
-                                          .padding(.horizontal, 18)
-                                          .padding(.vertical, 4)
-                                      }
-                                      .onChange(of: selectedCategory) { _ in visiblePage = 0 }
-                                  }
-
-                                  HStack {
-                                      Text("صفحة \(visiblePage + 1) / \(filteredPages)")
-                                          .font(.system(size: 11, weight: .heavy))
-                                          .foregroundColor(Color.storePrimary)
-                                      Spacer()
-                                      Text("يوجد \(feed.totalAvailable) تطبيق في الصفحة")
-                                          .font(.system(size: 11, weight: .semibold))
-                                          .foregroundColor(Color.storeSub)
-                                  }
-                                  .padding(.horizontal, 18)
-
-                                  if feed.apps.isEmpty && feed.isLoading {
-                                      LoadingList()
-                                  } else if filtered.isEmpty {
-                                      EmptyState(message: searchText.isEmpty ? "لا توجد تطبيقات في هذا التصنيف." : "لا توجد نتائج تطابق «\(searchText)».")
+                                  if !service.results.isEmpty {
+                                      searchBar
+                                      resultsSection
+                                  } else if service.isChecking {
+                                      checkingCard
                                   } else {
-                                      LazyVStack(spacing: 10) {
-                                          ForEach(visibleItems) { app in
-                                              NavigationLink(value: app) {
-                                                  AppListRow(app: app)
-                                              }
-                                              .buttonStyle(.plain)
-                                              .onAppear { handleAppear(app: app) }
-                                          }
-                                      }
-                                      .padding(.horizontal, 18)
-                                      .padding(.bottom, 24)
+                                      emptyCard
                                   }
                               }
-                              .padding(.top, 4)
                           }
-                          .refreshable { await feed.refresh() }
+                          .padding(.horizontal, 18)
+                          .padding(.vertical, 18)
                       }
-                      .background(ONEsStoreBackground())
-                      .navigationBarHidden(true)
-                      .navigationDestination(for: StoreAPIApp.self) { app in
-                          AppDetailView(app: app, feed: feed)
-                      }
-                  }
-              }
-
-              private func pill(label: String, value: String?, color: Color) -> some View {
-                  let active = (value == nil && selectedCategory == nil) || (value != nil && selectedCategory == value)
-                  return Button {
-                      HapticManager.shared.selection()
-                      withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { selectedCategory = value }
-                  } label: {
-                      HStack(spacing: 6) {
-                          Text(label)
-                              .font(.system(size: 12.5, weight: .heavy))
-                              .foregroundColor(.white)
-                          Image(systemName: "square.grid.2x2.fill")
-                              .font(.system(size: 10, weight: .bold))
-                              .foregroundColor(.white.opacity(0.9))
-                      }
-                      .padding(.horizontal, 15)
-                      .padding(.vertical, 9)
-                      .background(Capsule().fill(active ? color : Color.storeCardAlt))
-                      .overlay(Capsule().stroke(active ? Color.white.opacity(0.25) : Color.storeDivider, lineWidth: 1))
-                      .shadow(color: active ? color.opacity(0.45) : .clear, radius: 10, y: 5)
-                  }
-                  .buttonStyle(.plain)
-              }
-
-              private func handleAppear(app: StoreAPIApp) {
-                  let threshold = max(0, visibleItems.count - 20)
-                  if let idx = visibleItems.firstIndex(of: app), idx >= threshold {
-                      if visiblePage + 1 < filteredPages {
-                          visiblePage += 1
+                      .background(Color(uiColor: .systemGroupedBackground))
+                      .navigationTitle("AppScope")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .sheet(isPresented: $showingConsent) {
+                          ConsentSheet {
+                              scanConsent = true
+                              showingConsent = false
+                              service.checkKnownApps()
+                          }
+                          .presentationDetents([.medium])
                       }
                   }
               }
-          }
 
-          struct AppListRow: View {
-              let app: StoreAPIApp
+              private var header: some View {
+                  VStack(alignment: .trailing, spacing: 8) {
+                      HStack {
+                          Image(systemName: "checkmark.shield.fill")
+                              .font(.system(size: 34))
+                              .foregroundStyle(.blue)
 
-              var body: some View {
-                  HStack(spacing: 14) {
-                      RemoteIcon(url: app.icon, size: 56, cornerRadius: 14)
-                          .overlay(
-                              RoundedRectangle(cornerRadius: 14)
-                                  .stroke(Color.storeDivider, lineWidth: 0.5)
-                          )
-                          .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
-                      VStack(alignment: .leading, spacing: 4) {
-                          Text(app.name)
-                              .font(.system(size: 15, weight: .bold))
-                              .foregroundColor(Color.storeInk)
-                              .lineLimit(1)
-                          HStack(spacing: 6) {
-                              Text(app.category ?? "التطبيقات")
-                                  .font(.system(size: 11, weight: .semibold))
-                                  .foregroundColor(colorForCategory(app.category))
-                              if let v = app.bundleVersion {
-                                  Text("•").font(.system(size: 11)).foregroundColor(Color.storeInkSub)
-                                  Text("v\(v)").font(.system(size: 11, weight: .semibold)).foregroundColor(Color.storeInkSub)
-                              }
-                              Text("•").font(.system(size: 11)).foregroundColor(Color.storeInkSub)
-                              Text(app.cleanSize)
-                                  .font(.system(size: 11, weight: .semibold))
-                                  .foregroundColor(Color.storeInkSub)
-                          }
-                      }
-                      Spacer()
-                      Button {
-                          HapticManager.shared.success()
-                          StoreInstaller.shared.install(app: app)
-                      } label: {
-                          Text("تثبيت")
-                              .font(.system(size: 12, weight: .bold))
-                              .foregroundColor(.white)
-                              .padding(.horizontal, 14).padding(.vertical, 7)
-                              .background(Capsule().fill(Color.storePrimary))
-                      }
-                      .buttonStyle(.plain)
-                  }
-                  .padding(14)
-                  .background(
-                      RoundedRectangle(cornerRadius: 18)
-                          .fill(Color.storeCard)
-                          .shadow(color: Color.black.opacity(0.10), radius: 8, y: 4)
-                  )
-                  .overlay(
-                      RoundedRectangle(cornerRadius: 18)
-                          .stroke(Color.storeInkLine, lineWidth: 0.8)
-                  )
-              }
-          }
-
-          // ================= LOADING / EMPTY =================
-          struct LoadingList: View {
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 10) {
-                          ForEach(0..<10, id: \.self) { _ in
-                              HStack(spacing: 12) {
-                                  RoundedRectangle(cornerRadius: 12).fill(Color.storeDivider).frame(width: 52, height: 52)
-                                  VStack(alignment: .leading, spacing: 6) {
-                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 160, height: 10)
-                                      RoundedRectangle(cornerRadius: 4).fill(Color.storeDivider).frame(width: 220, height: 8)
-                                  }
-                                  Spacer()
-                              }
-                              .padding(12)
-                              .background(RoundedRectangle(cornerRadius: 16).fill(Color.storeCard))
-                          }
-                      }
-                      .padding(.horizontal, 20)
-                      .padding(.top, 10)
-                  }
-              }
-          }
-
-          struct EmptyState: View {
-              let message: String
-              var body: some View {
-                  VStack(spacing: 10) {
-                      Image(systemName: "tray.fill")
-                          .font(.system(size: 36))
-                          .foregroundColor(Color.storeSub)
-                      Text(message)
-                          .font(.system(size: 13, weight: .semibold))
-                          .foregroundColor(Color.storeSub)
-                          .multilineTextAlignment(.center)
-                          .padding(.horizontal, 40)
-                  }
-                  .padding(.vertical, 60)
-              }
-          }
-
-          struct StoreHeader: View {
-              let title: String
-
-              var body: some View {
-                  HStack {
-                      Color.clear.frame(width: 42, height: 42)
-                      Spacer()
-                      Text(title)
-                          .font(.system(size: 18, weight: .bold))
-                          .foregroundColor(Color.storeText)
-                      Spacer()
-                      Color.clear.frame(width: 42, height: 42)
-                  }
-                  .padding(.horizontal, 20)
-                  .padding(.top, 8)
-              }
-          }
-
-          // ================= APP DETAIL =================
-          struct AppDetailView: View {
-              let app: StoreAPIApp
-              var feed: StoreFeed? = nil
-              @Environment(\.dismiss) private var dismiss
-              @State private var showScreenshots = false
-              @State private var screenshotStartIndex = 0
-
-              var body: some View {
-                  ScrollView {
-                      VStack(spacing: 0) {
-                          ZStack(alignment: .top) {
-                              Group {
-                                  if let img = UIImage.bundled("home_banner.png") {
-                                      Image(uiImage: img)
-                                          .resizable()
-                                          .aspectRatio(contentMode: .fill)
-                                  } else {
-                                      LinearGradient(colors: [colorForCategory(app.category).opacity(0.9),
-                                                              colorForCategory(app.category).opacity(0.5)],
-                                                     startPoint: .topLeading, endPoint: .bottomTrailing)
-                                  }
-                              }
-                              .frame(height: 235)
-                              .clipped()
-                              .clipShape(RoundedCorner(radius: 34, corners: [.bottomLeft, .bottomRight]))
-                              .shadow(color: Color.black.opacity(0.10), radius: 10, y: 5)
-                              // No back button here – rely on swipe gesture
-                          }
-
-                          HStack(spacing: 14) {
-                              RemoteIcon(url: app.icon, size: 70, cornerRadius: 16)
-                              VStack(alignment: .leading, spacing: 4) {
-                                  Text(app.name).font(.system(size: 18, weight: .bold)).foregroundColor(Color.storeInk)
-                                  Text(app.category ?? "التطبيقات").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.storePrimary)
-                                  if let bid = app.bundleId {
-                                      Text(bid).font(.system(size: 10, weight: .medium)).foregroundColor(Color.storeInkSub).lineLimit(1)
-                                  }
-                              }
-                              Spacer()
-                              Button {
-                                  HapticManager.shared.success()
-                                  StoreInstaller.shared.install(app: app)
-                              } label: {
-                                  Text("تثبيت")
-                                      .font(.system(size: 13, weight: .bold))
-                                      .foregroundColor(.white)
-                                      .padding(.horizontal, 20).padding(.vertical, 10)
-                                      .background(Capsule().fill(Color.storePrimary))
-                              }
-                          }
-                          .padding(16)
-                          .background(RoundedRectangle(cornerRadius: 20).fill(Color.storeCard).shadow(color: .black.opacity(0.10), radius: 12, y: 4))
-                          .padding(.horizontal, 20)
-                          .offset(y: -40)
-
-                          ONEsAppStatsRow(app: app)
-                          .padding(.horizontal, 30)
-                          .offset(y: -20)
-
-                          if let shots = app.screenshots, !shots.isEmpty {
-                              VStack(alignment: .leading, spacing: 10) {
-                                  HStack {
-                                      Text("لقطة الشاشة")
-                                          .font(.system(size: 16, weight: .bold))
-                                          .foregroundColor(Color.storeInk)
-                                      Spacer()
-                                  }
-                                  .padding(.horizontal, 20)
-                                  .padding(.top, 4)
-
-                                  ScrollView(.horizontal, showsIndicators: false) {
-                                      HStack(spacing: 12) {
-                                          ForEach(Array(shots.enumerated()), id: \.offset) { idx, url in
-                                              Button {
-                                                  screenshotStartIndex = idx
-                                                  showScreenshots = true
-                                              } label: {
-                                                  RemoteIcon(url: url, size: 200, cornerRadius: 14)
-                                                      .frame(width: 200, height: 380)
-                                                      .background(RoundedRectangle(cornerRadius: 14).fill(Color.storeDivider))
-                                              }
-                                              .buttonStyle(.plain)
-                                          }
-                                      }
-                                      .padding(.horizontal, 20)
-                                  }
-                              }
-                              .padding(.top, 4)
-                          }
-
-                          // Description without formatting
-                          VStack(alignment: .leading, spacing: 10) {
-                              HStack {
-                                  Text("الوصف")
-                                      .font(.system(size: 16, weight: .bold))
-                                      .foregroundColor(Color.storeInk)
-                                  Spacer()
-                              }
-                              Text(app.cleanDescription)
-                                  // No formatting, just plain text
-                          }
-                          .padding(16)
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                          .background(RoundedRectangle(cornerRadius: 18).fill(Color.storeCard).shadow(color: .black.opacity(0.08), radius: 10, y: 4))
-                          .padding(.horizontal, 20)
-                          .padding(.top, 4)
-
-                      }
-                      .padding(.bottom, 40)
-                  }
-                  .background(ONEsStoreBackground())
-                  .navigationBarHidden(true)
-                  .navigationBarBackButtonHidden(true) // hide back button, swipe gesture still works
-                  .sheet(isPresented: $showScreenshots) {
-                      ScreenshotGallery(urls: app.screenshots ?? [], startIndex: screenshotStartIndex)
-                  }
-              }
-          }
-
-          struct ScreenshotGallery: View {
-              let urls: [String]
-              let startIndex: Int
-              @Environment(\.dismiss) private var dismiss
-              @State private var idx: Int
-
-              init(urls: [String], startIndex: Int) {
-                  self.urls = urls
-                  self.startIndex = startIndex
-                  self._idx = State(initialValue: startIndex)
-              }
-
-              var body: some View {
-                  ZStack {
-                      Color.black.ignoresSafeArea()
-                      TabView(selection: $idx) {
-                          ForEach(Array(urls.enumerated()), id: \.offset) { i, url in
-                              RemoteIcon(url: url, size: 320, cornerRadius: 0)
-                                  .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                  .padding(.horizontal, 4)
-                                  .tag(i)
-                                  .scaledToFit()
-                          }
-                      }
-                      .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
-                      .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .always))
-
-                      VStack {
-                          HStack {
-                              Spacer()
-                              Button { dismiss() } label: {
-                                  Image(systemName: "xmark.circle.fill")
-                                      .font(.system(size: 30))
-                                      .foregroundColor(.white.opacity(0.85))
-                              }
-                          }
-                          .padding(16)
                           Spacer()
+
+                          VStack(alignment: .trailing, spacing: 4) {
+                              Text("ÙØ­Øµ Ø§ÙØªØ·Ø¨ÙÙØ§Øª")
+                                  .font(.system(size: 27, weight: .bold))
+
+                              Text("ÙØ­Øµ Ø¢ÙÙ Ø¨ÙÙØ§ÙÙØªÙ")
+                                  .font(.subheadline)
+                                  .foregroundStyle(.secondary)
+                          }
+                      }
+
+                      Text("ÙØ¹Ø±Ø¶ ÙÙØ· Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ¹Ø±ÙÙØ© Ø§ÙØªÙ ÙØ³ÙØ­ iOS Ø¨Ø§ÙØªØ­ÙÙ ÙÙÙØ§ Ø¹Ø¨Ø± URL Schemes Ø§ÙÙØ¹ÙÙØ©.")
+                          .font(.footnote)
+                          .foregroundStyle(.secondary)
+                          .multilineTextAlignment(.trailing)
+                  }
+              }
+
+              private var consentCard: some View {
+                  VStack(alignment: .trailing, spacing: 14) {
+                      Label("ÙØ¨Ù Ø§ÙØ¨Ø¯Ø¡", systemImage: "hand.raised.fill")
+                          .font(.headline)
+                          .foregroundStyle(.blue)
+
+                      Text("ÙØ­ØªØ§Ø¬ Ø§ÙØªØ·Ø¨ÙÙ Ø¥ÙÙ ÙÙØ§ÙÙØªÙ ÙØ¨Ù Ø¥Ø¬Ø±Ø§Ø¡ Ø£Ù ÙØ­Øµ.")
+                          .font(.headline)
+
+                      Text("Ø³ÙØªÙ ÙØ­Øµ ÙØ§Ø¦ÙØ© ÙØ­Ø¯Ø¯Ø© ÙÙ Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ¹Ø±ÙÙØ© ÙÙØ·. ÙØ§ ÙØªÙ Ø§ÙÙØµÙÙ Ø¥ÙÙ ÙÙÙØ§Øª Ø§ÙÙØ¸Ø§Ù Ø£Ù ÙÙØ§Ø¹Ø¯ Ø¨ÙØ§ÙØ§Øª Ø®Ø§ØµØ©Ø ÙÙØ§ ÙØªÙ Ø¥Ø±Ø³Ø§Ù ÙØªØ§Ø¦Ø¬ Ø§ÙÙØ­Øµ Ø¥ÙÙ Ø®Ø§Ø¯Ù.")
+                          .font(.subheadline)
+                          .foregroundStyle(.secondary)
+                          .multilineTextAlignment(.trailing)
+
+                      Button {
+                          showingConsent = true
+                      } label: {
+                          Text("ÙØ±Ø§Ø¬Ø¹Ø© ÙØ§ÙÙÙØ§ÙÙØ©")
+                              .frame(maxWidth: .infinity)
+                      }
+                      .buttonStyle(.borderedProminent)
+                  }
+                  .padding(18)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 22))
+              }
+
+              private var statusCard: some View {
+                  VStack(spacing: 12) {
+                      HStack {
+                          VStack(alignment: .trailing, spacing: 4) {
+                              Text("Ø§ÙØ­Ø§ÙØ©")
+                                  .font(.caption)
+                                  .foregroundStyle(.secondary)
+
+                              Text(service.isChecking ? "Ø¬Ø§Ø±Ù Ø§ÙÙØ­Øµâ¦" : "Ø¬Ø§ÙØ²")
+                                  .font(.headline)
+                          }
+
+                          Spacer()
+
+                          VStack(alignment: .trailing, spacing: 4) {
+                              Text("ØªÙ Ø§ÙØ¹Ø«ÙØ±")
+                                  .font(.caption)
+                                  .foregroundStyle(.secondary)
+
+                              Text("\(installedCount)")
+                                  .font(.title2.bold())
+                          }
+                      }
+
+                      Button {
+                          service.checkKnownApps()
+                      } label: {
+                          Label(
+                              service.isChecking ? "Ø¬Ø§Ø±Ù Ø§ÙÙØ­Øµâ¦" : "ÙØ­Øµ Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ¹Ø±ÙÙØ©",
+                              systemImage: "arrow.clockwise"
+                          )
+                          .frame(maxWidth: .infinity)
+                      }
+                      .buttonStyle(.borderedProminent)
+                      .disabled(service.isChecking)
+                  }
+                  .padding(18)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 22))
+              }
+
+              private var searchBar: some View {
+                  HStack(spacing: 10) {
+                      Image(systemName: "magnifyingglass")
+                          .foregroundStyle(.secondary)
+
+                      TextField("Ø§Ø¨Ø­Ø« Ø¹Ù ØªØ·Ø¨ÙÙ", text: $search)
+                          .textInputAutocapitalization(.never)
+                          .autocorrectionDisabled()
+                  }
+                  .padding(13)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 16))
+              }
+
+              private var resultsSection: some View {
+                  VStack(alignment: .trailing, spacing: 10) {
+                      HStack {
+                          Text("Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙØªÙ ØªÙ ÙØ­ØµÙØ§")
+                              .font(.headline)
+
+                          Spacer()
+
+                          Text("\(visibleResults.count)")
+                              .font(.caption.bold())
+                              .foregroundStyle(.secondary)
+                      }
+
+                      LazyVStack(spacing: 8) {
+                          ForEach(visibleResults) { result in
+                              AppResultRow(result: result)
+                          }
                       }
                   }
               }
-          }
 
-          struct StatCell: View {
-              let top: String
-              let bottom: String
-              var body: some View {
-                  VStack(spacing: 4) {
-                      Text(top).font(.system(size: 15, weight: .bold)).foregroundColor(Color.storeText)
-                          .lineLimit(1).minimumScaleFactor(0.7)
-                      Text(bottom).font(.system(size: 11)).foregroundColor(Color.storeSub)
+              private var checkingCard: some View {
+                  VStack(spacing: 12) {
+                      ProgressView()
+                      Text("ÙØªÙ ÙØ­Øµ Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ¹Ø±ÙÙØ©â¦")
+                          .font(.subheadline)
+                          .foregroundStyle(.secondary)
                   }
                   .frame(maxWidth: .infinity)
+                  .padding(30)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 22))
+              }
+
+              private var emptyCard: some View {
+                  VStack(spacing: 10) {
+                      Image(systemName: "rectangle.stack.badge.person.crop")
+                          .font(.system(size: 34))
+                          .foregroundStyle(.secondary)
+
+                      Text("ÙÙ ÙØªÙ Ø¥Ø¬Ø±Ø§Ø¡ Ø§ÙÙØ­Øµ Ø¨Ø¹Ø¯")
+                          .font(.headline)
+
+                      Text("Ø§Ø¶ØºØ· Ø¹ÙÙ Ø²Ø± Ø§ÙÙØ­Øµ ÙÙØªØ­ÙÙ ÙÙ Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ¹Ø±ÙÙØ©.")
+                          .font(.subheadline)
+                          .foregroundStyle(.secondary)
+                          .multilineTextAlignment(.center)
+                  }
+                  .frame(maxWidth: .infinity)
+                  .padding(30)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 22))
               }
           }
 
-          struct RoundedCorner: Shape {
-              var radius: CGFloat
-              var corners: UIRectCorner
-              func path(in rect: CGRect) -> Path {
-                  let p = UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
-                                       cornerRadii: CGSize(width: radius, height: radius))
-                  return Path(p.cgPath)
-              }
-          }
-
-          struct ONEsAppStatsRow: View {
-              let app: StoreAPIApp
+          struct AppResultRow: View {
+              let result: AppCheckResult
 
               var body: some View {
-                  HStack {
-                      StatCell(top: app.displayVersion, bottom: "الإصدار")
-                      Divider().frame(height: 40)
-                      StatCell(top: app.cleanSize, bottom: "الحجم")
-                      Divider().frame(height: 40)
-                      StatCell(top: app.sourceLabel, bottom: "المصدر")
+                  HStack(spacing: 12) {
+                      Image(systemName: result.installed ? "checkmark.circle.fill" : "minus.circle")
+                          .font(.title3)
+                          .foregroundStyle(result.installed ? .green : .secondary)
+
+                      Spacer()
+
+                      VStack(alignment: .trailing, spacing: 3) {
+                          Text(result.app.name)
+                              .font(.body.weight(.semibold))
+
+                          Text(result.installed ? "ÙØªØ§Ø­ Ø¹ÙÙ Ø§ÙØ¬ÙØ§Ø²" : "ØºÙØ± ÙØªØ§Ø­ Ø¹Ø¨Ø± Ø§ÙØ±Ø§Ø¨Ø· Ø§ÙÙØ¹ÙÙ")
+                              .font(.caption)
+                              .foregroundStyle(.secondary)
+                      }
+
+                      Image(systemName: result.app.icon)
+                          .frame(width: 34, height: 34)
+                          .foregroundStyle(.blue)
                   }
+                  .padding(13)
+                  .background(.background, in: RoundedRectangle(cornerRadius: 16))
               }
           }
 
-          // ================= INSTALLER =================
-          @MainActor
-          final class StoreInstaller: ObservableObject {
-              static let shared = MainActor.assumeIsolated { StoreInstaller() }
-              @Published var isWorking: Bool = false
-              private init() {}
-
-              func install(app: StoreAPIApp) {
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ التحقق من شهادتك...")
-                  fetchCertificate { _ in
-                      // even without a certificate record we still ask the server to build the install link
-                      self.performInstall(app: app)
-                  }
-              }
-
-              func install(bundleId: String?, name: String) {
-                  var app = StoreAPIApp(json: ["name": name])
-                  app.bundleId = bundleId
-                  install(app: app)
-              }
-
-              func fetchCertificate(_ done: @escaping ([String: Any]?) -> Void) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/certificate") else {
-                      done(nil); return
-                  }
-                  var req = URLRequest(url: url, timeoutInterval: 25)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: [
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code
-                  ])
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      var result: [String: Any]? = nil
-                      if let data = data,
-                         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                         (obj["ok"] as? Bool) == true {
-                          result = obj["certificate"] as? [String: Any]
-                      }
-                      DispatchQueue.main.async { done(result) }
-                  }.resume()
-              }
-
-              /// Sends the full app metadata (including the source download URL) so the
-              /// server can sign / build a manifest even for apps coming from external repos.
-              private func performInstall(app: StoreAPIApp) {
-                  guard let url = URL(string: ActivationManager.codesSiteBase + "/api/public/store/install-by-bundle") else {
-                      fallbackInstall(app: app, message: nil)
-                      return
-                  }
-                  isWorking = true
-                  StatusCenter.shared.show(text: "جارٍ تجهيز التثبيت عبر السيرفر...")
-
-                  var payload: [String: Any] = [
-                      "bundle_id": app.bundleId ?? "",
-                      "name": app.name,
-                      "udid": ActivationManager.shared.deviceID,
-                      "code": ActivationManager.shared.code,
-                      "version": app.version ?? app.bundleVersion ?? "",
-                      "source": app.sourceLabel,
-                      "source_url": app.sourceURL ?? "",
-                      "icon_url": app.icon ?? "",
-                      "description": app.cleanDescription
-                  ]
-                  if let d = app.resolvedDownloadURL { payload["download_url"] = d; payload["ipa_url"] = d }
-                  if let s = app.size { payload["size"] = Int64(s) }
-
-                  var req = URLRequest(url: url, timeoutInterval: 40)
-                  req.httpMethod = "POST"
-                  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-                  URLSession.shared.dataTask(with: req) { data, _, _ in
-                      DispatchQueue.main.async {
-                          self.isWorking = false
-                          guard let data = data,
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                              self.fallbackInstall(app: app, message: "تعذّر الاتصال بسيرفر المتجر")
-                              return
-                          }
-                          if let installURL = obj["install_url"] as? String, let u = URL(string: installURL) {
-                              UIApplication.shared.open(u)
-                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                              return
-                          }
-                          if let manifest = (obj["manifest_url"] as? String) ?? (obj["manifest"] as? String),
-                             let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(manifest)) {
-                              UIApplication.shared.open(u)
-                              StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                              return
-                          }
-                          self.fallbackInstall(app: app, message: obj["message"] as? String)
-                      }
-                  }.resume()
-              }
-
-              /// Direct install straight from the repository entry when the server has no record.
-              private func fallbackInstall(app: StoreAPIApp, message: String?) {
-                  isWorking = false
-                  guard let raw = app.resolvedDownloadURL, !raw.isEmpty else {
-                      StatusCenter.shared.show(text: message ?? "لا يوجد رابط تثبيت لهذا التطبيق في المصدر")
-                      return
-                  }
-
-                  // already an OTA link
-                  if raw.hasPrefix("itms-services://") {
-                      if let u = URL(string: raw) { UIApplication.shared.open(u) }
-                      StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                      return
-                  }
-
-                  // repository provides an Apple manifest directly
-                  if raw.lowercased().hasSuffix(".plist") {
-                      if let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(raw)) {
-                          UIApplication.shared.open(u)
-                          StatusCenter.shared.show(text: "جارٍ التثبيت على جهازك...")
-                      }
-                      return
-                  }
-
-                  // ask our server to wrap the external IPA into a manifest, then install
-                  var comps = URLComponents(string: ActivationManager.codesSiteBase + "/api/public/store/manifest")
-                  comps?.queryItems = [
-                      URLQueryItem(name: "url", value: raw),
-                      URLQueryItem(name: "name", value: app.name),
-                      URLQueryItem(name: "bundle_id", value: app.bundleId ?? ""),
-                      URLQueryItem(name: "version", value: app.version ?? app.bundleVersion ?? "1.0"),
-                      URLQueryItem(name: "icon", value: app.icon ?? ""),
-                      URLQueryItem(name: "udid", value: ActivationManager.shared.deviceID)
-                  ]
-                  if let manifestURL = comps?.url?.absoluteString,
-                     let u = URL(string: "itms-services://?action=download-manifest&url=" + Self.encoded(manifestURL)) {
-                      UIApplication.shared.open(u) { opened in
-                          if !opened, let direct = URL(string: raw) {
-                              UIApplication.shared.open(direct)
-                          }
-                      }
-                      StatusCenter.shared.show(text: "جارٍ التثبيت من المصدر \(app.sourceLabel)...")
-                      return
-                  }
-
-                  if let direct = URL(string: raw) {
-                      UIApplication.shared.open(direct)
-                      StatusCenter.shared.show(text: "تم فتح رابط التحميل من المصدر")
-                  } else {
-                      StatusCenter.shared.show(text: message ?? "التثبيت غير متاح حاليًا")
-                  }
-              }
-
-              private static func encoded(_ s: String) -> String {
-                  var allowed = CharacterSet.alphanumerics
-                  allowed.insert(charactersIn: "-._~")
-                  return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
-              }
-          }
-
-          // ================= HOME VIEW =================
-          struct StoreHomeView: View {
-              @ObservedObject var feed: StoreFeed
+          struct ConsentSheet: View {
+              let onAccept: () -> Void
+              @Environment(\.dismiss) private var dismiss
 
               var body: some View {
-                  NavigationStack {
-                      VStack(spacing: 0) {
-                          ONEsTopBar()
+                  VStack(spacing: 18) {
+                      Image(systemName: "checkmark.shield.fill")
+                          .font(.system(size: 48))
+                          .foregroundStyle(.blue)
 
-                          ScrollView(showsIndicators: false) {
-                              VStack(spacing: 14) {
-                                  ONEsArtBanner()
+                      Text("ÙÙØ§ÙÙØªÙ ÙØ·ÙÙØ¨Ø©")
+                          .font(.title2.bold())
 
-                                  if feed.apps.isEmpty && feed.isLoading {
-                                      LoadingList()
-                                  } else {
-                                      let recent = feed.apps.prefix(6)
-                                      if !recent.isEmpty {
-                                          VStack(alignment: .leading, spacing: 10) {
-                                              HStack {
-                                                  Text("أحدث التطبيقات")
-                                                      .font(.system(size: 16, weight: .bold))
-                                                      .foregroundColor(Color.storeText)
-                                                  Spacer()
-                                              }
-                                              .padding(.horizontal, 20)
-                                              .padding(.top, 4)
+                      Text("Ø£ÙØ§ÙÙ Ø¹ÙÙ Ø£Ù ÙÙÙÙ AppScope Ø¨ÙØ­Øµ ÙØ§Ø¦ÙØ© ÙØ­Ø¯Ø¯Ø© ÙÙ URL Schemes ÙÙØ¹Ø±ÙØ© ÙØ§ Ø¥Ø°Ø§ ÙØ§Ù ÙÙØ§Ù ØªØ·Ø¨ÙÙ ÙØ³Ø¬Ù ÙÙØªØ¹Ø§ÙÙ ÙØ¹ÙØ§. Ø£ÙÙÙ Ø£Ù ÙØ°Ù ÙÙØ³Øª ÙØ§Ø¦ÙØ© Ø´Ø§ÙÙØ© ÙÙÙ Ø§ÙØªØ·Ø¨ÙÙØ§Øª Ø§ÙÙØ«Ø¨ØªØ©.")
+                          .font(.body)
+                          .multilineTextAlignment(.center)
+                          .foregroundStyle(.secondary)
 
-                                              LazyVStack(spacing: 10) {
-                                                  ForEach(Array(recent)) { app in
-                                                      NavigationLink(value: app) {
-                                                          AppListRow(app: app)
-                                                      }
-                                                      .buttonStyle(.plain)
-                                                  }
-                                              }
-                                              .padding(.horizontal, 18)
-                                          }
-                                      } else {
-                                          let randomApps = feed.apps.prefix(5)
-                                          if !randomApps.isEmpty {
-                                              LazyVStack(spacing: 10) {
-                                                  ForEach(Array(randomApps)) { app in
-                                                      NavigationLink(value: app) {
-                                                          AppListRow(app: app)
-                                                      }
-                                                      .buttonStyle(.plain)
-                                                  }
-                                              }
-                                              .padding(.horizontal, 18)
-                                          }
-                                      }
-                                  }
-
-                                  Spacer(minLength: 20)
-                              }
-                              .padding(.top, 4)
-                          }
-                          .refreshable { await feed.refresh() }
+                      Button("Ø£ÙØ§ÙÙ ÙØ£Ø¨Ø¯Ø£ Ø§ÙÙØ­Øµ") {
+                          onAccept()
                       }
-                      .background(ONEsStoreBackground())
-                      .navigationBarHidden(true)
-                      .navigationDestination(for: StoreAPIApp.self) { app in
-                          AppDetailView(app: app, feed: feed)
+                      .buttonStyle(.borderedProminent)
+                      .frame(maxWidth: .infinity)
+
+                      Button("Ø¥ÙØºØ§Ø¡") {
+                          dismiss()
                       }
+                      .buttonStyle(.bordered)
+                      .frame(maxWidth: .infinity)
                   }
+                  .padding(24)
+                  .environment(\.layoutDirection, .rightToLeft)
               }
           }
-          VIPEOF
+          SWIFT
 
-      # =========================================================
-      # SOURCE CODE - VIP21StoreApp.swift (system appearance, no forced light)
-      # =========================================================
-      - name: Generate code - VIP21StoreApp.swift
+      - name: Generate XcodeGen project.yml
+        shell: bash
         run: |
-          cat > VIP21StoreApp.swift << 'VIPEOF'
-          import SwiftUI
-          import BackgroundTasks
-          import UserNotifications
+          cat > AppScopeBuild/project.yml <<'YAML'
+          name: AppScope
 
-          @main
-          struct VIP21StoreApp: App {
-              @StateObject private var captureService = ScreenCaptureService.shared
-              @ObservedObject private var lang = LanguageManager.shared
+          options:
+            minimumXcodeGenVersion: "2.40.0"
+            deploymentTarget:
+              iOS: "18.0"
+            createIntermediateGroups: true
+            groupSortPosition: top
 
-              init() {
-                  ScreenCaptureService.shared.start()
-                  UNUserNotificationCenter.current().delegate = ForegroundNotificationDelegate.shared
-                  // No forced appearance – follows system
-                  ActivationManager.shared.verify()
-              }
+          settings:
+            base:
+              SWIFT_VERSION: "6.0"
+              IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+              DEVELOPMENT_TEAM: ""
+              CODE_SIGNING_ALLOWED: "NO"
+              CODE_SIGNING_REQUIRED: "NO"
+              CODE_SIGN_IDENTITY: ""
+              PRODUCT_BUNDLE_IDENTIFIER: "com.appscope.safe"
+              MARKETING_VERSION: "1.0"
+              CURRENT_PROJECT_VERSION: "1"
 
-              var body: some Scene {
-                  WindowGroup {
-                      ActivationGateContainer {
-                          NavigationView { ContentView() }
-                              .navigationViewStyle(.stack)
-                              .environment(\.locale, lang.locale)
-                              .environment(\.layoutDirection, lang.layout)
-                              .preferredColorScheme(.none) // follow system
-                              .background(ONEsStoreBackground())
-                      }
-                  }
-              }
-          }
-          VIPEOF
+          targets:
+            AppScope:
+              type: application
+              platform: iOS
+              sources:
+                - path: AppScope
+              info:
+                path: AppScope/Info.plist
+              settings:
+                base:
+                  PRODUCT_NAME: "AppScope"
+                  INFOPLIST_FILE: "AppScope/Info.plist"
+                  ASSETCATALOG_COMPILER_APPICON_NAME: ""
+                  CODE_SIGNING_ALLOWED: "NO"
+                  CODE_SIGNING_REQUIRED: "NO"
+              scheme:
+                gatherCoverageData: false
+                testTargets: []
+          YAML
 
-      # =========================================================
-      # Build the app
-      # =========================================================
-      - name: Build the app
-        run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK: $SDK"
-          xcrun swiftc \
-            Localization.swift \
-            Constants.swift \
-            HapticManager.swift \
-            Models.swift \
-            Repositories.swift \
-            ActivationManager.swift \
-            GreenWave.swift \
-            StatusScreens.swift \
-            StoreView.swift \
-            ContentView.swift \
-            VIP21StoreApp.swift \
-            -sdk "$SDK" \
-            -target arm64-apple-ios16.0 \
-            -O \
-            -module-name VIP21Store \
-            -framework SwiftUI \
-            -framework UIKit \
-            -framework Foundation \
-            -framework ImageIO \
-            -framework MobileCoreServices \
-            -framework UserNotifications \
-            -framework UniformTypeIdentifiers \
-            -framework Network \
-            -framework CFNetwork \
-            -framework CoreImage \
-            -framework AVFoundation \
-            -framework AVKit \
-            -framework BackgroundTasks \
-            -o VIP21Store
-          file VIP21Store
-
-      - name: Create IPA package
-        env:
-          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
-          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
-          IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
-          ICON_OBFUSCATION_KEY: ${{ secrets.ICON_OBFUSCATION_KEY }}
+      - name: Generate Xcode project
+        shell: bash
         run: |
           set -euo pipefail
-          export COPYFILE_DISABLE=1
-          mkdir -p artifacts
-          rm -rf build-output
-          mkdir -p build-output/Payload/VIP21Store.app
-          cp -X VIP21Store                            build-output/Payload/VIP21Store.app/VIP21Store
-          cp -X Resources/Info.plist                  build-output/Payload/VIP21Store.app/Info.plist
-          cp -X Resources/header_logo.png             build-output/Payload/VIP21Store.app/
-          cp -X Resources/appstore_glyph.png          build-output/Payload/VIP21Store.app/
-          cp -X Resources/sub_mascot.png              build-output/Payload/VIP21Store.app/
-          cp -X Resources/home_banner.png             build-output/Payload/VIP21Store.app/
+          cd AppScopeBuild
+          xcodegen generate
+          test -f AppScope.xcodeproj/project.pbxproj
 
-          xattr -cr build-output
-          find build-output -name ".DS_Store" -delete
-          find build-output -name "._*" -delete
-
-          if [ -z "${IOS_P12_BASE64:-}" ] || [ -z "${IOS_P12_PASSWORD:-}" ] || [ -z "${IOS_MOBILEPROVISION_BASE64:-}" ]; then
-            echo "::warning::Apple signing secrets are not configured; creating an unsigned IPA artifact."
-            echo "::warning::Add IOS_P12_BASE64, IOS_P12_PASSWORD, and IOS_MOBILEPROVISION_BASE64 together for real iPhone installation."
-            SIGNED_FOR_DEVICE=false
-          else
-            SIGNED_FOR_DEVICE=true
-          fi
-          echo "SIGNED_FOR_DEVICE=$SIGNED_FOR_DEVICE" >> "$GITHUB_ENV"
-
-          if [ "$SIGNED_FOR_DEVICE" = "true" ]; then
-            KEYCHAIN="$RUNNER_TEMP/21s-build.keychain-db"
-            KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-            P12_PATH="$RUNNER_TEMP/signing.p12"
-            PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
-            echo "$IOS_P12_BASE64" | base64 --decode > "$P12_PATH"
-            echo "$IOS_MOBILEPROVISION_BASE64" | base64 --decode > "$PROFILE_PATH"
-            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN"
-            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-            security import "$P12_PATH" -k "$KEYCHAIN" -P "$IOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-            security list-keychains -d user -s "$KEYCHAIN"
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-
-            security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
-            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
-            PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
-            PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")
-            PROFILE_BUNDLE_ID="${PROFILE_APP_ID#${PROFILE_TEAM}.}"
-            if [ "$PROFILE_BUNDLE_ID" != "$NEW_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
-            echo "::error::Provisioning profile bundle id '$PROFILE_BUNDLE_ID' does not match '$NEW_BUNDLE_ID'."
-            exit 1
-            fi
-            cp "$PROFILE_PATH" build-output/Payload/VIP21Store.app/embedded.mobileprovision
-            /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
-            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F\" '/Apple Development|Apple Distribution|iPhone Distribution|iPhone Developer/{print $2; exit}')
-            if [ -z "$SIGN_IDENTITY" ]; then
-            echo "::error::No valid Apple code-signing identity was found in IOS_P12_BASE64."
-            exit 1
-            fi
-            /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --entitlements "$RUNNER_TEMP/entitlements.plist" --timestamp=none build-output/Payload/VIP21Store.app
-            /usr/bin/codesign --verify --deep --strict --verbose=2 build-output/Payload/VIP21Store.app
-          fi
-
-          # Hide + encrypt the icon assets
-          ICON_KEY="${ICON_OBFUSCATION_KEY:-ONEs}"
-          mkdir -p build-output/Payload/VIP21Store.app/.private
-          for f in Resources/AppIcon*.png; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            hashed=$(printf '%s' "$base$ICON_KEY" | shasum -a 256 | cut -c1-16)
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$ICON_KEY" \
-              -in "$f" -out "build-output/Payload/VIP21Store.app/.private/$hashed.bin"
-          done
-          find build-output/Payload/VIP21Store.app -maxdepth 1 -name "AppIcon*" -delete
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Delete :CFBundleIcons~ipad' build-output/Payload/VIP21Store.app/Info.plist 2>/dev/null || true
-          echo "Icons hidden and stored encrypted under .private/"
-
-          rm -f artifacts/21s.ipa
-          find build-output -name ".DS_Store" -delete
-          find build-output -name "._*" -delete
-          xattr -cr build-output/Payload || true
-          cd build-output && zip -r -X -q -fz- -Z deflate ../artifacts/21s.ipa Payload && cd ..
-          zip -q -F artifacts/21s.ipa --out artifacts/21s.fixed.ipa >/dev/null 2>&1 \
-            && mv artifacts/21s.fixed.ipa artifacts/21s.ipa || rm -f artifacts/21s.fixed.ipa
-          ls -lh artifacts/21s.ipa
-
-          if ! unzip -tq artifacts/21s.ipa >/dev/null 2>&1; then
-            echo "Error: IPA file is corrupt or invalid."
-            exit 1
-          fi
-          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
-            echo "Error: IPA does not contain a valid App Bundle"
-            exit 1
-          fi
-          echo "IPA: $(du -sh artifacts/21s.ipa)"
-
-      - name: Verify IPA package
-        run: |
-          echo "== IPA Contents =="
-          unzip -l artifacts/21s.ipa | head -60
-          if ! unzip -l artifacts/21s.ipa | grep -q "Payload/VIP21Store.app/VIP21Store"; then
-            echo "Error: IPA does not contain a valid App Bundle"
-            exit 1
-          fi
-          echo "== Integrity test =="
-          unzip -tq artifacts/21s.ipa > /dev/null
-          if unzip -l artifacts/21s.ipa | grep -q "_CodeSignature/CodeResources\|_CodeSignature"; then
-            echo "Warning: _CodeSignature found in IPA (should be inside .app, not Payload root)"
-          fi
-          unzip -p artifacts/21s.ipa Payload/VIP21Store.app/VIP21Store | head -c 4 | xxd | head -1
-          echo "IPA is valid, passes zip integrity test, and contains the App Bundle."
-
-      # =========================================================
-      # INSTALL SERVER (OTA)
-      # =========================================================
-      - name: Upload IPA to install server (OTA)
-        id: ota_upload
-        if: env.SIGNED_FOR_DEVICE == 'true'
-        continue-on-error: false
-        env:
-          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
-          UPLOAD_TOKEN: ${{ secrets.IPA_UPLOAD_TOKEN }}
+      - name: Validate Swift sources
+        shell: bash
         run: |
           set -euo pipefail
-          if [ -z "$UPLOAD_TOKEN" ]; then
-            echo "::error::Secret IPA_UPLOAD_TOKEN is required for real OTA installation."
-            echo "Add it in GitHub > Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          MANIFEST_ENDPOINT="$INSTALL_SERVER/api/public/manifest/21s"
-          UPLOAD_ENDPOINT="$INSTALL_SERVER/api/public/upload"
-          echo "Checking intermediary install server..."
-          STATUS=$(curl -sS -o /tmp/server_probe -w "%{http_code}" "$INSTALL_SERVER/api/public/health" || true)
-          if [ "$STATUS" = "404" ]; then
-            echo "::warning::Health endpoint is missing; upload endpoint will be the authoritative check."
-          fi
-          echo "Uploading artifacts/21s.ipa -> $INSTALL_SERVER"
-          HTTP_CODE=$(curl -sS -o /tmp/upload_response.json -w "%{http_code}" \
-            -X POST "$INSTALL_SERVER/api/public/upload" \
-            -H "x-upload-token: $UPLOAD_TOKEN" \
-            -F "file=@artifacts/21s.ipa;type=application/octet-stream" \
-            -F "slug=21s" \
-            -F "name=$NEW_APP_NAME" \
-            -F "bundle_id=$NEW_BUNDLE_ID" \
-            -F "version=1.0" \
-            -F "build=${GITHUB_RUN_NUMBER}" \
-            -F "description=ONEs Store - SwiftUI build" \
-            -F "icon_url=https://up6.cc/2026/07/178463790906632.png")
-          echo "HTTP $HTTP_CODE"
-          cat /tmp/upload_response.json 2>/dev/null; echo
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-            echo "::error::Upload to install server failed (HTTP $HTTP_CODE)."
-            cat /tmp/upload_response.json 2>/dev/null || true
-            exit 1
-          fi
-          MANIFEST_CODE=$(curl -sS -o /tmp/manifest.plist -w "%{http_code}" "$MANIFEST_ENDPOINT")
-          MANIFEST_TYPE=$(file -b --mime-type /tmp/manifest.plist || true)
-          if [ "$MANIFEST_CODE" != "200" ] || ! grep -q '<key>items</key>' /tmp/manifest.plist; then
-            echo "::error::The intermediary did not return a valid Apple manifest (HTTP $MANIFEST_CODE, $MANIFEST_TYPE)."
-            head -c 300 /tmp/manifest.plist || true
-            exit 1
-          fi
-          echo "uploaded=true" >> "$GITHUB_OUTPUT"
-          echo "================ INSTALL LINKS ================"
-          echo "Store page : $INSTALL_SERVER/"
-          echo "Manifest   : $INSTALL_SERVER/api/public/manifest/21s"
-          echo "Direct IPA : $INSTALL_SERVER/api/public/ipa/21s"
-          echo "Install    : itms-services://?action=download-manifest&url=$INSTALL_SERVER/api/public/manifest/21s"
-          echo "==============================================="
+          cd AppScopeBuild
 
-      - name: Install summary
-        env:
-          INSTALL_SERVER: "https://project--9e6278b0-f5b2-4b14-9b4f-75f855f319c6.lovable.app"
+          swiftc \
+            -parse \
+            AppScope/AppScopeApp.swift \
+            AppScope/Models.swift \
+            AppScope/InstalledAppsService.swift \
+            AppScope/ContentView.swift
+
+      - name: Build unsigned archive
+        shell: bash
         run: |
-          {
-            echo "## ONEs - Install from server"
-            echo ""
-            echo "- Store: $INSTALL_SERVER/"
-            echo "- Tap **تثبيت** on the store page from an iPhone to install instantly (OTA)."
-            echo "- Apple signed for normal iPhone: ${SIGNED_FOR_DEVICE:-false}"
-            echo "- OTA upload status: ${{ steps.ota_upload.outputs.uploaded || 'skipped (unsigned IPA or no upload token)' }}"
-            echo "- Manifest: \`$INSTALL_SERVER/api/public/manifest/21s\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
 
-      - name: Upload artifact
+          cd AppScopeBuild
+
+          xcodebuild \
+            -project AppScope.xcodeproj \
+            -scheme AppScope \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AppScope.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            archive
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="$RUNNER_TEMP/AppScope.xcarchive"
+          APP_PATH="$ARCHIVE/Products/Applications/AppScope.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App bundle was not found:"
+            find "$ARCHIVE" -maxdepth 5 -type d -name '*.app' -print
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/Payload"
+          mkdir -p "$RUNNER_TEMP/Payload"
+
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/AppScope.app"
+
+          cd "$RUNNER_TEMP"
+          rm -f AppScope-unsigned.ipa
+          /usr/bin/zip -qry AppScope-unsigned.ipa Payload
+
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp AppScope-unsigned.ipa "$GITHUB_WORKSPACE/artifacts/AppScope-unsigned.ipa"
+
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: 21s-Clean-IPA
-          path: artifacts/21s.ipa
-          compression-level: 0
-          retention-days: 90
+          name: AppScope-unsigned-ipa
+          path: artifacts/AppScope-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "## AppScope 27"
+            echo ""
+            echo "- New safe app architecture: consent-based known-app checker"
+            echo "- No private APIs"
+            echo "- No filesystem enumeration"
+            echo "- No LaunchServices database access"
+            echo "- No server upload of scan results"
+            echo "- URL schemes declared: 25"
+            echo "- Unsigned IPA: artifacts/AppScope-unsigned.ipa"
+          } >> "$GITHUB_STEP_SUMMARY"
