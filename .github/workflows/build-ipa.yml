@@ -274,6 +274,42 @@ jobs:
               let url: URL
               @Binding var isLoading: Bool
 
+              private static let fullscreenFixJS = """
+              (function(){
+                function applyFix(){
+                  var m = document.querySelector('meta[name=viewport]');
+                  if(!m){ m = document.createElement('meta'); m.name = 'viewport'; (document.head||document.documentElement).appendChild(m); }
+                  m.content = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, viewport-fit=cover, user-scalable=no';
+
+                  var vh = window.innerHeight * 0.01;
+                  document.documentElement.style.setProperty('--vh', vh + 'px');
+                  document.documentElement.style.setProperty('--app-height', window.innerHeight + 'px');
+
+                  var s = document.getElementById('__jood_fullscreen');
+                  if(!s){ s = document.createElement('style'); s.id = '__jood_fullscreen'; (document.head||document.documentElement).appendChild(s); }
+                  s.textContent =
+                    'html,body{height:100% !important;min-height:100% !important;width:100% !important;max-width:100% !important;margin:0 !important;padding:0 !important;overflow-x:hidden !important;}' +
+                    'body{min-height:calc(var(--vh,1vh)*100) !important;}' +
+                    '#root,#app,#__next,.app,.App,main,.container,.min-h-screen,.min-vh-100{min-height:calc(var(--vh,1vh)*100) !important;height:auto !important;}';
+                }
+                applyFix();
+                if(document.readyState === 'loading'){
+                  document.addEventListener('DOMContentLoaded', applyFix);
+                } else {
+                  applyFix();
+                }
+                window.addEventListener('resize', applyFix);
+                window.addEventListener('orientationchange', function(){
+                  setTimeout(applyFix, 50);
+                  setTimeout(applyFix, 300);
+                  setTimeout(applyFix, 800);
+                });
+                setTimeout(applyFix, 50);
+                setTimeout(applyFix, 300);
+                setTimeout(applyFix, 1000);
+              })();
+              """
+
               func makeCoordinator() -> Coordinator { Coordinator(self) }
 
               func makeUIView(context: Context) -> WKWebView {
@@ -281,6 +317,15 @@ jobs:
                   configuration.allowsInlineMediaPlayback = true
                   configuration.mediaTypesRequiringUserActionForPlayback = []
                   configuration.websiteDataStore = .default()
+
+                  // Inject the fullscreen/viewport fix BEFORE the page's own scripts run,
+                  // so any layout code the page runs on load already sees the correct height.
+                  let userScript = WKUserScript(
+                      source: WebView.fullscreenFixJS,
+                      injectionTime: .atDocumentStart,
+                      forMainFrameOnly: true
+                  )
+                  configuration.userContentController.addUserScript(userScript)
 
                   let webView = WKWebView(frame: .zero, configuration: configuration)
                   webView.navigationDelegate = context.coordinator
@@ -315,17 +360,8 @@ jobs:
                       DispatchQueue.main.async { self.parent.isLoading = true }
                   }
                   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                      let js = """
-                      (function(){
-                        var m=document.querySelector('meta[name=viewport]');
-                        if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}
-                        m.content='width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover';
-                        var s=document.getElementById('__jood_fullscreen');
-                        if(!s){s=document.createElement('style');s.id='__jood_fullscreen';document.head.appendChild(s);}
-                        s.textContent='html,body{width:100%;min-width:100%;margin:0!important;padding:0!important;}body{min-height:100dvh;min-height:100vh;}';
-                      })();
-                      """
-                      webView.evaluateJavaScript(js, completionHandler: nil)
+                      // Re-run the fix after full load too, in case the page rebuilt its DOM.
+                      webView.evaluateJavaScript(WebView.fullscreenFixJS, completionHandler: nil)
                       DispatchQueue.main.async { self.parent.isLoading = false }
                   }
                   func webView(_ webView: WKWebView,
