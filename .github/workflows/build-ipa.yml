@@ -33,7 +33,7 @@ jobs:
           echo "Swift:"
           swift --version
 
-      - name: Install XcodeGen and zip
+      - name: Install XcodeGen
         shell: bash
         run: |
           set -euo pipefail
@@ -46,11 +46,135 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf JoodIPA
-          mkdir -p JoodIPA/JoodIPA
+          mkdir -p JoodIPA/JoodIPA/Assets.xcassets/AppIcon.appiconset
+
+      # IMPORTANT:
+      # The previous workflow failed because it expected PNG files to already
+      # exist in the repository root. This version does NOT fail when they
+      # are missing. It creates valid placeholder icon assets automatically.
+      # If the two PNG files are present, they are used instead.
+      - name: Prepare AppIcon assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ASSET_DIR="JoodIPA/JoodIPA/Assets.xcassets"
+          ICON_DIR="${ASSET_DIR}/AppIcon.appiconset"
+
+          mkdir -p "${ICON_DIR}"
+
+          cat > "${ASSET_DIR}/Contents.json" <<'JSON'
+          {
+            "info": {
+              "author": "xcode",
+              "version": 1
+            }
+          }
+          JSON
+
+          # Create simple valid PNG icons automatically if the repository
+          # does not contain the requested icon files.
+          create_png() {
+            local output="$1"
+            local width="$2"
+            local height="$3"
+
+            python3 - "$output" "$width" "$height" <<'PY'
+          import sys, struct, zlib
+
+          output = sys.argv[1]
+          width = int(sys.argv[2])
+          height = int(sys.argv[3])
+
+          # Simple opaque dark-blue icon with a white "J".
+          # Generates a real PNG without requiring ImageMagick/Pillow.
+          pixels = []
+          for y in range(height):
+              row = bytearray()
+              for x in range(width):
+                  # Background.
+                  r, g, b = 20, 34, 58
+
+                  # Rounded-ish white J glyph.
+                  cx = width // 2
+                  scale = max(1, width // 12)
+
+                  vertical = (cx - scale <= x <= cx + scale) and (height//4 <= y <= height*3//4)
+                  bottom = (width//3 <= x <= width*2//3) and (height*3//4 <= y <= height*3//4 + scale)
+                  hook = (width//3 <= x <= cx) and (height*2//3 <= y <= height*3//4)
+
+                  if vertical or bottom or hook:
+                      r, g, b = 255, 255, 255
+
+                  row.extend((r, g, b, 255))
+              pixels.append(b'\x00' + bytes(row))
+
+          raw = b''.join(pixels)
+
+          def chunk(kind, data):
+              return (
+                  struct.pack(">I", len(data)) +
+                  kind +
+                  data +
+                  struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+              )
+
+          png = b'\x89PNG\r\n\x1a\n'
+          png += chunk(b'IHDR', struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+          png += chunk(b'IDAT', zlib.compress(raw, 9))
+          png += chunk(b'IEND', b'')
+
+          with open(output, "wb") as f:
+              f.write(png)
+          PY
+          }
+
+          # iPhone: 60pt @2x = 120x120 pixels.
+          if [ -f "AppIcon60x60@2x.png" ]; then
+            cp "AppIcon60x60@2x.png" "${ICON_DIR}/AppIcon60x60@2x.png"
+            echo "Using repository AppIcon60x60@2x.png"
+          else
+            create_png "${ICON_DIR}/AppIcon60x60@2x.png" 120 120
+            echo "AppIcon60x60@2x.png was not found; generated automatically."
+          fi
+
+          # iPad: 76pt @2x = 152x152 pixels.
+          if [ -f "AppIcon76x76@2x~ipad.png" ]; then
+            cp "AppIcon76x76@2x~ipad.png" "${ICON_DIR}/AppIcon76x76@2x~ipad.png"
+            echo "Using repository AppIcon76x76@2x~ipad.png"
+          else
+            create_png "${ICON_DIR}/AppIcon76x76@2x~ipad.png" 152 152
+            echo "AppIcon76x76@2x~ipad.png was not found; generated automatically."
+          fi
+
+          cat > "${ICON_DIR}/Contents.json" <<'JSON'
+          {
+            "images": [
+              {
+                "filename": "AppIcon60x60@2x.png",
+                "idiom": "iphone",
+                "scale": "2x",
+                "size": "60x60"
+              },
+              {
+                "filename": "AppIcon76x76@2x~ipad.png",
+                "idiom": "ipad",
+                "scale": "2x",
+                "size": "76x76"
+              }
+            ],
+            "info": {
+              "author": "xcode",
+              "version": 1
+            }
+          }
+          JSON
 
       - name: Generate Info.plist
         shell: bash
         run: |
+          set -euo pipefail
+
           cat > JoodIPA/JoodIPA/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -75,30 +199,8 @@ jobs:
               <key>CFBundleVersion</key>
               <string>1</string>
 
-              <key>UILaunchScreen</key>
-              <dict>
-                  <key>UIColorName</key>
-                  <string>LaunchBackground</string>
-              </dict>
-
-              <key>UIRequiresFullScreen</key>
-              <false/>
-
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-
-              <key>UISupportedInterfaceOrientations~ipad</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
+              <key>CFBundleIconName</key>
+              <string>AppIcon</string>
 
               <key>CFBundleIcons</key>
               <dict>
@@ -126,6 +228,31 @@ jobs:
                   </dict>
               </dict>
 
+              <key>UILaunchScreen</key>
+              <dict>
+                  <key>UIColorName</key>
+                  <string>LaunchBackground</string>
+              </dict>
+
+              <key>UIRequiresFullScreen</key>
+              <false/>
+
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+
               <key>NSAppTransportSecurity</key>
               <dict>
                   <key>NSAllowsArbitraryLoads</key>
@@ -138,6 +265,8 @@ jobs:
       - name: Generate Swift app
         shell: bash
         run: |
+          set -euo pipefail
+
           cat > JoodIPA/JoodIPA/JoodIPAApp.swift <<'SWIFT'
           import SwiftUI
 
@@ -146,15 +275,17 @@ jobs:
               var body: some Scene {
                   WindowGroup {
                       WebContainerView()
-                          .ignoresSafeArea()
+                          .ignoresSafeArea(.all)
                   }
               }
           }
           SWIFT
 
-      - name: Generate WebView
+      - name: Generate full-screen WebView
         shell: bash
         run: |
+          set -euo pipefail
+
           cat > JoodIPA/JoodIPA/WebContainerView.swift <<'SWIFT'
           import SwiftUI
           import WebKit
@@ -175,32 +306,48 @@ jobs:
                   preferences.javaScriptCanOpenWindowsAutomatically = true
                   configuration.preferences = preferences
 
-                  let webView = WKWebView(frame: .zero, configuration: configuration)
+                  let webView = WKWebView(
+                      frame: .zero,
+                      configuration: configuration
+                  )
 
                   webView.navigationDelegate = context.coordinator
                   webView.uiDelegate = context.coordinator
+
                   webView.allowsBackForwardNavigationGestures = true
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
+                  webView.scrollView.contentInset = .zero
+                  webView.scrollView.scrollIndicatorInsets = .zero
                   webView.scrollView.alwaysBounceVertical = false
                   webView.scrollView.alwaysBounceHorizontal = false
+
                   webView.backgroundColor = .systemBackground
                   webView.isOpaque = true
 
-                  webView.load(URLRequest(
-                      url: joodURL,
-                      cachePolicy: .useProtocolCachePolicy,
-                      timeoutInterval: 30
-                  ))
+                  webView.load(
+                      URLRequest(
+                          url: joodURL,
+                          cachePolicy: .useProtocolCachePolicy,
+                          timeoutInterval: 30
+                      )
+                  )
 
                   return webView
               }
 
-              func updateUIView(_ webView: WKWebView, context: Context) {
-                  // The app intentionally contains no browser address bar,
-                  // toolbar, tabs, or Safari UI.
+              func updateUIView(
+                  _ webView: WKWebView,
+                  context: Context
+              ) {
+                  // No browser address bar, toolbar, tabs, or Safari UI.
+                  // WKWebView occupies the complete application window.
               }
 
-              final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+              final class Coordinator:
+                  NSObject,
+                  WKNavigationDelegate,
+                  WKUIDelegate {
+
                   func webView(
                       _ webView: WKWebView,
                       decidePolicyFor navigationAction: WKNavigationAction,
@@ -215,7 +362,6 @@ jobs:
                       for navigationAction: WKNavigationAction,
                       windowFeatures: WKWindowFeatures
                   ) -> WKWebView? {
-                      // Open target=_blank links inside the same app view.
                       webView.load(navigationAction.request)
                       return nil
                   }
@@ -223,65 +369,11 @@ jobs:
           }
           SWIFT
 
-
-      - name: Prepare AppIcon assets
+      - name: Generate XcodeGen project.yml
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p JoodIPA/JoodIPA/Assets.xcassets/AppIcon.appiconset
-
-          if [ ! -f "AppIcon60x60@2x.png" ]; then
-            echo "Missing AppIcon60x60@2x.png in repository root."
-            exit 1
-          fi
-
-          if [ ! -f "AppIcon76x76@2x~ipad.png" ]; then
-            echo "Missing AppIcon76x76@2x~ipad.png in repository root."
-            exit 1
-          fi
-
-          cp "AppIcon60x60@2x.png" \
-            "JoodIPA/JoodIPA/Assets.xcassets/AppIcon.appiconset/AppIcon60x60@2x.png"
-
-          cp "AppIcon76x76@2x~ipad.png" \
-            "JoodIPA/JoodIPA/Assets.xcassets/AppIcon.appiconset/AppIcon76x76@2x~ipad.png"
-
-          cat > JoodIPA/JoodIPA/Assets.xcassets/Contents.json <<'JSON'
-          {
-            "info" : {
-              "author" : "xcode",
-              "version" : 1
-            }
-          }
-          JSON
-
-          cat > JoodIPA/JoodIPA/Assets.xcassets/AppIcon.appiconset/Contents.json <<'JSON'
-          {
-            "images" : [
-              {
-                "filename" : "AppIcon60x60@2x.png",
-                "idiom" : "iphone",
-                "scale" : "2x",
-                "size" : "60x60"
-              },
-              {
-                "filename" : "AppIcon76x76@2x~ipad.png",
-                "idiom" : "ipad",
-                "scale" : "2x",
-                "size" : "76x76"
-              }
-            ],
-            "info" : {
-              "author" : "xcode",
-              "version" : 1
-            }
-          }
-          JSON
-
-      - name: Generate XcodeGen project.yml
-        shell: bash
-        run: |
           cat > JoodIPA/project.yml <<'YAML'
           name: JoodIPA
 
@@ -297,8 +389,8 @@ jobs:
               SWIFT_VERSION: "6.0"
               IPHONEOS_DEPLOYMENT_TARGET: "17.0"
               TARGETED_DEVICE_FAMILY: "1,2"
-              ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: "YES"
               SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: "YES"
+              ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: "YES"
               DEVELOPMENT_TEAM: ""
               CODE_SIGNING_ALLOWED: "NO"
               CODE_SIGNING_REQUIRED: "NO"
@@ -321,6 +413,7 @@ jobs:
                   PRODUCT_NAME: "JoodIPA"
                   INFOPLIST_FILE: "JoodIPA/Info.plist"
                   ASSETCATALOG_COMPILER_APPICON_NAME: "AppIcon"
+                  TARGETED_DEVICE_FAMILY: "1,2"
                   CODE_SIGNING_ALLOWED: "NO"
                   CODE_SIGNING_REQUIRED: "NO"
               scheme:
@@ -332,15 +425,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cd JoodIPA
           xcodegen generate
+
           test -f JoodIPA.xcodeproj/project.pbxproj
 
       - name: Validate Swift sources
         shell: bash
         run: |
           set -euo pipefail
+
           cd JoodIPA
+
           swiftc -parse \
             JoodIPA/JoodIPAApp.swift \
             JoodIPA/WebContainerView.swift
@@ -384,11 +481,13 @@ jobs:
           cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/JoodIPA.app"
 
           cd "$RUNNER_TEMP"
+
           rm -f JoodIPA-unsigned.ipa
           /usr/bin/zip -qry JoodIPA-unsigned.ipa Payload
 
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp JoodIPA-unsigned.ipa "$GITHUB_WORKSPACE/artifacts/JoodIPA-unsigned.ipa"
+          cp JoodIPA-unsigned.ipa \
+            "$GITHUB_WORKSPACE/artifacts/JoodIPA-unsigned.ipa"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
@@ -403,11 +502,14 @@ jobs:
           {
             echo "## Jood IPA"
             echo ""
-            echo "- Native iOS SwiftUI application"
-            echo "- Displays https://jood-ipa.neocities.org directly inside the app"
+            echo "- Native SwiftUI iOS application"
+            echo "- Opens https://jood-ipa.neocities.org inside WKWebView"
             echo "- No Safari address bar, browser tabs, or browser toolbar"
-            echo "- WKWebView fills the complete available iPhone/iPad screen"
-            echo "- iPhone and iPad supported via TARGETED_DEVICE_FAMILY=1,2"
-            echo "- Portrait and landscape orientations supported"
+            echo "- Full available iPhone/iPad application window"
+            echo "- iPhone and iPad supported"
+            echo "- Portrait and landscape supported"
+            echo "- AppIcon60x60@2x.png supported"
+            echo "- AppIcon76x76@2x~ipad.png supported"
+            echo "- Missing icon files no longer stop the workflow"
             echo "- Unsigned IPA: artifacts/JoodIPA-unsigned.ipa"
           } >> "$GITHUB_STEP_SUMMARY"
