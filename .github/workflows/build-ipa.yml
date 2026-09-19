@@ -1,4 +1,4 @@
-name: Build WebWrapper IPA - True Fullscreen Fix
+name: Build WebWrapper IPA - AppIcon & Universal Fullscreen
 
 on:
   push:
@@ -40,8 +40,80 @@ jobs:
           set -euo pipefail
           rm -rf AppScopeBuild
           mkdir -p AppScopeBuild/AppScope/Base.lproj
+          mkdir -p AppScopeBuild/AppScope/Assets.xcassets/AppIcon.appiconset
 
-      - name: Generate LaunchScreen Storyboard (Fixes Black Letterbox Borders)
+      - name: Generate AppIcon Asset Catalog (Contents.json)
+        shell: bash
+        run: |
+          cat > AppScopeBuild/AppScope/Assets.xcassets/AppIcon.appiconset/Contents.json <<'JSON'
+          {
+            "images": [
+              {
+                "idiom": "iphone",
+                "scale": "2x",
+                "size": "60x60",
+                "filename": "AppIcon60x60@2x.png"
+              },
+              {
+                "idiom": "iphone",
+                "scale": "3x",
+                "size": "60x60",
+                "filename": "AppIcon60x60@3x.png"
+              },
+              {
+                "idiom": "ipad",
+                "scale": "1x",
+                "size": "76x76",
+                "filename": "AppIcon76x76~ipad.png"
+              },
+              {
+                "idiom": "ipad",
+                "scale": "2x",
+                "size": "76x76",
+                "filename": "AppIcon76x76@2x~ipad.png"
+              },
+              {
+                "idiom": "ios-marketing",
+                "scale": "1x",
+                "size": "1024x1024",
+                "filename": "AppIcon1024x1024.png"
+              }
+            ],
+            "info": {
+              "author": "xcode",
+              "version": 1
+            }
+          }
+          JSON
+
+      - name: Generate Placeholder AppIcons via Swift Script
+        shell: bash
+        run: |
+          swift - <<'SWIFT'
+          import AppKit
+
+          func createPNG(size: CGSize, path: String) {
+              let image = NSImage(size: size)
+              image.lockFocus()
+              NSColor.systemBlue.setFill()
+              NSRect(origin: .zero, size: size).fill()
+              image.unlockFocus()
+              if let tiff = image.tiffRepresentation,
+                 let bitmap = NSBitmapImageRep(data: tiff),
+                 let png = bitmap.representation(using: .png, properties: [:]) {
+                  try? png.write(to: URL(fileURLWithPath: path))
+              }
+          }
+
+          let dir = "AppScopeBuild/AppScope/Assets.xcassets/AppIcon.appiconset/"
+          createPNG(size: CGSize(width: 120, height: 120), path: dir + "AppIcon60x60@2x.png")
+          createPNG(size: CGSize(width: 180, height: 180), path: dir + "AppIcon60x60@3x.png")
+          createPNG(size: CGSize(width: 76, height: 76), path: dir + "AppIcon76x76~ipad.png")
+          createPNG(size: CGSize(width: 152, height: 152), path: dir + "AppIcon76x76@2x~ipad.png")
+          createPNG(size: CGSize(width: 1024, height: 1024), path: dir + "AppIcon1024x1024.png")
+          SWIFT
+
+      - name: Generate LaunchScreen Storyboard
         shell: bash
         run: |
           cat > AppScopeBuild/AppScope/Base.lproj/LaunchScreen.storyboard <<'STORYBOARD'
@@ -73,7 +145,7 @@ jobs:
           </document>
           STORYBOARD
 
-      - name: Generate Info.plist
+      - name: Generate Info.plist (Matching Provided Struct)
         shell: bash
         run: |
           cat > AppScopeBuild/AppScope/Info.plist <<'PLIST'
@@ -100,6 +172,9 @@ jobs:
               <key>CFBundleVersion</key>
               <string>1</string>
 
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+
               <key>UILaunchStoryboardName</key>
               <string>LaunchScreen</string>
 
@@ -112,10 +187,53 @@ jobs:
               <key>UIViewControllerBasedStatusBarAppearance</key>
               <false/>
 
-              <key>UIRequiredDeviceCapabilities</key>
+              <key>UIDeviceFamily</key>
               <array>
-                  <string>arm64</string>
+                  <integer>1</integer>
+                  <integer>2</integer>
               </array>
+
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60</string>
+                      </array>
+                      <key>CFBundleIconName</key>
+                      <string>AppIcon</string>
+                  </dict>
+              </dict>
+
+              <key>CFBundleIcons~ipad</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60</string>
+                          <string>AppIcon76x76</string>
+                      </array>
+                      <key>CFBundleIconName</key>
+                      <string>AppIcon</string>
+                  </dict>
+              </dict>
 
               <key>NSAppTransportSecurity</key>
               <dict>
@@ -142,7 +260,7 @@ jobs:
           }
           SWIFT
 
-      - name: Generate Swift source - ContentView.swift (Full Screen WebView)
+      - name: Generate Swift source - ContentView.swift (Full-Screen WKWebView)
         shell: bash
         run: |
           cat > AppScopeBuild/AppScope/ContentView.swift <<'SWIFT'
@@ -150,13 +268,13 @@ jobs:
           import WebKit
 
           struct ContentView: View {
-              // 🔴 ضع رابط موقعك الأصلي هنا
-              let targetURL = URL(string: "https://app.iosgods.com/store/")!
+              // 🔴 استبدل هذا الرابط برابط موقعك الأصلي
+              let targetURL = URL(string: "https://example.com")!
 
               var body: some View {
                   NativeWebView(url: targetURL)
-                      .edgesIgnoringSafeArea(.all)
-                      .ignoresSafeArea()
+                      .ignoresSafeArea(.all)
+                      .statusBar(hidden: true)
                       .onAppear {
                           UIApplication.shared.isIdleTimerDisabled = true
                       }
@@ -167,7 +285,6 @@ jobs:
               let url: URL
 
               func makeUIView(context: Context) -> WKWebView {
-                  // حقن CSS/JS تلقائياً لإجبار الموقع على ملء الشاشة بدون هوامش
                   let jsScript = """
                   var meta = document.createElement('meta');
                   meta.name = 'viewport';
@@ -175,7 +292,7 @@ jobs:
                   document.getElementsByTagName('head')[0].appendChild(meta);
 
                   var style = document.createElement('style');
-                  style.innerHTML = 'html, body { width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; overflow-x: hidden; }';
+                  style.innerHTML = 'html, body { width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }';
                   document.head.appendChild(style);
                   """
                   let userScript = WKUserScript(source: jsScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
@@ -190,7 +307,6 @@ jobs:
 
                   let webView = WKWebView(frame: .zero, configuration: config)
 
-                  // إلغاء حدود الأمان العلوية والسفلية داخل المتصفح
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
                   webView.scrollView.bounces = false
                   webView.scrollView.showsVerticalScrollIndicator = false
@@ -237,6 +353,7 @@ jobs:
               MARKETING_VERSION: "1.0"
               CURRENT_PROJECT_VERSION: "1"
               TARGETED_DEVICE_FAMILY: "1,2"
+              ASSETCATALOG_COMPILER_APPICON_NAME: "AppIcon"
 
           targets:
             AppScope:
@@ -252,6 +369,7 @@ jobs:
                   INFOPLIST_FILE: "AppScope/Info.plist"
                   CODE_SIGNING_ALLOWED: "NO"
                   CODE_SIGNING_REQUIRED: "NO"
+                  ASSETCATALOG_COMPILER_APPICON_NAME: "AppIcon"
           YAML
 
       - name: Generate Xcode project
