@@ -1,4 +1,4 @@
-name: Build WebWrapper IPA - Fullscreen Native
+name: Build WebWrapper IPA - True Fullscreen Fix
 
 on:
   push:
@@ -39,9 +39,41 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf AppScopeBuild
-          mkdir -p AppScopeBuild/AppScope
+          mkdir -p AppScopeBuild/AppScope/Base.lproj
 
-      - name: Generate Info.plist (Universal Screen & Web Config)
+      - name: Generate LaunchScreen Storyboard (Fixes Black Letterbox Borders)
+        shell: bash
+        run: |
+          cat > AppScopeBuild/AppScope/Base.lproj/LaunchScreen.storyboard <<'STORYBOARD'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
+              <device id="retina6_12" orientation="portrait" appearance="light"/>
+              <dependencies>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
+                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="EHf-IW-A2E">
+                      <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+                          <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
+                              <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                              <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                              <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+                              <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
+                          </view>
+                      </viewController>
+                  </scene>
+              </scenes>
+              <resources>
+                  <systemColor name="systemBackgroundColor">
+                      <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                  </systemColor>
+              </resources>
+          </document>
+          STORYBOARD
+
+      - name: Generate Info.plist
         shell: bash
         run: |
           cat > AppScopeBuild/AppScope/Info.plist <<'PLIST'
@@ -68,12 +100,17 @@ jobs:
               <key>CFBundleVersion</key>
               <string>1</string>
 
-              <!-- لدعم الشاشة الكاملة على كافة مقاسات أبل ومنع شريط الحالة من التغطية -->
-              <key>UILaunchScreen</key>
-              <dict/>
+              <key>UILaunchStoryboardName</key>
+              <string>LaunchScreen</string>
 
               <key>UIRequiresFullScreen</key>
               <true/>
+
+              <key>UIStatusBarHidden</key>
+              <true/>
+
+              <key>UIViewControllerBasedStatusBarAppearance</key>
+              <false/>
 
               <key>UIRequiredDeviceCapabilities</key>
               <array>
@@ -105,7 +142,7 @@ jobs:
           }
           SWIFT
 
-      - name: Generate Swift source - ContentView.swift (Web Wrapper)
+      - name: Generate Swift source - ContentView.swift (Full Screen WebView)
         shell: bash
         run: |
           cat > AppScopeBuild/AppScope/ContentView.swift <<'SWIFT'
@@ -113,15 +150,14 @@ jobs:
           import WebKit
 
           struct ContentView: View {
-              // 🔴 ضع رابط موقعك الأصلي هنا بدلاً من الرابط الوهمي
-              let targetURL = URL(string: "https://jood-ipa.neocities.org")!
+              // 🔴 ضع رابط موقعك الأصلي هنا
+              let targetURL = URL(string: "https://app.iosgods.com/store/")!
 
               var body: some View {
                   NativeWebView(url: targetURL)
-                      // التوسع على كامل أبعاد الشاشة لجميع الأجهزة (Dynamic Island, Notch, iPads)
-                      .ignoresSafeArea(.all)
+                      .edgesIgnoringSafeArea(.all)
+                      .ignoresSafeArea()
                       .onAppear {
-                          // منع شاشة الجهاز من الانطفاء أثناء الاستخدام
                           UIApplication.shared.isIdleTimerDisabled = true
                       }
               }
@@ -131,23 +167,37 @@ jobs:
               let url: URL
 
               func makeUIView(context: Context) -> WKWebView {
+                  // حقن CSS/JS تلقائياً لإجبار الموقع على ملء الشاشة بدون هوامش
+                  let jsScript = """
+                  var meta = document.createElement('meta');
+                  meta.name = 'viewport';
+                  meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
+                  document.getElementsByTagName('head')[0].appendChild(meta);
+
+                  var style = document.createElement('style');
+                  style.innerHTML = 'html, body { width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; overflow-x: hidden; }';
+                  document.head.appendChild(style);
+                  """
+                  let userScript = WKUserScript(source: jsScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+
                   let config = WKWebViewConfiguration()
+                  config.userContentController.addUserScript(userScript)
                   config.allowsInlineMediaPlayback = true
-                  
+
                   let preferences = WKWebpagePreferences()
                   preferences.allowsContentJavaScript = true
                   config.defaultWebpagePreferences = preferences
 
                   let webView = WKWebView(frame: .zero, configuration: config)
-                  
-                  // ضبط المظهر والتفاعل ليكون مطابقاً للتطبيقات الأصلية (Native)
-                  webView.scrollView.bounces = false // إغلاق تأثير السحب الذاتي
+
+                  // إلغاء حدود الأمان العلوية والسفلية داخل المتصفح
+                  webView.scrollView.contentInsetAdjustmentBehavior = .never
+                  webView.scrollView.bounces = false
                   webView.scrollView.showsVerticalScrollIndicator = false
                   webView.scrollView.showsHorizontalScrollIndicator = false
                   webView.isOpaque = false
                   webView.backgroundColor = .clear
-                  
-                  // التكيف التلقائي مع أبعاد ومقاسات الشاشات المتنوعة
+
                   webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
                   return webView
@@ -171,14 +221,14 @@ jobs:
           options:
             minimumXcodeGenVersion: "2.40.0"
             deploymentTarget:
-              iOS: "16.0"
+              iOS: "15.0"
             createIntermediateGroups: true
             groupSortPosition: top
 
           settings:
             base:
               SWIFT_VERSION: "6.0"
-              IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+              IPHONEOS_DEPLOYMENT_TARGET: "15.0"
               DEVELOPMENT_TEAM: ""
               CODE_SIGNING_ALLOWED: "NO"
               CODE_SIGNING_REQUIRED: "NO"
@@ -186,7 +236,7 @@ jobs:
               PRODUCT_BUNDLE_IDENTIFIER: "com.appscope.webwrapper"
               MARKETING_VERSION: "1.0"
               CURRENT_PROJECT_VERSION: "1"
-              TARGETED_DEVICE_FAMILY: "1,2" # 1 = iPhone, 2 = iPad (دعم شامل للأجهزة)
+              TARGETED_DEVICE_FAMILY: "1,2"
 
           targets:
             AppScope:
